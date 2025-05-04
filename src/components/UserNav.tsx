@@ -3,6 +3,7 @@
 import { UserButton, useUser } from "@clerk/nextjs";
 import Link from "next/link";
 
+// User navigation component
 export function UserNav() {
   const { isSignedIn, user, isLoaded } = useUser();
   
