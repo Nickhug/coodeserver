@@ -3,6 +3,9 @@ import type { NextConfig } from "next";
 const ALLOWED_ORIGIN = 'vscode-file://vscode-app';
 
 const nextConfig: NextConfig = {
+  // Enable standalone output mode for Docker optimization
+  output: 'standalone',
+  
   async headers() {
     return [
       {

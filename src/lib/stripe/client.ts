@@ -1,12 +1,33 @@
 import Stripe from 'stripe';
 import { updateUserCredits } from '../supabase/client';
 
-// Initialize Stripe with API key - using any to bypass the version check
-// In production we would use a properly typed version
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  apiVersion: '2023-10-16' as any,
-});
+// Memoization variable for Stripe client
+let stripeInstance: Stripe | null = null;
+
+/**
+ * Creates and returns a Stripe client instance.
+ * Uses memoization to avoid creating multiple instances.
+ * Throws an error if the Stripe secret key is missing.
+ */
+const getStripeClient = (): Stripe => {
+  if (stripeInstance) {
+    return stripeInstance;
+  }
+
+  const secretKey = process.env.STRIPE_SECRET_KEY;
+  if (!secretKey) {
+    throw new Error('Stripe secret key (STRIPE_SECRET_KEY) is missing.');
+  }
+
+  // Initialize Stripe with API key
+  stripeInstance = new Stripe(secretKey, {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    apiVersion: '2023-10-16' as any, // Consider using the latest stable API version
+    typescript: true, // Enable TypeScript support if available
+  });
+
+  return stripeInstance;
+};
 
 // Subscription tiers and their credit allocations
 export const subscriptionTiers = {
@@ -47,6 +68,7 @@ export async function createCheckoutSession(
   customerId?: string,
   returnUrl: string = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
 ) {
+  const stripe = getStripeClient(); // Get client instance
   const { priceId } = subscriptionTiers[tier];
   
   if (!priceId) {
@@ -86,6 +108,7 @@ export async function createCustomerPortalSession(
   customerId: string,
   returnUrl: string = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
 ) {
+  const stripe = getStripeClient(); // Get client instance
   try {
     const session = await stripe.billingPortal.sessions.create({
       customer: customerId,
@@ -105,6 +128,7 @@ export async function createCustomerPortalSession(
 export async function handleSubscriptionChange(
   subscription: Stripe.Subscription
 ) {
+  // No stripe client needed directly here, just DB updates
   try {
     // Get the subscription's metadata to find the userId
     const { userId, tier } = subscription.metadata as { userId: string; tier: SubscriptionTier };
@@ -136,7 +160,12 @@ export function verifyStripeWebhook(
   payload: string,
   signature: string
 ): Stripe.Event {
+  const stripe = getStripeClient(); // Get client instance
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
+
+  if (!webhookSecret) {
+    throw new Error('Stripe webhook secret (STRIPE_WEBHOOK_SECRET) is missing.');
+  }
 
   try {
     return stripe.webhooks.constructEvent(

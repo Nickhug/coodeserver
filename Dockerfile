@@ -18,9 +18,16 @@ COPY --from=deps /app/node_modules ./node_modules
 # Copy the rest of the application code
 COPY . .
 
-# Set environment variables for build time (if needed)
-# ARG NEXT_PUBLIC_...=
-# ENV NEXT_PUBLIC_...=$NEXT_PUBLIC_...
+# Define build arguments for public environment variables
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+# Add any other NEXT_PUBLIC_ variables needed during build
+
+# Set environment variables for build time from ARGs
+ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
+ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
+ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 
 # Build the Next.js application
 RUN npm run build
@@ -35,25 +42,22 @@ ENV NODE_ENV=production
 # RUN adduser --system --uid 1001 nextjs
 # USER nextjs
 
-# Copy necessary files from the builder stage
+# Copy necessary files from the builder stage using standalone output
 COPY --from=builder /app/public ./public
-COPY --from=builder --chown=1001:1001 /app/.next/standalone ./ 
-COPY --from=builder --chown=1001:1001 /app/.next/static ./.next/static
+# Copy the standalone server
+COPY --from=builder /app/.next/standalone ./ 
+# Copy static assets
+COPY --from=builder /app/.next/static ./.next/static
 
-# Copy the custom server file needed to run the application
+# Also copy our custom server and its dependencies (like the websocket lib)
+# Standalone output might not include everything from `src` automatically
 COPY --from=builder /app/src/server.ts ./src/server.ts
-# Copy the WebSocket utility (assuming it's needed by server.ts at runtime)
 COPY --from=builder /app/src/lib/websocket/server.ts ./src/lib/websocket/server.ts
+# Copy any other direct dependencies of server.ts if needed
 
-# Add tsx for running the TypeScript server file directly
-# Ensure tsx and ws are in production dependencies in package.json
-COPY --from=builder /app/node_modules/tsx ./node_modules/tsx
-COPY --from=builder /app/node_modules/ws ./node_modules/ws
-COPY --from=builder /app/node_modules/next ./node_modules/next
-# Add any other runtime dependencies needed by server.ts
-
-# Expose the port the app runs on
+# Expose the port the app runs on (ensure it matches the standalone server)
 EXPOSE 3000
 
-# Define the command to run the custom server
+# Define the command to run our custom server using tsx
+# Ensure tsx is in production dependencies
 CMD ["node", "node_modules/.bin/tsx", "src/server.ts"] 
