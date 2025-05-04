@@ -1,7 +1,6 @@
 import type { NextConfig } from "next";
 
-const ALLOWED_ORIGIN = 'vscode-file://vscode-app';
-
+// Allow connections from any origin during development and from Void application in production
 const nextConfig: NextConfig = {
   // Enable standalone output mode for Docker optimization
   output: 'standalone',
@@ -22,7 +21,7 @@ const nextConfig: NextConfig = {
         headers: [
           {
             key: 'Access-Control-Allow-Origin',
-            value: ALLOWED_ORIGIN,
+            value: '*', // Allow all origins
           },
           {
             key: 'Access-Control-Allow-Credentials',

@@ -12,7 +12,7 @@ primary_region = "iad"   # Choose a region close to you or your users
   PORT = "3000"
   NODE_ENV = "production"
   # Add any other non-secret environment variables required by your app at runtime.
-  # Example: NEXT_PUBLIC_APP_URL=https://coodeserver.fly.dev
+  NEXT_PUBLIC_APP_URL = "https://coodeserver.fly.dev"
 
 [http_service]
   internal_port = 3000

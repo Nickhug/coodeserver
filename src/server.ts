@@ -4,7 +4,7 @@ import next from 'next';
 import { initWebSocketServer } from './lib/websocket/server';
 
 const dev = process.env.NODE_ENV !== 'production';
-const hostname = 'localhost';
+const hostname = process.env.NODE_ENV === 'production' ? '0.0.0.0' : 'localhost';
 const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 // Prepare the Next.js app
