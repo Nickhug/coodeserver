@@ -1,24 +1,105 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# VVS - Void Server
+
+Authentication, subscription management, and AI service proxy for Void Editor.
+
+## Features
+
+- Authentication via Clerk
+- Database with Supabase
+- Authentication between Void editor and server
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+1. Node.js 18+ and npm
+2. A Clerk account (for authentication)
+3. A Supabase account (for database)
+
+### Installation
+
+1. Clone the repository
+2. Install dependencies:
+
+```bash
+npm install
+```
+
+3. Create a `.env.local` file with the following environment variables:
+
+```bash
+# Clerk Authentication
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_your-key-here
+CLERK_SECRET_KEY=sk_test_your-key-here
+CLERK_WEBHOOK_SECRET=whsec_your-webhook-secret
+
+# Supabase Database
+NEXT_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+
+# App URL
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+```
+
+4. Run the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+5. Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Database Setup
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+In Supabase, create the following tables:
+
+1. `users` table:
+   - `id`: uuid, primary key, default: uuid_generate_v4()
+   - `clerk_id`: text, not null
+   - `email`: text, not null
+   - `credits_remaining`: integer, not null, default: 100
+   - `subscription_tier`: text, not null, default: 'free'
+   - `created_at`: timestamptz, not null, default: now()
+   - `updated_at`: timestamptz, not null, default: now()
+
+2. `usage` table:
+   - `id`: uuid, primary key, default: uuid_generate_v4() 
+   - `user_id`: uuid, references users(id)
+   - `provider`: text, not null
+   - `model`: text, not null
+   - `tokens_used`: integer, not null
+   - `credits_used`: integer, not null
+   - `created_at`: timestamptz, not null, default: now()
+
+## Integrating with Void Editor
+
+The Void editor communicates with this server for authentication using browser cookies. 
+The auth flow works as follows:
+
+1. User authenticates on the web server (using Clerk)
+2. Server sets a `vvs_auth` cookie with user information
+3. Void editor reads this cookie and verifies with the server
+4. Void stores authentication status and checks periodically
+
+## Project Structure
+
+```
+src/
+├── app/                      # Next.js app router
+│   ├── api/                  # API routes
+│   │   ├── ai-providers/     # AI provider endpoints
+│   │   ├── usage/            # Usage analytics
+│   │   └── webhooks/         # Webhook handlers
+│   └── ...                   # Other application routes
+├── components/               # React components
+├── lib/                      # Shared library code
+│   ├── ai-providers/         # AI provider integrations
+│   ├── clerk/                # Authentication utilities
+│   ├── stripe/               # Subscription management
+│   └── supabase/             # Database utilities
+└── middleware.ts             # Authentication middleware
+```
 
 ## Learn More
 
