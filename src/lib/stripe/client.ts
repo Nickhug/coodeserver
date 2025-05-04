@@ -4,6 +4,7 @@ import { updateUserCredits } from '../supabase/client';
 // Initialize Stripe with API key - using any to bypass the version check
 // In production we would use a properly typed version
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   apiVersion: '2023-10-16' as any,
 });
 

@@ -1,3 +1,5 @@
+"use client";
+
 import { UserButton, useUser } from "@clerk/nextjs";
 import Link from "next/link";
 

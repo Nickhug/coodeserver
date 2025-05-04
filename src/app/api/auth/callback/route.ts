@@ -1,5 +1,4 @@
-import { users } from "@clerk/nextjs/server";
-import { auth } from "@clerk/nextjs/server";
+import { auth, clerkClient } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
 import { createUser, getUser } from "../../../../lib/supabase/client";
 
@@ -13,8 +12,9 @@ export async function GET(req: NextRequest) {
   }
   
   try {
-    // Get user from Clerk
-    const clerkUser = await users.getUser(userId);
+    // Get user from Clerk using clerkClient
+    const client = await clerkClient();
+    const clerkUser = await client.users.getUser(userId);
     
     if (!clerkUser || !clerkUser.emailAddresses[0]?.emailAddress) {
       return NextResponse.redirect(new URL("/?error=no_email", req.url));

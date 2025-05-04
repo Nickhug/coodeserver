@@ -37,7 +37,8 @@ export async function POST(req: NextRequest) {
         // Get the full subscription to access all data
         // Using any to bypass version issues - in production use proper typing
         const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-          apiVersion: '2023-10-16' as any,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          apiVersion: '2025-04-30.basil' as any,
         });
         
         const subscription = await stripe.subscriptions.retrieve(subscriptionId);
