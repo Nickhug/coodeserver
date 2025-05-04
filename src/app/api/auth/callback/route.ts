@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
       }),
       httpOnly: false, // Allow Void to read this cookie
       secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      sameSite: "none",
       path: "/",
       maxAge: 60 * 60 * 24 * 7 // 1 week
     });
