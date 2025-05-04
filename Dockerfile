@@ -18,16 +18,18 @@ COPY --from=deps /app/node_modules ./node_modules
 # Copy the rest of the application code
 COPY . .
 
-# Define build arguments for public environment variables
-ARG NEXT_PUBLIC_SUPABASE_URL
-ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
-ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
-# Add any other NEXT_PUBLIC_ variables needed during build
-
-# Set environment variables for build time from ARGs
-ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
-ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
-ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+# Hardcoded environment variables for build time
+ENV NEXT_PUBLIC_SUPABASE_URL=https://qmdvhigkmahvadrwqrxv.supabase.co
+ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFtZHZoaWdrbWFodmFkcndxcnh2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDYzMzgzMzYsImV4cCI6MjA2MTkxNDMzNn0.NFExNXQidZfe4hxYvmWb_2ZcUGU4OjPHOfY9p2XZods
+ENV SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFtZHZoaWdrbWFodmFkcndxcnh2Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0NjMzODMzNiwiZXhwIjoyMDYxOTE0MzM2fQ.c9tXy2ZbcoJ8xu6qtwYf-BGCLtbEREN2XnEuQhB3HYs
+ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_cHJlbWl1bS1jYWxmLTQ5LmNsZXJrLmFjY291bnRzLmRldiQ
+ENV CLERK_SECRET_KEY=sk_test_3U48NEC0fMGXnd8DnqtVbl7AZAfvZnlFdb9SnvaTIT
+ENV CLERK_WEBHOOK_SECRET=
+ENV STRIPE_SECRET_KEY=123
+ENV STRIPE_WEBHOOK_SECRET=1234
+ENV STRIPE_BASIC_PRICE_ID=1245
+ENV STRIPE_PRO_PRICE_ID=12534
+ENV STRIPE_ENTERPRISE_PRICE_ID=1241234
 
 # Build the Next.js application
 RUN npm run build
@@ -37,10 +39,18 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
-# Optionally uncomment the line below and remove the server.ts from the final image
-# RUN addgroup --system --gid 1001 nodejs
-# RUN adduser --system --uid 1001 nextjs
-# USER nextjs
+# Hardcoded environment variables for runtime
+ENV NEXT_PUBLIC_SUPABASE_URL=https://qmdvhigkmahvadrwqrxv.supabase.co
+ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFtZHZoaWdrbWFodmFkcndxcnh2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDYzMzgzMzYsImV4cCI6MjA2MTkxNDMzNn0.NFExNXQidZfe4hxYvmWb_2ZcUGU4OjPHOfY9p2XZods
+ENV SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFtZHZoaWdrbWFodmFkcndxcnh2Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0NjMzODMzNiwiZXhwIjoyMDYxOTE0MzM2fQ.c9tXy2ZbcoJ8xu6qtwYf-BGCLtbEREN2XnEuQhB3HYs
+ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_cHJlbWl1bS1jYWxmLTQ5LmNsZXJrLmFjY291bnRzLmRldiQ
+ENV CLERK_SECRET_KEY=sk_test_3U48NEC0fMGXnd8DnqtVbl7AZAfvZnlFdb9SnvaTIT
+ENV CLERK_WEBHOOK_SECRET=
+ENV STRIPE_SECRET_KEY=123
+ENV STRIPE_WEBHOOK_SECRET=1234
+ENV STRIPE_BASIC_PRICE_ID=1245
+ENV STRIPE_PRO_PRICE_ID=12534
+ENV STRIPE_ENTERPRISE_PRICE_ID=1241234
 
 # Copy necessary files from the builder stage using standalone output
 COPY --from=builder /app/public ./public
@@ -49,15 +59,8 @@ COPY --from=builder /app/.next/standalone ./
 # Copy static assets
 COPY --from=builder /app/.next/static ./.next/static
 
-# Also copy our custom server and its dependencies (like the websocket lib)
-# Standalone output might not include everything from `src` automatically
-COPY --from=builder /app/src/server.ts ./src/server.ts
-COPY --from=builder /app/src/lib/websocket/server.ts ./src/lib/websocket/server.ts
-# Copy any other direct dependencies of server.ts if needed
-
-# Expose the port the app runs on (ensure it matches the standalone server)
+# Expose the port the app runs on
 EXPOSE 3000
 
-# Define the command to run our custom server using tsx
-# Ensure tsx is in production dependencies
-CMD ["node", "node_modules/.bin/tsx", "src/server.ts"] 
+# Use the standalone Next.js server directly
+CMD ["node", "server.js"] 
