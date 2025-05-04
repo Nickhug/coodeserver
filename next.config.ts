@@ -6,8 +6,8 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
-        // Apply these headers specifically to the /api/auth/verify path for GET requests
-        source: '/api/auth/verify',
+        // Apply CORS headers to all API routes for testing
+        source: '/api/:path*', // Broaden the source path
         headers: [
           {
             key: 'Access-Control-Allow-Origin',
@@ -19,11 +19,11 @@ const nextConfig: NextConfig = {
           },
           {
             key: 'Access-Control-Allow-Methods',
-            value: 'GET, OPTIONS', // Allow GET and preflight OPTIONS
+            value: 'GET, POST, PUT, DELETE, OPTIONS', // Allow common methods
           },
           {
             key: 'Access-Control-Allow-Headers',
-            value: 'Content-Type', // Allow common headers
+            value: 'Content-Type, Authorization', // Allow common headers + Auth
           },
         ],
       },
