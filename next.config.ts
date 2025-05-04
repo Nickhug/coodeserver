@@ -6,7 +6,7 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
-        // Apply these headers specifically to the /api/auth/verify path
+        // Apply these headers specifically to the /api/auth/verify path for GET requests
         source: '/api/auth/verify',
         headers: [
           {
@@ -27,37 +27,6 @@ const nextConfig: NextConfig = {
           },
         ],
       },
-      {
-        // Handle OPTIONS preflight requests for the same path
-        source: '/api/auth/verify',
-        headers: [
-          // Add headers needed for the OPTIONS response specifically
-          {
-            key: 'Access-Control-Allow-Origin',
-            value: ALLOWED_ORIGIN,
-          },
-          {
-            key: 'Access-Control-Allow-Credentials',
-            value: 'true',
-          },
-          {
-            key: 'Access-Control-Allow-Methods',
-            value: 'GET, OPTIONS',
-          },
-          {
-            key: 'Access-Control-Allow-Headers',
-            value: 'Content-Type',
-          },
-        ],
-        // This configuration ensures that only OPTIONS requests match this entry
-        has: [
-          {
-            type: 'method',
-            key: 'Method',
-            value: 'OPTIONS',
-          }
-        ]
-      }
     ];
   },
 };
