@@ -149,4 +149,59 @@ export async function getUserUsage(userId: string, startDate?: string, endDate?:
   }
 
   return data as Usage[];
+}
+
+// --- Auth Token Functions ---
+
+export async function storeAuthToken(token: string, userId: string, expiresAt: Date) {
+  const { data, error } = await supabaseAdmin
+    .from('auth_tokens')
+    .insert({ token, user_id: userId, expires_at: expiresAt.toISOString() })
+    .select()
+    .single();
+  
+  if (error) {
+    console.error('Error storing auth token:', error);
+    return null;
+  }
+  return data;
+}
+
+export async function deleteExpiredAuthTokens() {
+  const { error } = await supabaseAdmin
+    .from('auth_tokens')
+    .delete()
+    .lt('expires_at', new Date().toISOString());
+
+  if (error) {
+    console.error('Error deleting expired auth tokens:', error);
+  }
+}
+
+export async function verifyAndConsumeAuthToken(token: string): Promise<{ userId: string | null }> {
+  const { data: tokenData, error: findError } = await supabaseAdmin
+    .from('auth_tokens')
+    .select('user_id, expires_at')
+    .eq('token', token)
+    .single();
+
+  if (findError || !tokenData) {
+    return { userId: null };
+  }
+  
+  if (new Date(tokenData.expires_at) < new Date()) {
+    await supabaseAdmin.from('auth_tokens').delete().eq('token', token);
+    return { userId: null };
+  }
+
+  const { error: deleteError } = await supabaseAdmin
+    .from('auth_tokens')
+    .delete()
+    .eq('token', token);
+
+  if (deleteError) {
+    console.error('Error deleting auth token after verification:', deleteError);
+  }
+
+  return { userId: tokenData.user_id };
 } 
