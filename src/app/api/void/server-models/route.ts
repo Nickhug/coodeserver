@@ -4,6 +4,24 @@ import { providerConfig } from '../../../../lib/ai-providers/providers';
 import { GEMINI_MODELS } from '../../../../lib/ai-providers/gemini-provider';
 import { logger } from '../../../../lib/logger';
 
+// Define allowed origin for VVS
+const ALLOWED_ORIGIN = 'vscode-file://vscode-app';
+
+/**
+ * Helper function to create a JSON response with CORS headers
+ */
+function createCorsResponse(body: object, status: number = 200) {
+  return NextResponse.json(body, {
+    status: status,
+    headers: {
+      'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
+    },
+  });
+}
+
 /**
  * API endpoint to list models available on the server
  * This allows clients to use server-provided models without needing their own API keys
@@ -20,9 +38,9 @@ export async function GET(req: NextRequest) {
         cookies: req.cookies.toString()
       });
 
-      return NextResponse.json(
+      return createCorsResponse(
         { error: 'Unauthorized' },
-        { status: 401 }
+        401
       );
     }
 
@@ -80,14 +98,21 @@ export async function GET(req: NextRequest) {
     });
 
     // Return the list of available providers and models
-    return NextResponse.json({
+    return createCorsResponse({
       providers: availableProviders
     });
   } catch (error) {
     logger.error('Error in server-models endpoint:', error);
-    return NextResponse.json(
+    return createCorsResponse(
       { error: 'Internal server error' },
-      { status: 500 }
+      500
     );
   }
+}
+
+/**
+ * Handle OPTIONS requests for CORS preflight
+ */
+export async function OPTIONS() {
+  return createCorsResponse({}, 200);
 }

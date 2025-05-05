@@ -10,15 +10,15 @@ const ALLOWED_ORIGIN = 'vscode-file://vscode-app';
  * Note: This might become less relevant if verify is only used by browser
  */
 function createCorsResponse(body: object, status: number) {
-  // If needed, add logic here to only add CORS for specific requests 
+  // If needed, add logic here to only add CORS for specific requests
   // or remove if verify is truly browser-only via Clerk session.
   return NextResponse.json(body, {
     status: status,
     headers: {
-      'Access-Control-Allow-Origin': ALLOWED_ORIGIN, // Keep for now 
+      'Access-Control-Allow-Origin': ALLOWED_ORIGIN, // Keep for now
       'Access-Control-Allow-Credentials': 'true',
       'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
     },
   });
 }
@@ -27,30 +27,30 @@ function createCorsResponse(body: object, status: number) {
  * API route that verifies a user's authentication status via Clerk session.
  * Primarily for browser contexts or requests where Clerk session is available.
  */
-export async function GET(/* Removed req: NextRequest */) { 
+export async function GET(/* Removed req: NextRequest */) {
   // Removed OPTIONS check as headers config handles it
-  
+
   try {
-    // Check Clerk session 
+    // Check Clerk session
     const session = await auth();
     const clerkUserId = session?.userId;
 
     if (!clerkUserId) {
         return createCorsResponse(
           { authenticated: false, message: "User not authenticated via Clerk session" },
-          401 
+          401
         );
     }
-    
+
     const dbUser = await getUser(clerkUserId);
     if (!dbUser) {
         return createCorsResponse(
           { authenticated: false, message: "User found in auth provider but not in database" },
-          404 
+          404
         );
     }
 
-    return createCorsResponse({ 
+    return createCorsResponse({
         authenticated: true,
         user: {
         id: dbUser.id,
@@ -64,7 +64,14 @@ export async function GET(/* Removed req: NextRequest */) {
     console.error("Verify auth error:", error);
     return createCorsResponse(
       { authenticated: false, message: "Server error during authentication verification" },
-      500 
+      500
     );
   }
-} 
+}
+
+/**
+ * Handle OPTIONS requests for CORS preflight
+ */
+export async function OPTIONS() {
+  return createCorsResponse({}, 200);
+}
