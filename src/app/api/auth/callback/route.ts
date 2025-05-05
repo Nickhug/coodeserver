@@ -1,29 +1,12 @@
-import { createClerkClient } from "@clerk/nextjs/server";
+import { auth } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
 import { createUser, getUser, storeAuthToken, deleteExpiredAuthTokens } from "../../../../lib/supabase/client";
 import crypto from 'crypto';
-import { cookies } from "next/headers";
 
 export async function GET(req: NextRequest) {
-  // Get the session token from the URL or cookies
-  const cookieStore = await cookies();
-  const sessionToken = req.nextUrl.searchParams.get('__clerk_handshake') || cookieStore.get("__session")?.value;
-
-  if (!sessionToken) {
-    return NextResponse.redirect(new URL("/?error=no_session", req.url));
-  }
-
   try {
-    // Create a Clerk client
-    const clerk = createClerkClient({
-      secretKey: process.env.CLERK_SECRET_KEY
-    });
-
-    // Verify the session token
-    const session = await clerk.sessions.verifySession(sessionToken, {
-      secretKey: process.env.CLERK_SECRET_KEY
-    });
-    const userId = session.userId;
+    // Get the user ID from the auth helper
+    const { userId } = await auth();
 
     // Check for connection ID from WebSocket
     const connectionId = req.nextUrl.searchParams.get('connection_id');
@@ -33,17 +16,9 @@ export async function GET(req: NextRequest) {
       return NextResponse.redirect(new URL("/?error=auth_failed", req.url));
     }
 
-    // Get user from Clerk
-    const clerkUser = await clerk.users.getUser(userId);
-
-    if (!clerkUser || !clerkUser.emailAddresses[0]?.emailAddress) {
-      return NextResponse.redirect(new URL("/?error=no_email", req.url));
-    }
-
-    const email = clerkUser.emailAddresses[0].emailAddress;
-
-    // Check if user exists in our database
+    // Get user from database
     let dbUser = await getUser(userId);
+    const email = "user@example.com"; // Default email
 
     // If not, create user in our DB
     if (!dbUser) {
