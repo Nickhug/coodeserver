@@ -1,7 +1,5 @@
 import { auth } from '@clerk/nextjs/server';
 import { getUser } from '../supabase/client';
-import { verifyToken } from '@clerk/backend';
-import { NextRequest } from 'next/server';
 
 /**
  * Get the auth session from Clerk
@@ -11,49 +9,19 @@ export async function getAuthSession() {
 }
 
 /**
- * Get the current user from our database based on Clerk session or token
- * Supports both cookie-based and token-based authentication
+ * Get the current user from our database based on Clerk session
+ * Uses cookie-based authentication
  */
-export async function getCurrentUserWithDb(req?: NextRequest) {
-  let clerkId: string | null = null;
+export async function getCurrentUserWithDb() {
+  // Use session-based auth (cookies)
+  console.log("Attempting session-based authentication");
+  const session = await auth();
+  const clerkId = session?.userId || null;
 
-  // First try token-based auth if request is provided and has Authorization header
-  if (req) {
-    const authHeader = req.headers.get('authorization');
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7); // Remove 'Bearer ' prefix
-      console.log("Attempting token-based authentication");
-
-      try {
-        // Verify the token using Clerk's Backend SDK
-        const claims = await verifyToken(token, {
-          secretKey: process.env.CLERK_SECRET_KEY,
-        });
-
-        // Extract user ID from the verified token
-        clerkId = claims.sub;
-        console.log("Token-based authentication successful for user:", clerkId);
-      } catch (tokenError) {
-        console.error("Token verification failed:", tokenError);
-        // Continue to try session-based auth
-      }
-    }
-  }
-
-  // If token auth failed or no request provided, try session-based auth
-  if (!clerkId) {
-    console.log("Attempting session-based authentication");
-    const session = await auth();
-    clerkId = session?.userId || null;
-
-    if (clerkId) {
-      console.log("Session-based authentication successful for user:", clerkId);
-    }
-  }
-
-  // If both auth methods failed, return null
-  if (!clerkId) {
-    console.log("Authentication failed: No valid session or token");
+  if (clerkId) {
+    console.log("Session-based authentication successful for user:", clerkId);
+  } else {
+    console.log("Authentication failed: No valid session");
     return null;
   }
 
