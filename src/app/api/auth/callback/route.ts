@@ -20,7 +20,9 @@ export async function GET(req: NextRequest) {
     });
 
     // Verify the session token
-    const session = await clerk.sessions.verifySession(sessionToken);
+    const session = await clerk.sessions.verifySession(sessionToken, {
+      secretKey: process.env.CLERK_SECRET_KEY
+    });
     const userId = session.userId;
 
     // Check for connection ID from WebSocket

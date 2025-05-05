@@ -23,7 +23,9 @@ export async function POST(req: NextRequest) {
 
     try {
       // Verify the session token
-      const session = await clerk.sessions.verifySession(sessionToken);
+      const session = await clerk.sessions.verifySession(sessionToken, {
+        secretKey: process.env.CLERK_SECRET_KEY
+      });
       const userId = session.userId;
 
       if (!userId) {
