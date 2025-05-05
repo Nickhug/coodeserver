@@ -6,7 +6,8 @@ import { cookies } from "next/headers";
 
 export async function GET(req: NextRequest) {
   // Get the session token from the URL or cookies
-  const sessionToken = req.nextUrl.searchParams.get('__clerk_handshake') || cookies().get("__session")?.value;
+  const cookieStore = await cookies();
+  const sessionToken = req.nextUrl.searchParams.get('__clerk_handshake') || cookieStore.get("__session")?.value;
 
   if (!sessionToken) {
     return NextResponse.redirect(new URL("/?error=no_session", req.url));

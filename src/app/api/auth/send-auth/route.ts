@@ -9,7 +9,8 @@ import { cookies, headers } from "next/headers";
 export async function POST(req: NextRequest) {
   try {
     // Get the session token from cookies
-    const sessionToken = cookies().get("__session")?.value;
+    const cookieStore = await cookies();
+    const sessionToken = cookieStore.get("__session")?.value;
 
     if (!sessionToken) {
       return NextResponse.json({ success: false, message: "No session token found" }, { status: 401 });
