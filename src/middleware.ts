@@ -5,6 +5,8 @@ export const config = {
   matcher: [
     // Include all API routes except WebSocket
     '/api/((?!ws).*)',
+    // Explicitly include auth routes to ensure they're processed by Clerk middleware
+    '/api/auth/:path*',
     // Include all other routes except static files
     '/((?!_next/static|_next/image|favicon.ico).*)',
   ],
