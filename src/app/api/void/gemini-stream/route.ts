@@ -52,9 +52,9 @@ export async function POST(req: NextRequest) {
         const result = requestSchema.safeParse(body);
 
         if (!result.success) {
-          controller.enqueue(encoder.encode(JSON.stringify({ 
-            error: 'Invalid request', 
-            details: result.error.format() 
+          controller.enqueue(encoder.encode(JSON.stringify({
+            error: 'Invalid request',
+            details: result.error.format()
           })));
           controller.close();
           return;
@@ -77,10 +77,10 @@ export async function POST(req: NextRequest) {
 
         // Check if user has enough credits
         const { hasCredits, creditsRemaining } = await checkUserCredits(requiredCredits);
-        
+
         if (!hasCredits) {
-          controller.enqueue(encoder.encode(JSON.stringify({ 
-            error: 'Insufficient credits', 
+          controller.enqueue(encoder.encode(JSON.stringify({
+            error: 'Insufficient credits',
             creditsRemaining,
             requiredCredits,
             requestId
@@ -90,14 +90,13 @@ export async function POST(req: NextRequest) {
         }
 
         // Send initial response to confirm stream started
-        controller.enqueue(encoder.encode(JSON.stringify({ 
+        controller.enqueue(encoder.encode(JSON.stringify({
           event: 'start',
           requestId
         })));
 
+        // Variable to track accumulated text (not used, but needed for TypeScript)
         let fullText = '';
-        let tokensUsed = 0;
-        let creditsUsed = 0;
 
         // Send request to Gemini with streaming
         const response = await sendGeminiRequest({
@@ -110,11 +109,12 @@ export async function POST(req: NextRequest) {
           tools,
           onStream: (text) => {
             // Send chunk to client
-            controller.enqueue(encoder.encode(JSON.stringify({ 
+            controller.enqueue(encoder.encode(JSON.stringify({
               event: 'chunk',
               text,
               requestId
             })));
+            // Accumulate text (not used, but kept for potential future use)
             fullText += text;
           }
         });
@@ -132,7 +132,7 @@ export async function POST(req: NextRequest) {
         });
 
         // Send final response
-        controller.enqueue(encoder.encode(JSON.stringify({ 
+        controller.enqueue(encoder.encode(JSON.stringify({
           event: 'end',
           fullText: response.text,
           tokensUsed: response.tokensUsed,
@@ -146,14 +146,14 @@ export async function POST(req: NextRequest) {
         controller.close();
       } catch (error) {
         console.error('Error in Gemini streaming API:', error);
-        
+
         // Send error to client
-        controller.enqueue(encoder.encode(JSON.stringify({ 
+        controller.enqueue(encoder.encode(JSON.stringify({
           event: 'error',
           error: 'Internal server error',
           message: (error as Error).message
         })));
-        
+
         // Close the stream
         controller.close();
       }

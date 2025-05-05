@@ -3,12 +3,27 @@
  * This file contains the implementation of the Gemini provider API
  */
 
-import { GoogleGenerativeAI, GenerativeModel, Tool, SchemaType, FunctionDeclaration, FunctionDeclarationSchemaProperty, Content, Part } from '@google/generative-ai';
+import { GoogleGenerativeAI, Tool, SchemaType, Content, Part } from '@google/generative-ai';
 import { LLMResponse } from './providers';
 import { generateUuid } from '../../utils/uuid';
 
+// Define Gemini model types
+export type GeminiModelName =
+  | 'gemini-1.5-flash'
+  | 'gemini-1.5-pro'
+  | 'gemini-1.5-flash-8b'
+  | 'gemini-2.5-flash-preview-04-17'
+  | 'gemini-2.5-pro-exp-03-25';
+
+// Define model configuration type
+export type GeminiModelConfig = {
+  contextWindow: number;
+  maxOutputTokens: number;
+  tokenMultiplier: number;
+};
+
 // Define the available Gemini models
-export const GEMINI_MODELS = {
+export const GEMINI_MODELS: Record<GeminiModelName, GeminiModelConfig> = {
   'gemini-1.5-flash': {
     contextWindow: 1_048_576,
     maxOutputTokens: 8_192,
@@ -36,6 +51,21 @@ export const GEMINI_MODELS = {
   },
 };
 
+// Helper function to get model config with fallback for unknown models
+function getModelConfig(model: string): GeminiModelConfig {
+  // Check if the model is in our predefined list
+  if (model in GEMINI_MODELS) {
+    return GEMINI_MODELS[model as GeminiModelName];
+  }
+
+  // Default config for unknown models
+  return {
+    contextWindow: 1_048_576,
+    maxOutputTokens: 8_192,
+    tokenMultiplier: 1.0,
+  };
+}
+
 // Estimate token count (very rough estimate)
 function estimateTokenCount(text: string): number {
   return Math.ceil(text.length / 4);
@@ -57,7 +87,7 @@ function convertToGeminiMessage(message: { role: string; content: string }): Con
  */
 export function fileToGeminiPart(file: Express.Multer.File): Part {
   const mimeType = file.mimetype;
-  
+
   // For images
   if (mimeType.startsWith('image/')) {
     return {
@@ -67,17 +97,17 @@ export function fileToGeminiPart(file: Express.Multer.File): Part {
       }
     };
   }
-  
+
   // For text files, convert to text
-  if (mimeType.startsWith('text/') || 
-      mimeType === 'application/json' || 
+  if (mimeType.startsWith('text/') ||
+      mimeType === 'application/json' ||
       mimeType === 'application/xml' ||
       mimeType === 'application/javascript') {
     return {
       text: file.buffer.toString('utf-8')
     };
   }
-  
+
   // Default to binary data
   return {
     inlineData: {
@@ -102,45 +132,53 @@ export async function sendGeminiRequest({
   onStream = null,
 }: {
   apiKey: string;
-  model: string;
+  model: string; // Can be any Gemini model, including ones not in our predefined list
   messages: { role: string; content: string }[];
   systemMessage?: string;
   temperature?: number;
   maxTokens?: number;
   files?: Express.Multer.File[];
-  tools?: any[] | null;
+  tools?: { name: string; description: string; parameters: Record<string, { description: string }> }[] | null;
   onStream?: ((text: string) => void) | null;
 }): Promise<LLMResponse> {
   try {
     // Initialize the Gemini API
     const genAI = new GoogleGenerativeAI(apiKey);
-    
+
     // Get the generative model
     const generativeModel = genAI.getGenerativeModel({
       model: model,
       systemInstruction: systemMessage,
       generationConfig: {
         temperature: temperature,
-        maxOutputTokens: maxTokens || GEMINI_MODELS[model]?.maxOutputTokens || 8192,
+        maxOutputTokens: maxTokens || getModelConfig(model).maxOutputTokens,
       },
     });
 
     // Convert messages to Gemini format
     const geminiMessages: Content[] = messages.map(convertToGeminiMessage);
-    
+
     // Handle files if present
     if (files.length > 0) {
       // For the first user message, add files as parts
       for (let i = 0; i < geminiMessages.length; i++) {
         if (geminiMessages[i].role === 'user') {
-          const parts = [{ text: geminiMessages[i].parts[0].text }];
-          
-          // Add file parts
+          // Get the original text
+          const originalText = geminiMessages[i].parts[0].text || '';
+
+          // Create a new array of parts with the text first
+          const newParts: Part[] = [{ text: originalText }];
+
+          // Add file parts - convert them to the right format
           for (const file of files) {
-            parts.push(fileToGeminiPart(file));
+            const filePart = fileToGeminiPart(file);
+            // Explicitly cast to any to bypass type checking
+            // This is safe because we know the structure is compatible
+            newParts.push(filePart as any);
           }
-          
-          geminiMessages[i].parts = parts;
+
+          // Replace the parts array
+          geminiMessages[i].parts = newParts;
           break; // Only add to the first user message
         }
       }
@@ -149,23 +187,26 @@ export async function sendGeminiRequest({
     // Handle tools if present
     let toolsConfig = {};
     if (tools && tools.length > 0) {
-      const geminiTools: Tool[] = [{
+      // Convert tools to the format expected by Gemini
+      // We're using any here to bypass TypeScript's strict checking
+      // This is necessary because the Gemini API has complex types
+      const geminiTools: any[] = [{
         functionDeclarations: tools.map(tool => ({
           name: tool.name,
           description: tool.description,
           parameters: {
             type: SchemaType.OBJECT,
-            properties: Object.entries(tool.parameters).reduce((acc, [key, value]) => {
-              acc[key] = { 
-                type: SchemaType.STRING, 
-                description: value.description 
+            properties: Object.entries(tool.parameters).reduce((acc: any, [key, value]) => {
+              acc[key] = {
+                type: SchemaType.STRING,
+                description: value.description
               };
               return acc;
             }, {})
           }
         }))
       }];
-      
+
       toolsConfig = { tools: geminiTools };
     }
 
@@ -174,7 +215,7 @@ export async function sendGeminiRequest({
       let fullText = '';
       let toolName = '';
       let toolParamsStr = '';
-      
+
       const result = await generativeModel.generateContentStream({
         contents: geminiMessages,
         ...toolsConfig,
@@ -184,7 +225,7 @@ export async function sendGeminiRequest({
       for await (const chunk of result.stream) {
         const newText = chunk.text() || '';
         fullText += newText;
-        
+
         // Check for function calls
         const functionCalls = chunk.functionCalls();
         if (functionCalls && functionCalls.length > 0) {
@@ -192,7 +233,7 @@ export async function sendGeminiRequest({
           toolName = functionCall.name || '';
           toolParamsStr = JSON.stringify(functionCall.args || {});
         }
-        
+
         // Call the stream callback
         onStream(newText);
       }
@@ -201,9 +242,9 @@ export async function sendGeminiRequest({
       const inputTokens = estimateTokenCount(messages.map(m => m.content).join(' '));
       const outputTokens = estimateTokenCount(fullText);
       const totalTokens = inputTokens + outputTokens;
-      
+
       // Calculate credits used
-      const tokenMultiplier = GEMINI_MODELS[model]?.tokenMultiplier || 1.0;
+      const tokenMultiplier = getModelConfig(model).tokenMultiplier;
       const creditsUsed = (totalTokens / 1000) * tokenMultiplier;
 
       return {
@@ -216,17 +257,17 @@ export async function sendGeminiRequest({
           id: generateUuid()
         } : undefined
       };
-    } 
+    }
     // Non-streaming request
     else {
       const result = await generativeModel.generateContent({
         contents: geminiMessages,
         ...toolsConfig,
       });
-      
+
       const response = result.response;
       const text = response.text();
-      
+
       // Check for function calls
       let toolCall;
       const functionCalls = response.functionCalls();
@@ -238,14 +279,14 @@ export async function sendGeminiRequest({
           id: generateUuid()
         };
       }
-      
+
       // Calculate token usage
       const inputTokens = estimateTokenCount(messages.map(m => m.content).join(' '));
       const outputTokens = estimateTokenCount(text);
       const totalTokens = inputTokens + outputTokens;
-      
+
       // Calculate credits used
-      const tokenMultiplier = GEMINI_MODELS[model]?.tokenMultiplier || 1.0;
+      const tokenMultiplier = getModelConfig(model).tokenMultiplier;
       const creditsUsed = (totalTokens / 1000) * tokenMultiplier;
 
       return {

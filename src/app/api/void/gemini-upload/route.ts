@@ -4,22 +4,12 @@ import { checkUserCredits } from '../../../../lib/clerk/auth';
 import { updateUserCredits } from '../../../../lib/supabase/client';
 import { sendGeminiRequest } from '../../../../lib/ai-providers/gemini-provider';
 import { logUsage } from '../../../../lib/supabase/client';
-import multer from 'multer';
 import { NextResponse } from 'next/server';
-
-// Configure multer for memory storage
-const upload = multer({ 
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit
-    files: 5 // Maximum 5 files
-  }
-});
 
 // Helper function to parse multipart form data
 async function parseMultipartForm(req: NextRequest) {
   const formData = await req.formData();
-  
+
   // Extract files
   const files: Express.Multer.File[] = [];
   for (const entry of formData.entries()) {
@@ -27,7 +17,7 @@ async function parseMultipartForm(req: NextRequest) {
     if (name.startsWith('file') && value instanceof Blob) {
       const file = value as File;
       const buffer = Buffer.from(await file.arrayBuffer());
-      
+
       files.push({
         fieldname: name,
         originalname: file.name,
@@ -41,7 +31,7 @@ async function parseMultipartForm(req: NextRequest) {
       } as Express.Multer.File);
     }
   }
-  
+
   // Extract other form fields
   const model = formData.get('model') as string;
   const prompt = formData.get('prompt') as string;
@@ -49,7 +39,7 @@ async function parseMultipartForm(req: NextRequest) {
   const temperature = parseFloat(formData.get('temperature') as string) || 0.7;
   const maxTokens = parseInt(formData.get('maxTokens') as string) || undefined;
   const requestId = formData.get('requestId') as string;
-  
+
   // Parse tools if present
   let tools;
   const toolsJson = formData.get('tools') as string;
@@ -60,7 +50,7 @@ async function parseMultipartForm(req: NextRequest) {
       console.error('Error parsing tools JSON:', error);
     }
   }
-  
+
   return {
     model,
     prompt,
@@ -113,11 +103,11 @@ export async function POST(req: NextRequest) {
 
     // Check if user has enough credits
     const { hasCredits, creditsRemaining } = await checkUserCredits(requiredCredits);
-    
+
     if (!hasCredits) {
       return NextResponse.json(
-        { 
-          error: 'Insufficient credits', 
+        {
+          error: 'Insufficient credits',
           creditsRemaining,
           requiredCredits,
           requestId
@@ -162,10 +152,10 @@ export async function POST(req: NextRequest) {
 
   } catch (error) {
     console.error('Error in Gemini upload API:', error);
-    
+
     return NextResponse.json(
-      { 
-        error: 'Internal server error', 
+      {
+        error: 'Internal server error',
         message: (error as Error).message
       },
       { status: 500 }
