@@ -1,24 +1,37 @@
-import { auth, clerkClient } from "@clerk/nextjs/server";
+import { createClerkClient } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
 import { createUser, getUser, storeAuthToken, deleteExpiredAuthTokens } from "../../../../lib/supabase/client";
 import crypto from 'crypto';
+import { cookies } from "next/headers";
 
 export async function GET(req: NextRequest) {
-  // Use auth() to get the user's ID
-  const { userId } = await auth();
+  // Get the session token from the URL or cookies
+  const sessionToken = req.nextUrl.searchParams.get('__clerk_handshake') || cookies().get("__session")?.value;
 
-  // Check for connection ID from WebSocket
-  const connectionId = req.nextUrl.searchParams.get('connection_id');
-
-  // If no user ID, redirect to homepage with error
-  if (!userId) {
-    return NextResponse.redirect(new URL("/?error=auth_failed", req.url));
+  if (!sessionToken) {
+    return NextResponse.redirect(new URL("/?error=no_session", req.url));
   }
 
   try {
-    // Get user from Clerk using clerkClient
-    const client = await clerkClient();
-    const clerkUser = await client.users.getUser(userId);
+    // Create a Clerk client
+    const clerk = createClerkClient({
+      secretKey: process.env.CLERK_SECRET_KEY
+    });
+
+    // Verify the session token
+    const session = await clerk.sessions.verifySession(sessionToken);
+    const userId = session.userId;
+
+    // Check for connection ID from WebSocket
+    const connectionId = req.nextUrl.searchParams.get('connection_id');
+
+    // If no user ID, redirect to homepage with error
+    if (!userId) {
+      return NextResponse.redirect(new URL("/?error=auth_failed", req.url));
+    }
+
+    // Get user from Clerk
+    const clerkUser = await clerk.users.getUser(userId);
 
     if (!clerkUser || !clerkUser.emailAddresses[0]?.emailAddress) {
       return NextResponse.redirect(new URL("/?error=no_email", req.url));
