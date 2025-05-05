@@ -13,8 +13,8 @@ function createCorsResponse(body: object, status: number) {
     headers: {
       'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
       'Access-Control-Allow-Credentials': 'true',
-      'Access-Control-Allow-Methods': 'POST, OPTIONS', // Allow POST and preflight OPTIONS
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD', // Allow all methods
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, X-Void-Session-Token',
     },
   });
 }
@@ -63,7 +63,7 @@ export async function POST(req: NextRequest) {
 
     console.log(`[claim-token] Successfully retrieved user: ${dbUser.id} (${dbUser.email})`);
 
-    // Return authenticated status and user data
+    // Return authenticated status, user data, and session token
     return createCorsResponse({
         authenticated: true,
         user: {
@@ -71,7 +71,8 @@ export async function POST(req: NextRequest) {
             email: dbUser.email,
             credits: dbUser.credits_remaining,
             subscription: dbUser.subscription_tier
-        }
+        },
+        sessionToken: token // Return the token as a session token
     }, 200);
 
   } catch (error) {

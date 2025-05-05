@@ -16,8 +16,8 @@ function createCorsResponse(body: object, status: number = 200) {
     headers: {
       'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
       'Access-Control-Allow-Credentials': 'true',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, X-Void-Session-Token',
     },
   });
 }
@@ -28,8 +28,8 @@ function createCorsResponse(body: object, status: number = 200) {
  */
 export async function GET(req: NextRequest) {
   try {
-    // Authenticate user - use cookie-based authentication
-    const userInfo = await getCurrentUserWithDb();
+    // Authenticate user - pass request to support custom token-based auth
+    const userInfo = await getCurrentUserWithDb(req);
     if (!userInfo) {
       // Log the headers for debugging
       const headers = Object.fromEntries(req.headers.entries());
