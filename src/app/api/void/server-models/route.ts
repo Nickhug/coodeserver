@@ -28,8 +28,8 @@ function createCorsResponse(body: object, status: number = 200) {
  */
 export async function GET(req: NextRequest) {
   try {
-    // Authenticate user
-    const userInfo = await getCurrentUserWithDb();
+    // Authenticate user - pass request to support token-based auth
+    const userInfo = await getCurrentUserWithDb(req);
     if (!userInfo) {
       // Log the headers for debugging
       const headers = Object.fromEntries(req.headers.entries());

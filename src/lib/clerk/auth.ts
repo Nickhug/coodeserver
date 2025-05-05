@@ -1,5 +1,7 @@
 import { auth } from '@clerk/nextjs/server';
 import { getUser } from '../supabase/client';
+import { verifyToken } from '@clerk/backend';
+import { NextRequest } from 'next/server';
 
 /**
  * Get the auth session from Clerk
@@ -9,21 +11,56 @@ export async function getAuthSession() {
 }
 
 /**
- * Get the current user from our database based on Clerk session
- * Assumes the user exists in our DB (created via webhook)
+ * Get the current user from our database based on Clerk session or token
+ * Supports both cookie-based and token-based authentication
  */
-export async function getCurrentUserWithDb() {
-  const session = await auth();
-  const clerkId = session?.userId;
-  
+export async function getCurrentUserWithDb(req?: NextRequest) {
+  let clerkId: string | null = null;
+
+  // First try token-based auth if request is provided and has Authorization header
+  if (req) {
+    const authHeader = req.headers.get('authorization');
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+      console.log("Attempting token-based authentication");
+
+      try {
+        // Verify the token using Clerk's Backend SDK
+        const claims = await verifyToken(token, {
+          secretKey: process.env.CLERK_SECRET_KEY,
+        });
+
+        // Extract user ID from the verified token
+        clerkId = claims.sub;
+        console.log("Token-based authentication successful for user:", clerkId);
+      } catch (tokenError) {
+        console.error("Token verification failed:", tokenError);
+        // Continue to try session-based auth
+      }
+    }
+  }
+
+  // If token auth failed or no request provided, try session-based auth
   if (!clerkId) {
+    console.log("Attempting session-based authentication");
+    const session = await auth();
+    clerkId = session?.userId || null;
+
+    if (clerkId) {
+      console.log("Session-based authentication successful for user:", clerkId);
+    }
+  }
+
+  // If both auth methods failed, return null
+  if (!clerkId) {
+    console.log("Authentication failed: No valid session or token");
     return null;
   }
 
   try {
     // Try to get existing user from our database
     const dbUser = await getUser(clerkId);
-    
+
     if (!dbUser) {
       // User should have been created by the webhook
       // Log an error or handle appropriately
@@ -47,7 +84,7 @@ export async function getCurrentUserWithDb() {
  */
 export async function checkUserCredits(requiredCredits: number = 1) {
   const userInfo = await getCurrentUserWithDb();
-  
+
   if (!userInfo || !userInfo.dbUser) {
     return {
       hasCredits: false,
@@ -67,10 +104,10 @@ export async function checkUserCredits(requiredCredits: number = 1) {
  */
 export async function requireAuth() {
   const session = await auth();
-  
+
   if (!session?.userId) {
     throw new Error('Authentication required');
   }
-  
+
   return session;
-} 
+}
