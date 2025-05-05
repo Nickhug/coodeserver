@@ -29,11 +29,11 @@ function createCorsResponse(body: object, status: number) {
  */
 export async function GET(req: NextRequest) {
   try {
-    // Check for custom session token header
-    const sessionToken = req.headers.get('x-void-session-token');
+    // Check for custom session token in query parameter or header
+    const sessionToken = req.nextUrl.searchParams.get('token') || req.headers.get('x-void-session-token');
     let clerkUserId: string | null = null;
 
-    // First try custom token-based auth if header is present
+    // First try custom token-based auth if token is present
     if (sessionToken) {
       console.log("Attempting custom token-based authentication");
 

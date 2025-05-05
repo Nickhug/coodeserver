@@ -16,9 +16,9 @@ export async function getAuthSession() {
 export async function getCurrentUserWithDb(req?: NextRequest) {
   let clerkId: string | null = null;
 
-  // First try custom token-based auth if request is provided and has the custom header
+  // First try custom token-based auth if request is provided and has the token
   if (req) {
-    const sessionToken = req.headers.get('x-void-session-token');
+    const sessionToken = req.nextUrl.searchParams.get('token') || req.headers.get('x-void-session-token');
     if (sessionToken) {
       console.log("Attempting custom token-based authentication");
 
