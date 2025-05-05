@@ -13,12 +13,21 @@ export async function GET(req: NextRequest) {
     // Authenticate user
     const userInfo = await getCurrentUserWithDb();
     if (!userInfo) {
-      logger.warn('Unauthorized access attempt to server-models endpoint');
+      // Log the headers for debugging
+      const headers = Object.fromEntries(req.headers.entries());
+      logger.warn('Unauthorized access attempt to server-models endpoint', {
+        headers: JSON.stringify(headers, null, 2),
+        cookies: req.cookies.toString()
+      });
+
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }
       );
     }
+
+    // Log successful authentication
+    logger.info(`Authenticated user accessing server-models endpoint: ${userInfo.dbUser.id}`);
 
     // Get available providers and their models
     const availableProviders: Record<string, {
