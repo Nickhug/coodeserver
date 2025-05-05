@@ -1,68 +1,69 @@
-# Stage 1: Install dependencies
-FROM node:20-alpine AS deps
+# Dockerfile for Next.js app
+
+# 1. Install dependencies only when needed
+FROM node:20-alpine AS base
+
+# Prevent node from writing cache files to disk
+ENV NODE_ENV=production
+
 WORKDIR /app
 
-# Copy package.json and package-lock.json
-COPY package.json package-lock.json ./
+# Install dependencies based on the preferred package manager
+COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* ./
+RUN \
+    if [ -f yarn.lock ]; then yarn --frozen-lockfile; \
+    elif [ -f package-lock.json ]; then npm ci; \
+    elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm i --frozen-lockfile; \
+    else echo "Lockfile not found." && exit 1; \
+    fi
 
-# Install dependencies (use npm ci for consistency)
-RUN npm ci
-
-# Stage 2: Build the application
-FROM node:20-alpine AS builder
+# 2. Build the Next.js application
+FROM base AS builder
 WORKDIR /app
-
-# Copy dependencies from the previous stage
-COPY --from=deps /app/node_modules ./node_modules
-
-# Copy the rest of the application code
+COPY --from=base /app/node_modules ./node_modules
 COPY . .
 
-# Hardcoded environment variables for build time
-ENV NEXT_PUBLIC_APP_URL=https://coodeserver.fly.dev
-ENV NEXT_PUBLIC_SUPABASE_URL=https://qmdvhigkmahvadrwqrxv.supabase.co
-ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFtZHZoaWdrbWFodmFkcndxcnh2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDYzMzgzMzYsImV4cCI6MjA2MTkxNDMzNn0.NFExNXQidZfe4hxYvmWb_2ZcUGU4OjPHOfY9p2XZods
-ENV SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFtZHZoaWdrbWFodmFkcndxcnh2Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0NjMzODMzNiwiZXhwIjoyMDYxOTE0MzM2fQ.c9tXy2ZbcoJ8xu6qtwYf-BGCLtbEREN2XnEuQhB3HYs
+# Set build-time secrets
+# Ensure NEXT_PUBLIC_ variables are available at build time
+# You might need to pass these using Docker build args or ensure they are in the build environment
+ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_cHJlbWl1bS1jYWxmLTQ5LmNsZXJrLmFjY291bnRzLmRldiQ
-ENV CLERK_SECRET_KEY=sk_test_3U48NEC0fMGXnd8DnqtVbl7AZAfvZnlFdb9SnvaTIT
-ENV CLERK_WEBHOOK_SECRET=
-ENV STRIPE_SECRET_KEY=123
-ENV STRIPE_WEBHOOK_SECRET=1234
-ENV STRIPE_BASIC_PRICE_ID=1245
-ENV STRIPE_PRO_PRICE_ID=12534
-ENV STRIPE_ENTERPRISE_PRICE_ID=1241234
 
-# Build the Next.js application
+# Next.js collects completely anonymous telemetry data about general usage.
+# Learn more here: https://nextjs.org/telemetry
 RUN npm run build
 
-# Stage 3: Production image
-FROM node:20-alpine AS runner
+# 3. Production image, copy all the files and run next
+FROM base AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
-# Hardcoded environment variables for runtime
-ENV NEXT_PUBLIC_APP_URL=https://coodeserver.fly.dev
-ENV NEXT_PUBLIC_SUPABASE_URL=https://qmdvhigkmahvadrwqrxv.supabase.co
-ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFtZHZoaWdrbWFodmFkcndxcnh2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDYzMzgzMzYsImV4cCI6MjA2MTkxNDMzNn0.NFExNXQidZfe4hxYvmWb_2ZcUGU4OjPHOfY9p2XZods
-ENV SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFtZHZoaWdrbWFodmFkcndxcnh2Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0NjMzODMzNiwiZXhwIjoyMDYxOTE0MzM2fQ.c9tXy2ZbcoJ8xu6qtwYf-BGCLtbEREN2XnEuQhB3HYs
-ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_cHJlbWl1bS1jYWxmLTQ5LmNsZXJrLmFjY291bnRzLmRldiQ
-ENV CLERK_SECRET_KEY=sk_test_3U48NEC0fMGXnd8DnqtVbl7AZAfvZnlFdb9SnvaTIT
-ENV CLERK_WEBHOOK_SECRET=
-ENV STRIPE_SECRET_KEY=123
-ENV STRIPE_WEBHOOK_SECRET=1234
-ENV STRIPE_BASIC_PRICE_ID=1245
-ENV STRIPE_PRO_PRICE_ID=12534
-ENV STRIPE_ENTERPRISE_PRICE_ID=1241234
+ENV NEXT_TELEMETRY_DISABLED 1
 
-# Copy necessary files from the builder stage using standalone output
 COPY --from=builder /app/public ./public
-# Copy the standalone server
-COPY --from=builder /app/.next/standalone ./ 
-# Copy static assets
-COPY --from=builder /app/.next/static ./.next/static
+COPY next.config.js ./
+COPY tsconfig.json ./
 
-# Expose the port the app runs on
 EXPOSE 3000
+ENV PORT 3000
 
-# Use the standalone Next.js server directly
-CMD ["node", "server.js"] 
+# Automatically leverage output traces to reduce image size
+# https://nextjs.org/docs/advanced-features/output-file-tracing
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static/
+
+# Copy server.js directly from the source directory
+COPY --chown=nextjs:nodejs server.js ./
+
+# Make sure server.js exists and is executable
+RUN ls -la && chmod +x server.js
+
+# Install ws package for WebSocket support
+RUN npm install ws@8.18.2 @clerk/backend@1.31.2 --no-save
+
+# Set the correct user for running the application
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+USER nextjs
+
+CMD ["node", "server.js"]
