@@ -1,0 +1,262 @@
+/**
+ * Gemini Provider Implementation
+ * This file contains the implementation of the Gemini provider API
+ */
+
+import { GoogleGenerativeAI, GenerativeModel, Tool, SchemaType, FunctionDeclaration, FunctionDeclarationSchemaProperty, Content, Part } from '@google/generative-ai';
+import { LLMResponse } from './providers';
+import { generateUuid } from '../../utils/uuid';
+
+// Define the available Gemini models
+export const GEMINI_MODELS = {
+  'gemini-1.5-flash': {
+    contextWindow: 1_048_576,
+    maxOutputTokens: 8_192,
+    tokenMultiplier: 0.3, // 1 token = 0.3 credits
+  },
+  'gemini-1.5-pro': {
+    contextWindow: 2_097_152,
+    maxOutputTokens: 8_192,
+    tokenMultiplier: 5.0, // 1 token = 5.0 credits
+  },
+  'gemini-1.5-flash-8b': {
+    contextWindow: 1_048_576,
+    maxOutputTokens: 8_192,
+    tokenMultiplier: 0.15, // 1 token = 0.15 credits
+  },
+  'gemini-2.5-flash-preview-04-17': {
+    contextWindow: 1_048_576,
+    maxOutputTokens: 8_192,
+    tokenMultiplier: 0.6, // 1 token = 0.6 credits
+  },
+  'gemini-2.5-pro-exp-03-25': {
+    contextWindow: 1_048_576,
+    maxOutputTokens: 8_192,
+    tokenMultiplier: 0.0, // Free preview model
+  },
+};
+
+// Estimate token count (very rough estimate)
+function estimateTokenCount(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/**
+ * Convert a chat message to Gemini format
+ */
+function convertToGeminiMessage(message: { role: string; content: string }): Content {
+  const role = message.role === 'system' ? 'user' : message.role;
+  return {
+    role: role,
+    parts: [{ text: message.content }],
+  };
+}
+
+/**
+ * Convert a file to a Gemini Part
+ */
+export function fileToGeminiPart(file: Express.Multer.File): Part {
+  const mimeType = file.mimetype;
+  
+  // For images
+  if (mimeType.startsWith('image/')) {
+    return {
+      inlineData: {
+        data: file.buffer.toString('base64'),
+        mimeType: file.mimetype
+      }
+    };
+  }
+  
+  // For text files, convert to text
+  if (mimeType.startsWith('text/') || 
+      mimeType === 'application/json' || 
+      mimeType === 'application/xml' ||
+      mimeType === 'application/javascript') {
+    return {
+      text: file.buffer.toString('utf-8')
+    };
+  }
+  
+  // Default to binary data
+  return {
+    inlineData: {
+      data: file.buffer.toString('base64'),
+      mimeType: file.mimetype
+    }
+  };
+}
+
+/**
+ * Send a request to Gemini with streaming support
+ */
+export async function sendGeminiRequest({
+  apiKey,
+  model,
+  messages,
+  systemMessage,
+  temperature = 0.7,
+  maxTokens,
+  files = [],
+  tools = null,
+  onStream = null,
+}: {
+  apiKey: string;
+  model: string;
+  messages: { role: string; content: string }[];
+  systemMessage?: string;
+  temperature?: number;
+  maxTokens?: number;
+  files?: Express.Multer.File[];
+  tools?: any[] | null;
+  onStream?: ((text: string) => void) | null;
+}): Promise<LLMResponse> {
+  try {
+    // Initialize the Gemini API
+    const genAI = new GoogleGenerativeAI(apiKey);
+    
+    // Get the generative model
+    const generativeModel = genAI.getGenerativeModel({
+      model: model,
+      systemInstruction: systemMessage,
+      generationConfig: {
+        temperature: temperature,
+        maxOutputTokens: maxTokens || GEMINI_MODELS[model]?.maxOutputTokens || 8192,
+      },
+    });
+
+    // Convert messages to Gemini format
+    const geminiMessages: Content[] = messages.map(convertToGeminiMessage);
+    
+    // Handle files if present
+    if (files.length > 0) {
+      // For the first user message, add files as parts
+      for (let i = 0; i < geminiMessages.length; i++) {
+        if (geminiMessages[i].role === 'user') {
+          const parts = [{ text: geminiMessages[i].parts[0].text }];
+          
+          // Add file parts
+          for (const file of files) {
+            parts.push(fileToGeminiPart(file));
+          }
+          
+          geminiMessages[i].parts = parts;
+          break; // Only add to the first user message
+        }
+      }
+    }
+
+    // Handle tools if present
+    let toolsConfig = {};
+    if (tools && tools.length > 0) {
+      const geminiTools: Tool[] = [{
+        functionDeclarations: tools.map(tool => ({
+          name: tool.name,
+          description: tool.description,
+          parameters: {
+            type: SchemaType.OBJECT,
+            properties: Object.entries(tool.parameters).reduce((acc, [key, value]) => {
+              acc[key] = { 
+                type: SchemaType.STRING, 
+                description: value.description 
+              };
+              return acc;
+            }, {})
+          }
+        }))
+      }];
+      
+      toolsConfig = { tools: geminiTools };
+    }
+
+    // If streaming is requested
+    if (onStream) {
+      let fullText = '';
+      let toolName = '';
+      let toolParamsStr = '';
+      
+      const result = await generativeModel.generateContentStream({
+        contents: geminiMessages,
+        ...toolsConfig,
+      });
+
+      // Process the stream
+      for await (const chunk of result.stream) {
+        const newText = chunk.text() || '';
+        fullText += newText;
+        
+        // Check for function calls
+        const functionCalls = chunk.functionCalls();
+        if (functionCalls && functionCalls.length > 0) {
+          const functionCall = functionCalls[0];
+          toolName = functionCall.name || '';
+          toolParamsStr = JSON.stringify(functionCall.args || {});
+        }
+        
+        // Call the stream callback
+        onStream(newText);
+      }
+
+      // Calculate token usage
+      const inputTokens = estimateTokenCount(messages.map(m => m.content).join(' '));
+      const outputTokens = estimateTokenCount(fullText);
+      const totalTokens = inputTokens + outputTokens;
+      
+      // Calculate credits used
+      const tokenMultiplier = GEMINI_MODELS[model]?.tokenMultiplier || 1.0;
+      const creditsUsed = (totalTokens / 1000) * tokenMultiplier;
+
+      return {
+        text: fullText,
+        tokensUsed: totalTokens,
+        creditsUsed: creditsUsed,
+        toolCall: toolName ? {
+          name: toolName,
+          parameters: JSON.parse(toolParamsStr),
+          id: generateUuid()
+        } : undefined
+      };
+    } 
+    // Non-streaming request
+    else {
+      const result = await generativeModel.generateContent({
+        contents: geminiMessages,
+        ...toolsConfig,
+      });
+      
+      const response = result.response;
+      const text = response.text();
+      
+      // Check for function calls
+      let toolCall;
+      const functionCalls = response.functionCalls();
+      if (functionCalls && functionCalls.length > 0) {
+        const functionCall = functionCalls[0];
+        toolCall = {
+          name: functionCall.name,
+          parameters: functionCall.args,
+          id: generateUuid()
+        };
+      }
+      
+      // Calculate token usage
+      const inputTokens = estimateTokenCount(messages.map(m => m.content).join(' '));
+      const outputTokens = estimateTokenCount(text);
+      const totalTokens = inputTokens + outputTokens;
+      
+      // Calculate credits used
+      const tokenMultiplier = GEMINI_MODELS[model]?.tokenMultiplier || 1.0;
+      const creditsUsed = (totalTokens / 1000) * tokenMultiplier;
+
+      return {
+        text,
+        tokensUsed: totalTokens,
+        creditsUsed: creditsUsed,
+        toolCall
+      };
+    }
+  } catch (error) {
+    console.error('Error in Gemini request:', error);
+    throw error;
+  }
+}

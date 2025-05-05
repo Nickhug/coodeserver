@@ -1,8 +1,9 @@
 import axios from 'axios';
 import { logUsage } from '../supabase/client';
+import { sendGeminiRequest, GEMINI_MODELS } from './gemini-provider';
 
 // Provider types
-export type ApiProvider = 'openai' | 'anthropic' | 'groq' | 'mistral' | 'ollama' | 'custom';
+export type ApiProvider = 'openai' | 'anthropic' | 'groq' | 'mistral' | 'ollama' | 'custom' | 'gemini';
 
 // Request/response types
 export type LLMRequestParams = {
@@ -18,6 +19,11 @@ export type LLMResponse = {
   text: string;
   tokensUsed: number;
   creditsUsed: number;
+  toolCall?: {
+    name: string;
+    parameters: any;
+    id: string;
+  };
 };
 
 // Configuration for different providers
@@ -42,6 +48,11 @@ export const providerConfig = {
     models: ['mistral-large', 'mistral-medium', 'mistral-small'],
     tokenMultiplier: 0.7, // 1 token = 0.7 credits
   },
+  gemini: {
+    apiUrl: 'https://generativelanguage.googleapis.com/v1beta/models',
+    models: Object.keys(GEMINI_MODELS),
+    tokenMultiplier: 1.0, // Varies by model, handled in gemini-provider.ts
+  },
   ollama: {
     apiUrl: 'http://localhost:11434/api/chat',
     models: ['llama3', 'mistral'],
@@ -60,6 +71,7 @@ const apiKeys: Record<ApiProvider, string | null> = {
   anthropic: process.env.ANTHROPIC_API_KEY || null,
   groq: process.env.GROQ_API_KEY || null,
   mistral: process.env.MISTRAL_API_KEY || null,
+  gemini: process.env.GEMINI_API_KEY || null,
   ollama: null, // Local, doesn't need API key
   custom: process.env.CUSTOM_API_KEY || null,
 };
@@ -104,6 +116,27 @@ export async function sendLLMRequest({
   try {
     // Format the request based on the provider
     switch (provider) {
+      case 'gemini':
+        // Use the dedicated Gemini implementation
+        const geminiResponse = await sendGeminiRequest({
+          apiKey: apiKey!,
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature,
+          maxTokens,
+        });
+
+        // Log usage to database
+        await logUsage({
+          user_id: userId,
+          provider,
+          model,
+          tokens_used: geminiResponse.tokensUsed,
+          credits_used: geminiResponse.creditsUsed,
+        });
+
+        return geminiResponse;
+
       case 'openai':
         response = await axios.post(
           config.apiUrl,
@@ -222,6 +255,7 @@ export async function sendLLMRequest({
       case 'ollama':
         responseText = response.data.message.content;
         break;
+      // Gemini is handled separately above
     }
 
     // Log usage to database
@@ -269,4 +303,4 @@ export function getProviderModels(provider: ApiProvider): string[] {
  */
 export function isProviderConfigured(provider: ApiProvider): boolean {
   return provider === 'ollama' || Boolean(apiKeys[provider]);
-} 
+}
