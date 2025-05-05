@@ -1,11 +1,11 @@
-import { auth, clerkClient } from "@clerk/nextjs/server";
+import { getAuth, clerkClient } from "@clerk/nextjs/server";
 import { NextRequest, NextResponse } from "next/server";
 import { createUser, getUser, storeAuthToken, deleteExpiredAuthTokens } from "../../../../lib/supabase/client";
 import crypto from 'crypto';
 
 export async function GET(req: NextRequest) {
-  const session = await auth();
-  const userId = session?.userId;
+  // Use getAuth instead of auth()
+  const { userId } = getAuth(req);
 
   // Check for connection ID from WebSocket
   const connectionId = req.nextUrl.searchParams.get('connection_id');

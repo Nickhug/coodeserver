@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
+import { getAuth } from "@clerk/nextjs/server";
 import { getUser } from "../../../../lib/supabase/client";
 
 /**
@@ -8,8 +8,8 @@ import { getUser } from "../../../../lib/supabase/client";
 export async function POST(req: NextRequest) {
   try {
     // Verify the user is authenticated
-    const session = await auth();
-    if (!session?.userId) {
+    const { userId } = getAuth(req);
+    if (!userId) {
       return NextResponse.json({ success: false, message: "Not authenticated" }, { status: 401 });
     }
 
@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Get user data from our database
-    const dbUser = await getUser(session.userId);
+    const dbUser = await getUser(userId);
 
     if (!dbUser) {
       return NextResponse.json({
