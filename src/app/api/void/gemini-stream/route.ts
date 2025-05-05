@@ -5,6 +5,7 @@ import { checkUserCredits } from '../../../../lib/clerk/auth';
 import { updateUserCredits } from '../../../../lib/supabase/client';
 import { sendGeminiRequest } from '../../../../lib/ai-providers/gemini-provider';
 import { logUsage } from '../../../../lib/supabase/client';
+import { logger } from '../../../../lib/logger';
 
 // Validate request body
 const requestSchema = z.object({
@@ -39,9 +40,12 @@ export async function POST(req: NextRequest) {
   const customReadable = new ReadableStream({
     async start(controller) {
       try {
+        logger.info('Gemini streaming request received');
+
         // Authenticate user
         const userInfo = await getCurrentUserWithDb();
         if (!userInfo) {
+          logger.warn('Unauthorized access attempt to Gemini streaming endpoint');
           controller.enqueue(encoder.encode(JSON.stringify({ error: 'Unauthorized' })));
           controller.close();
           return;
@@ -52,6 +56,9 @@ export async function POST(req: NextRequest) {
         const result = requestSchema.safeParse(body);
 
         if (!result.success) {
+          logger.warn('Invalid request to Gemini streaming endpoint', {
+            details: result.error.format()
+          });
           controller.enqueue(encoder.encode(JSON.stringify({
             error: 'Invalid request',
             details: result.error.format()
@@ -79,6 +86,10 @@ export async function POST(req: NextRequest) {
         const { hasCredits, creditsRemaining } = await checkUserCredits(requiredCredits);
 
         if (!hasCredits) {
+          logger.warn(`Insufficient credits for user ${userInfo.dbUser.id}`, {
+            creditsRemaining,
+            requiredCredits
+          });
           controller.enqueue(encoder.encode(JSON.stringify({
             error: 'Insufficient credits',
             creditsRemaining,
@@ -88,6 +99,11 @@ export async function POST(req: NextRequest) {
           controller.close();
           return;
         }
+
+        logger.info(`Processing Gemini streaming request for user ${userInfo.dbUser.id}`, {
+          model,
+          requestId
+        });
 
         // Send initial response to confirm stream started
         controller.enqueue(encoder.encode(JSON.stringify({
@@ -122,6 +138,13 @@ export async function POST(req: NextRequest) {
         // Deduct credits
         await updateUserCredits(userInfo.dbUser.id, -response.creditsUsed);
 
+        logger.info(`Completed Gemini streaming request for user ${userInfo.dbUser.id}`, {
+          tokensUsed: response.tokensUsed,
+          creditsUsed: response.creditsUsed,
+          model,
+          requestId
+        });
+
         // Log usage
         await logUsage({
           user_id: userInfo.dbUser.id,
@@ -145,7 +168,7 @@ export async function POST(req: NextRequest) {
         // Close the stream
         controller.close();
       } catch (error) {
-        console.error('Error in Gemini streaming API:', error);
+        logger.error('Error in Gemini streaming API:', error);
 
         // Send error to client
         controller.enqueue(encoder.encode(JSON.stringify({

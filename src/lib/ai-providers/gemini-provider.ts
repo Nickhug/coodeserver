@@ -6,6 +6,7 @@
 import { GoogleGenerativeAI, Tool, SchemaType, Content, Part } from '@google/generative-ai';
 import { LLMResponse } from './providers';
 import { generateUuid } from '../../utils/uuid';
+import { logger } from '../logger';
 
 // Define Gemini model types
 export type GeminiModelName =
@@ -297,7 +298,7 @@ export async function sendGeminiRequest({
       };
     }
   } catch (error) {
-    console.error('Error in Gemini request:', error);
+    logger.error('Error in Gemini request:', error);
     throw error;
   }
 }

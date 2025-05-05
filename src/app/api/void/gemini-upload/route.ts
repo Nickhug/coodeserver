@@ -5,6 +5,7 @@ import { updateUserCredits } from '../../../../lib/supabase/client';
 import { sendGeminiRequest } from '../../../../lib/ai-providers/gemini-provider';
 import { logUsage } from '../../../../lib/supabase/client';
 import { NextResponse } from 'next/server';
+import { logger } from '../../../../lib/logger';
 
 // Helper function to parse multipart form data
 async function parseMultipartForm(req: NextRequest) {
@@ -68,9 +69,12 @@ async function parseMultipartForm(req: NextRequest) {
  */
 export async function POST(req: NextRequest) {
   try {
+    logger.info('Gemini upload request received');
+
     // Authenticate user
     const userInfo = await getCurrentUserWithDb();
     if (!userInfo) {
+      logger.warn('Unauthorized access attempt to Gemini upload endpoint');
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }
@@ -91,11 +95,18 @@ export async function POST(req: NextRequest) {
 
     // Validate required fields
     if (!model || !prompt || !requestId) {
+      logger.warn('Missing required fields in Gemini upload request');
       return NextResponse.json(
         { error: 'Missing required fields: model, prompt, or requestId' },
         { status: 400 }
       );
     }
+
+    logger.info(`Processing Gemini upload request for user ${userInfo.dbUser.id}`, {
+      model,
+      requestId,
+      fileCount: files.length
+    });
 
     // Estimate required credits (conservative estimate)
     const estimatedTokens = Math.ceil(prompt.length / 4) * 2; // Double to account for response
@@ -105,6 +116,10 @@ export async function POST(req: NextRequest) {
     const { hasCredits, creditsRemaining } = await checkUserCredits(requiredCredits);
 
     if (!hasCredits) {
+      logger.warn(`Insufficient credits for user ${userInfo.dbUser.id}`, {
+        creditsRemaining,
+        requiredCredits
+      });
       return NextResponse.json(
         {
           error: 'Insufficient credits',
@@ -131,6 +146,13 @@ export async function POST(req: NextRequest) {
     // Deduct credits
     await updateUserCredits(userInfo.dbUser.id, -response.creditsUsed);
 
+    logger.info(`Completed Gemini upload request for user ${userInfo.dbUser.id}`, {
+      tokensUsed: response.tokensUsed,
+      creditsUsed: response.creditsUsed,
+      model,
+      requestId
+    });
+
     // Log usage
     await logUsage({
       user_id: userInfo.dbUser.id,
@@ -151,7 +173,7 @@ export async function POST(req: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Error in Gemini upload API:', error);
+    logger.error('Error in Gemini upload API:', error);
 
     return NextResponse.json(
       {
