@@ -21,13 +21,22 @@ export async function GET(req: NextRequest) {
     }
 
     // Get available providers and their models
-    const availableProviders: Record<string, { models: string[], requiresApiKey: boolean }> = {};
-    
+    const availableProviders: Record<string, {
+      models: string[],
+      requiresApiKey: boolean,
+      modelDetails?: Array<{
+        name: string,
+        contextWindow?: number,
+        maxTokens?: number,
+        tokenMultiplier?: number
+      }>
+    }> = {};
+
     // Check which providers have API keys configured on the server
     for (const [provider, config] of Object.entries(providerConfig)) {
       const apiKey = process.env[`${provider.toUpperCase()}_API_KEY`];
       const hasApiKey = !!apiKey;
-      
+
       // Only include providers that have API keys configured
       if (hasApiKey) {
         availableProviders[provider] = {
@@ -36,7 +45,7 @@ export async function GET(req: NextRequest) {
         };
       }
     }
-    
+
     // Special handling for Gemini to include model details
     if (availableProviders['gemini']) {
       // Add detailed information about Gemini models
@@ -49,16 +58,16 @@ export async function GET(req: NextRequest) {
           tokenMultiplier: model.tokenMultiplier
         };
       });
-      
+
       availableProviders['gemini'] = {
         ...availableProviders['gemini'],
         models: Object.keys(GEMINI_MODELS),
         modelDetails: geminiModels
       };
     }
-    
-    logger.info(`Server models endpoint accessed by user ${userInfo.dbUser.id}`, { 
-      availableProviders: Object.keys(availableProviders) 
+
+    logger.info(`Server models endpoint accessed by user ${userInfo.dbUser.id}`, {
+      availableProviders: Object.keys(availableProviders)
     });
 
     // Return the list of available providers and models
