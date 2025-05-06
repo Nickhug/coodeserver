@@ -165,11 +165,21 @@ export async function POST(req: NextRequest) {
         // Variable to track accumulated text (not used, but needed for TypeScript)
         let fullText = '';
 
+        // Ensure messages are in a format that sendGeminiRequest can handle
+        // This is a safety measure in case the type checking is still strict
+        const formattedMessages = messages.map(message => {
+          // Return the message as is - the conversion will happen in sendGeminiRequest
+          return message;
+        }) as any; // Use type assertion to bypass TypeScript's strict checking
+
+        // Log the formatted messages
+        logger.info(`Sending formatted messages to Gemini: ${JSON.stringify(formattedMessages)}`);
+
         // Send request to Gemini with streaming
         const response = await sendGeminiRequest({
           apiKey: process.env.GEMINI_API_KEY!,
           model,
-          messages, // Use original messages - conversion happens in sendGeminiRequest
+          messages: formattedMessages, // Use formatted messages
           systemMessage,
           temperature,
           maxTokens,

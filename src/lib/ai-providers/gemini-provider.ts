@@ -190,7 +190,14 @@ export async function sendGeminiRequest({
 }: {
   apiKey: string;
   model: string; // Can be any Gemini model, including ones not in our predefined list
-  messages: { role: string; content: string }[];
+  messages: {
+    role: string;
+    content?: string | any;
+    parts?: any[];
+    displayContent?: string;
+    reasoning?: string;
+    anthropicReasoning?: any;
+  }[];
   systemMessage?: string;
   temperature?: number;
   maxTokens?: number;
@@ -311,8 +318,19 @@ export async function sendGeminiRequest({
         onStream(newText);
       }
 
-      // Calculate token usage
-      const inputTokens = estimateTokenCount(messages.map(m => m.content).join(' '));
+      // Calculate token usage - handle different message formats
+      const inputTokens = estimateTokenCount(messages.map(m => {
+        if (m.parts && Array.isArray(m.parts)) {
+          return m.parts.map(part => part.text || '').join(' ');
+        } else if (typeof m.content === 'string') {
+          return m.content;
+        } else if (m.displayContent) {
+          return m.displayContent;
+        } else if (m.content) {
+          return JSON.stringify(m.content);
+        }
+        return '';
+      }).join(' '));
       const outputTokens = estimateTokenCount(fullText);
       const totalTokens = inputTokens + outputTokens;
 
@@ -353,8 +371,19 @@ export async function sendGeminiRequest({
         };
       }
 
-      // Calculate token usage
-      const inputTokens = estimateTokenCount(messages.map(m => m.content).join(' '));
+      // Calculate token usage - handle different message formats
+      const inputTokens = estimateTokenCount(messages.map(m => {
+        if (m.parts && Array.isArray(m.parts)) {
+          return m.parts.map(part => part.text || '').join(' ');
+        } else if (typeof m.content === 'string') {
+          return m.content;
+        } else if (m.displayContent) {
+          return m.displayContent;
+        } else if (m.content) {
+          return JSON.stringify(m.content);
+        }
+        return '';
+      }).join(' '));
       const outputTokens = estimateTokenCount(text);
       const totalTokens = inputTokens + outputTokens;
 
