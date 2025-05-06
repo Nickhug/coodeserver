@@ -48,13 +48,9 @@ async function parseMultipartForm(req: NextRequest) {
   if (messagesJson) {
     try {
       messages = JSON.parse(messagesJson);
-      // Normalize messages to ensure they have the content field
-      messages = messages.map((m: any) => ({
-        role: m.role,
-        content: typeof m.content === 'string' ? m.content :
-                m.displayContent ? m.displayContent :
-                JSON.stringify(m.content)
-      }));
+      // We'll pass the messages directly to sendGeminiRequest
+      // The convertToGeminiMessage function will handle the format conversion
+      logger.info(`Parsed messages: ${JSON.stringify(messages)}`);
     } catch (error) {
       console.error('Error parsing messages JSON:', error);
       // Fallback to using prompt

@@ -97,16 +97,26 @@ export async function POST(req: NextRequest) {
         // Log the received messages for debugging
         logger.info(`Received messages: ${JSON.stringify(messages)}`);
 
-        // Normalize messages to ensure they have the content field
-        const normalizedMessages = messages.map(m => ({
-          role: m.role,
-          content: typeof m.content === 'string' ? m.content :
-                  m.displayContent ? m.displayContent :
-                  JSON.stringify(m.content)
-        }));
+        // We'll pass the messages directly to sendGeminiRequest
+        // The convertToGeminiMessage function will handle the format conversion
+
+        // For credit estimation, extract text content where possible
+        const textContents = messages.map(m => {
+          if (m.parts && Array.isArray(m.parts)) {
+            // Extract text from parts array
+            return m.parts.map((part: any) => part.text || JSON.stringify(part)).join(' ');
+          } else if (typeof m.content === 'string') {
+            return m.content;
+          } else if (m.displayContent) {
+            return m.displayContent;
+          } else if (m.content) {
+            return JSON.stringify(m.content);
+          }
+          return '';
+        });
 
         // Estimate required credits (conservative estimate)
-        const prompt = normalizedMessages.map(m => m.content).join(' ');
+        const prompt = textContents.join(' ');
         const estimatedTokens = Math.ceil(prompt.length / 4) * 2; // Double to account for response
         const requiredCredits = estimatedTokens / 1000; // Rough conversion
 
@@ -146,7 +156,7 @@ export async function POST(req: NextRequest) {
         const response = await sendGeminiRequest({
           apiKey: process.env.GEMINI_API_KEY!,
           model,
-          messages: normalizedMessages, // Use normalized messages
+          messages, // Use original messages - conversion happens in sendGeminiRequest
           systemMessage,
           temperature,
           maxTokens,

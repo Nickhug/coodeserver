@@ -74,12 +74,56 @@ function estimateTokenCount(text: string): number {
 
 /**
  * Convert a chat message to Gemini format
+ * Handles both standard format and Void's format with parts array
  */
-function convertToGeminiMessage(message: { role: string; content: string }): Content {
+function convertToGeminiMessage(message: any): Content {
+  // Determine the role (convert 'system' to 'user' as Gemini doesn't support system role)
   const role = message.role === 'system' ? 'user' : message.role;
+
+  // Handle Void's format with parts array
+  if (message.parts) {
+    // If message already has parts array in Void format, convert it to Gemini format
+    return {
+      role: role,
+      parts: message.parts.map((part: any) => {
+        // If part has text property, use it directly
+        if (part.text) {
+          return { text: part.text };
+        }
+        // Otherwise, convert to string
+        return { text: JSON.stringify(part) };
+      })
+    };
+  }
+
+  // Handle displayContent field from Void
+  if (message.displayContent) {
+    return {
+      role: role,
+      parts: [{ text: message.displayContent }],
+    };
+  }
+
+  // Handle standard format with content field
+  if (typeof message.content === 'string') {
+    return {
+      role: role,
+      parts: [{ text: message.content }],
+    };
+  }
+
+  // Handle case where content is an object or array
+  if (message.content) {
+    return {
+      role: role,
+      parts: [{ text: JSON.stringify(message.content) }],
+    };
+  }
+
+  // Fallback for empty messages
   return {
     role: role,
-    parts: [{ text: message.content }],
+    parts: [{ text: "" }],
   };
 }
 
