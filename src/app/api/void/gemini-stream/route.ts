@@ -86,8 +86,8 @@ export async function POST(req: NextRequest) {
         const estimatedTokens = Math.ceil(prompt.length / 4) * 2; // Double to account for response
         const requiredCredits = estimatedTokens / 1000; // Rough conversion
 
-        // Check if user has enough credits
-        const { hasCredits, creditsRemaining } = await checkUserCredits(requiredCredits);
+        // Check if user has enough credits - pass the request for token auth
+        const { hasCredits, creditsRemaining } = await checkUserCredits(requiredCredits, req);
 
         if (!hasCredits) {
           logger.warn(`Insufficient credits for user ${userInfo.dbUser.id}`, {

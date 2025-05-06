@@ -23,9 +23,13 @@ export async function getCurrentUserWithDb(req?: NextRequest) {
       console.log("Attempting custom token-based authentication");
 
       try {
-        // For testing, we'll accept any token
-        clerkId = "user_2wcizcY350f9UEanAONtT36Qjhv"; // Hardcoded for testing
-        console.log("Custom token-based authentication successful for user:", clerkId);
+        // For now, we'll accept any token from Void and use a hardcoded user ID
+        // In production, you would verify the token against your database
+        if (sessionToken) {
+          // This is a temporary solution - in production, validate the token properly
+          clerkId = "user_2wcizcY350f9UEanAONtT36Qjhv"; // Hardcoded for testing
+          console.log("Custom token-based authentication successful for user:", clerkId);
+        }
       } catch (tokenError) {
         console.error("Custom token verification failed:", tokenError);
         // Continue to try session-based auth
@@ -72,8 +76,8 @@ export async function getCurrentUserWithDb(req?: NextRequest) {
 /**
  * Check if the current user has credits available
  */
-export async function checkUserCredits(requiredCredits: number = 1) {
-  const userInfo = await getCurrentUserWithDb();
+export async function checkUserCredits(requiredCredits: number = 1, req?: NextRequest) {
+  const userInfo = await getCurrentUserWithDb(req);
 
   if (!userInfo || !userInfo.dbUser) {
     return {
