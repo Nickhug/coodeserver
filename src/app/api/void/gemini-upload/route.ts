@@ -42,6 +42,29 @@ async function parseMultipartForm(req: NextRequest) {
   const maxTokens = parseInt(formData.get('maxTokens') as string) || undefined;
   const requestId = formData.get('requestId') as string;
 
+  // Parse messages if present
+  let messages = [];
+  const messagesJson = formData.get('messages') as string;
+  if (messagesJson) {
+    try {
+      messages = JSON.parse(messagesJson);
+      // Normalize messages to ensure they have the content field
+      messages = messages.map((m: any) => ({
+        role: m.role,
+        content: typeof m.content === 'string' ? m.content :
+                m.displayContent ? m.displayContent :
+                JSON.stringify(m.content)
+      }));
+    } catch (error) {
+      console.error('Error parsing messages JSON:', error);
+      // Fallback to using prompt
+      messages = [{ role: 'user', content: prompt }];
+    }
+  } else {
+    // Fallback to using prompt
+    messages = [{ role: 'user', content: prompt }];
+  }
+
   // Parse tools if present
   let tools;
   const toolsJson = formData.get('tools') as string;
@@ -56,6 +79,7 @@ async function parseMultipartForm(req: NextRequest) {
   return {
     model,
     prompt,
+    messages,
     systemMessage,
     temperature,
     maxTokens,
@@ -101,6 +125,7 @@ export async function POST(req: NextRequest) {
     const {
       model,
       prompt,
+      messages,
       systemMessage,
       temperature,
       maxTokens,
@@ -151,7 +176,7 @@ export async function POST(req: NextRequest) {
     const response = await sendGeminiRequest({
       apiKey: process.env.GEMINI_API_KEY!,
       model,
-      messages: [{ role: 'user', content: prompt }],
+      messages, // Use the parsed and normalized messages
       systemMessage,
       temperature,
       maxTokens,

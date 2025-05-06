@@ -14,7 +14,10 @@ const requestSchema = z.object({
   messages: z.array(
     z.object({
       role: z.enum(['user', 'assistant', 'system']),
-      content: z.string(),
+      content: z.string().or(z.any()), // Allow any content format
+      displayContent: z.string().optional(), // Support Void's displayContent field
+      reasoning: z.string().optional(), // Support Void's reasoning field
+      anthropicReasoning: z.any().optional(), // Support Void's anthropicReasoning field
     })
   ),
   systemMessage: z.string().optional(),
@@ -30,6 +33,8 @@ const requestSchema = z.object({
       })),
     })
   ).optional(),
+  providerName: z.string().optional(), // Support Void's providerName field
+  isServerRequest: z.boolean().optional(), // Support Void's isServerRequest field
 });
 
 /**
@@ -89,8 +94,19 @@ export async function POST(req: NextRequest) {
           tools
         } = result.data;
 
+        // Log the received messages for debugging
+        logger.info(`Received messages: ${JSON.stringify(messages)}`);
+
+        // Normalize messages to ensure they have the content field
+        const normalizedMessages = messages.map(m => ({
+          role: m.role,
+          content: typeof m.content === 'string' ? m.content :
+                  m.displayContent ? m.displayContent :
+                  JSON.stringify(m.content)
+        }));
+
         // Estimate required credits (conservative estimate)
-        const prompt = messages.map(m => m.content).join(' ');
+        const prompt = normalizedMessages.map(m => m.content).join(' ');
         const estimatedTokens = Math.ceil(prompt.length / 4) * 2; // Double to account for response
         const requiredCredits = estimatedTokens / 1000; // Rough conversion
 
@@ -130,7 +146,7 @@ export async function POST(req: NextRequest) {
         const response = await sendGeminiRequest({
           apiKey: process.env.GEMINI_API_KEY!,
           model,
-          messages,
+          messages: normalizedMessages, // Use normalized messages
           systemMessage,
           temperature,
           maxTokens,
