@@ -13,8 +13,10 @@ const requestSchema = z.object({
   model: z.string(),
   messages: z.array(
     z.object({
-      role: z.enum(['user', 'assistant', 'system']),
-      content: z.string().or(z.any()), // Allow any content format
+      role: z.enum(['user', 'assistant', 'system', 'model']),
+      // Support both standard content field and Gemini-style parts array
+      content: z.string().or(z.any()).optional(),
+      parts: z.array(z.any()).optional(),
       displayContent: z.string().optional(), // Support Void's displayContent field
       reasoning: z.string().optional(), // Support Void's reasoning field
       anthropicReasoning: z.any().optional(), // Support Void's anthropicReasoning field
@@ -100,11 +102,22 @@ export async function POST(req: NextRequest) {
         // We'll pass the messages directly to sendGeminiRequest
         // The convertToGeminiMessage function will handle the format conversion
 
+        // Log the received messages for detailed debugging
+        logger.info(`Received message structure: ${JSON.stringify(messages.map(m => Object.keys(m)))}`);
+
         // For credit estimation, extract text content where possible
         const textContents = messages.map(m => {
           if (m.parts && Array.isArray(m.parts)) {
             // Extract text from parts array
-            return m.parts.map((part: any) => part.text || JSON.stringify(part)).join(' ');
+            return m.parts.map((part: any) => {
+              if (part.text !== undefined) {
+                return part.text;
+              } else if (part.data !== undefined) {
+                return '[IMAGE DATA]'; // Placeholder for binary data
+              } else {
+                return JSON.stringify(part);
+              }
+            }).join(' ');
           } else if (typeof m.content === 'string') {
             return m.content;
           } else if (m.displayContent) {
@@ -208,11 +221,19 @@ export async function POST(req: NextRequest) {
       } catch (error) {
         logger.error('Error in Gemini streaming API:', error);
 
+        // Get detailed error information
+        const errorMessage = (error as Error).message;
+        const errorStack = (error as Error).stack;
+
+        // Log detailed error for debugging
+        logger.error(`Detailed error in Gemini streaming API: ${errorMessage}\n${errorStack}`);
+
         // Send error to client
         controller.enqueue(encoder.encode(JSON.stringify({
           event: 'error',
           error: 'Internal server error',
-          message: (error as Error).message
+          message: errorMessage,
+          details: errorStack
         })));
 
         // Close the stream

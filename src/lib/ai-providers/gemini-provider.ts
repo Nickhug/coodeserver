@@ -80,15 +80,27 @@ function convertToGeminiMessage(message: any): Content {
   // Determine the role (convert 'system' to 'user' as Gemini doesn't support system role)
   const role = message.role === 'system' ? 'user' : message.role;
 
+  // Log the message for debugging
+  logger.info(`Converting message to Gemini format: ${JSON.stringify(message)}`);
+
   // Handle Void's format with parts array
-  if (message.parts) {
+  if (message.parts && Array.isArray(message.parts)) {
     // If message already has parts array in Void format, convert it to Gemini format
     return {
       role: role,
       parts: message.parts.map((part: any) => {
         // If part has text property, use it directly
-        if (part.text) {
+        if (part.text !== undefined) {
           return { text: part.text };
+        }
+        // If part has data property (for images, etc.), use it directly
+        if (part.data !== undefined) {
+          return {
+            inlineData: {
+              data: part.data,
+              mimeType: part.mimeType || 'text/plain'
+            }
+          };
         }
         // Otherwise, convert to string
         return { text: JSON.stringify(part) };
@@ -202,6 +214,22 @@ export async function sendGeminiRequest({
 
     // Convert messages to Gemini format
     const geminiMessages: Content[] = messages.map(convertToGeminiMessage);
+
+    // Log the converted messages for debugging
+    logger.info(`Converted Gemini messages: ${JSON.stringify(geminiMessages)}`);
+
+    // Validate that the messages are in the correct format
+    for (const message of geminiMessages) {
+      if (!message.parts || !Array.isArray(message.parts) || message.parts.length === 0) {
+        throw new Error(`Invalid message format: Each message must have a non-empty parts array`);
+      }
+
+      for (const part of message.parts) {
+        if (part.text === undefined && part.inlineData === undefined) {
+          throw new Error(`Invalid part format: Each part must have either text or inlineData`);
+        }
+      }
+    }
 
     // Handle files if present
     if (files.length > 0) {
