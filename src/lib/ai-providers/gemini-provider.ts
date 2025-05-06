@@ -277,7 +277,7 @@ export async function sendGeminiRequest({
       logger.info(`Processing ${tools.length} tools for Gemini`);
 
       // Log the tools for debugging
-      logger.info(`Tools: ${JSON.stringify(tools)}`);
+      logger.info(`Tools: ${JSON.stringify(tools.map(t => t.name))}`);
 
       // Convert tools to the format expected by Gemini
       // We're using any here to bypass TypeScript's strict checking
@@ -285,6 +285,10 @@ export async function sendGeminiRequest({
       const geminiTools: any[] = [{
         functionDeclarations: tools.map(tool => {
           logger.info(`Processing tool: ${tool.name}`);
+
+          // Create required properties array
+          const requiredProperties = Object.keys(tool.parameters);
+
           return {
             name: tool.name,
             description: tool.description,
@@ -296,7 +300,8 @@ export async function sendGeminiRequest({
                   description: value.description
                 };
                 return acc;
-              }, {})
+              }, {}),
+              required: requiredProperties
             }
           };
         })
@@ -305,7 +310,7 @@ export async function sendGeminiRequest({
       toolsConfig = { tools: geminiTools };
 
       // Log the formatted tools for debugging
-      logger.info(`Formatted tools for Gemini: ${JSON.stringify(toolsConfig)}`);
+      logger.info(`Formatted tools for Gemini: ${JSON.stringify(geminiTools.map((t: any) => t.functionDeclarations.map((f: any) => f.name)))}`);
     }
 
     // If streaming is requested

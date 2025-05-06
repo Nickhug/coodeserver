@@ -179,6 +179,13 @@ export async function POST(req: NextRequest) {
         if (systemMessage) {
           logger.info(`System message present, length: ${systemMessage.length}`);
           logger.info(`System message preview: ${systemMessage.substring(0, 200)}...`);
+
+          // Check if the system message contains XML tool definitions
+          if (systemMessage.includes('<read_file>') ||
+              systemMessage.includes('Tool calling details:') ||
+              systemMessage.includes('Available tools:')) {
+            logger.info(`System message contains tool definitions`);
+          }
         } else {
           logger.info(`No system message provided`);
         }
