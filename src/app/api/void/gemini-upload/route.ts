@@ -6,6 +6,7 @@ import { sendGeminiRequest } from '../../../../lib/ai-providers/gemini-provider'
 import { logUsage } from '../../../../lib/supabase/client';
 import { NextResponse } from 'next/server';
 import { logger } from '../../../../lib/logger';
+import { createCorsResponse } from '../../../../lib/api-utils';
 
 // Helper function to parse multipart form data
 async function parseMultipartForm(req: NextRequest) {
@@ -65,6 +66,13 @@ async function parseMultipartForm(req: NextRequest) {
 }
 
 /**
+ * Handle OPTIONS requests for CORS preflight
+ */
+export async function OPTIONS() {
+  return createCorsResponse({}, 200);
+}
+
+/**
  * File upload endpoint for Gemini
  */
 export async function POST(req: NextRequest) {
@@ -82,8 +90,8 @@ export async function POST(req: NextRequest) {
           headers: {
             'Access-Control-Allow-Origin': 'vscode-file://vscode-app',
             'Access-Control-Allow-Credentials': 'true',
-            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
-            'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD, PUT, DELETE',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, X-Request-Type, X-Request-ID',
           }
         }
       );
@@ -182,8 +190,8 @@ export async function POST(req: NextRequest) {
       headers: {
         'Access-Control-Allow-Origin': 'vscode-file://vscode-app',
         'Access-Control-Allow-Credentials': 'true',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD, PUT, DELETE',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, X-Request-Type, X-Request-ID',
       }
     });
 
@@ -200,8 +208,8 @@ export async function POST(req: NextRequest) {
         headers: {
           'Access-Control-Allow-Origin': 'vscode-file://vscode-app',
           'Access-Control-Allow-Credentials': 'true',
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD, PUT, DELETE',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, X-Request-Type, X-Request-ID',
         }
       }
     );

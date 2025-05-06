@@ -6,6 +6,7 @@ import { updateUserCredits } from '../../../../lib/supabase/client';
 import { sendGeminiRequest } from '../../../../lib/ai-providers/gemini-provider';
 import { logUsage } from '../../../../lib/supabase/client';
 import { logger } from '../../../../lib/logger';
+import { createCorsResponse } from '../../../../lib/api-utils';
 
 // Validate request body
 const requestSchema = z.object({
@@ -30,6 +31,13 @@ const requestSchema = z.object({
     })
   ).optional(),
 });
+
+/**
+ * Handle OPTIONS requests for CORS preflight
+ */
+export async function OPTIONS() {
+  return createCorsResponse({}, 200);
+}
 
 /**
  * Streaming API endpoint for Gemini
@@ -195,8 +203,8 @@ export async function POST(req: NextRequest) {
       'Connection': 'keep-alive',
       'Access-Control-Allow-Origin': 'vscode-file://vscode-app',
       'Access-Control-Allow-Credentials': 'true',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD, PUT, DELETE',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, X-Request-Type, X-Request-ID',
     },
   });
 }
