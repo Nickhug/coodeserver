@@ -42,11 +42,15 @@ export async function POST(req: NextRequest) {
       try {
         logger.info('Gemini streaming request received');
 
-        // Authenticate user
-        const userInfo = await getCurrentUserWithDb();
+        // Authenticate user - pass request to support token-based auth
+        const userInfo = await getCurrentUserWithDb(req);
         if (!userInfo) {
           logger.warn('Unauthorized access attempt to Gemini streaming endpoint');
-          controller.enqueue(encoder.encode(JSON.stringify({ error: 'Unauthorized' })));
+          controller.enqueue(encoder.encode(JSON.stringify({
+            event: 'error',
+            error: 'Unauthorized',
+            message: 'Authentication failed. Please log in again.'
+          })));
           controller.close();
           return;
         }
@@ -189,7 +193,10 @@ export async function POST(req: NextRequest) {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Origin': 'vscode-file://vscode-app',
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
     },
   });
 }

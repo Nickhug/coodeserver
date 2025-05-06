@@ -71,13 +71,21 @@ export async function POST(req: NextRequest) {
   try {
     logger.info('Gemini upload request received');
 
-    // Authenticate user
-    const userInfo = await getCurrentUserWithDb();
+    // Authenticate user - pass request to support token-based auth
+    const userInfo = await getCurrentUserWithDb(req);
     if (!userInfo) {
       logger.warn('Unauthorized access attempt to Gemini upload endpoint');
       return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
+        { error: 'Unauthorized', message: 'Authentication failed. Please log in again.' },
+        {
+          status: 401,
+          headers: {
+            'Access-Control-Allow-Origin': 'vscode-file://vscode-app',
+            'Access-Control-Allow-Credentials': 'true',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
+          }
+        }
       );
     }
 
@@ -170,6 +178,13 @@ export async function POST(req: NextRequest) {
       creditsRemaining: creditsRemaining - response.creditsUsed,
       toolCall: response.toolCall,
       requestId
+    }, {
+      headers: {
+        'Access-Control-Allow-Origin': 'vscode-file://vscode-app',
+        'Access-Control-Allow-Credentials': 'true',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
+      }
     });
 
   } catch (error) {
@@ -180,7 +195,15 @@ export async function POST(req: NextRequest) {
         error: 'Internal server error',
         message: (error as Error).message
       },
-      { status: 500 }
+      {
+        status: 500,
+        headers: {
+          'Access-Control-Allow-Origin': 'vscode-file://vscode-app',
+          'Access-Control-Allow-Credentials': 'true',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
+        }
+      }
     );
   }
 }
