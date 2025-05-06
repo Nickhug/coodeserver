@@ -175,6 +175,22 @@ export async function POST(req: NextRequest) {
         // Log the formatted messages
         logger.info(`Sending formatted messages to Gemini: ${JSON.stringify(formattedMessages)}`);
 
+        // Log system message if present
+        if (systemMessage) {
+          logger.info(`System message present, length: ${systemMessage.length}`);
+          logger.info(`System message preview: ${systemMessage.substring(0, 200)}...`);
+        } else {
+          logger.info(`No system message provided`);
+        }
+
+        // Log tools if present
+        if (tools && tools.length > 0) {
+          logger.info(`Tools present: ${tools.length} tools`);
+          logger.info(`Tools preview: ${JSON.stringify(tools.map(t => t.name))}`);
+        } else {
+          logger.info(`No tools provided`);
+        }
+
         // Send request to Gemini with streaming
         const response = await sendGeminiRequest({
           apiKey: process.env.GEMINI_API_KEY!,
