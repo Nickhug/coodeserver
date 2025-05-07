@@ -5,7 +5,7 @@ import next from 'next';
 // const { verifyToken } = require('@clerk/backend'); // verifyToken will be handled by the new manager
 
 // Import the new WebSocket server initializer with the correct path to the compiled file
-import { initWebSocketServer } from './websocket-server/dist/websocket-server/manager.js';
+import { initWebSocketServer } from './websocket-server/dist/manager.js';
 
 // Make sure we have the WebSocketServer - NO LONGER NEEDED HERE
 // const WebSocketServer = ws.WebSocketServer || ws.Server;

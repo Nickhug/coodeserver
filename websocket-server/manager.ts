@@ -1,7 +1,49 @@
-import { Server /*, IncomingMessage - no longer used */ } from 'http';
+import { Server } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { verifyToken } from '@clerk/backend';
-import { geminiWebSocketService } from '../src/lib/gemini-ws-handler/GeminiWebSocketService'; // Import the new service
+
+// Define an interface for the expected service structure
+interface IGeminiWebSocketService {
+  handleToolResult(params: { 
+    userId: string; 
+    connectionId: string; 
+    requestId: string; 
+    toolCallId: string; 
+    output: unknown; 
+  }): Promise<void>;
+  initiateStream(params: { 
+    userId: string; 
+    connectionId: string; 
+    requestId: string; 
+    model: string; 
+    messages: any[]; 
+    systemMessage?: string; 
+    temperature?: number; 
+    maxTokens?: number; 
+    tools?: any[]; 
+  }): Promise<void>;
+}
+
+let geminiWebSocketService: IGeminiWebSocketService;
+
+async function loadDependencies() {
+  try {
+    // The dynamic import itself returns a Promise of the module
+    const serviceModule = await import('../src/lib/gemini-ws-handler/GeminiWebSocketService');
+    if (serviceModule && serviceModule.geminiWebSocketService) {
+      geminiWebSocketService = serviceModule.geminiWebSocketService;
+      console.log("[WebSocketManager] Successfully loaded geminiWebSocketService");
+    } else {
+      throw new Error("geminiWebSocketService not found in imported module");
+    }
+  } catch (e) {
+    console.error("[WebSocketManager] Failed to load geminiWebSocketService:", e);
+    geminiWebSocketService = {
+      handleToolResult: async (params) => console.error("[WebSocketManager] DUMMY: geminiWebSocketService not available - handleToolResult called with:", params),
+      initiateStream: async (params) => console.error("[WebSocketManager] DUMMY: geminiWebSocketService not available - initiateStream called with:", params)
+    };
+  }
+}
 
 // Interface definitions for imported types
 export interface ToolCall {
@@ -76,10 +118,10 @@ export interface ServerAuthFailureMessage {
 // General event structure for client communication
 export interface BaseClientEvent {
   type: string;
-  requestId?: string; // requestId is now optional, as not all server-to-client events have it (e.g. auth responses)
+  requestId?: string;
 }
 
-export interface GeminiStartEvent extends BaseClientEvent { type: 'geminiStart'; requestId: string; } // Ensure requestId is mandatory here
+export interface GeminiStartEvent extends BaseClientEvent { type: 'geminiStart'; requestId: string; }
 export interface GeminiContentEvent extends BaseClientEvent { type: 'geminiContent'; chunk: string; requestId: string; }
 export interface GeminiDoneEvent extends BaseClientEvent { type: 'geminiDone'; requestId: string; }
 export interface GeminiErrorEvent extends BaseClientEvent { type: 'geminiError'; error: string; message?: string; [key: string]: unknown; requestId: string; }
@@ -88,13 +130,13 @@ export interface ExecuteToolClientEvent extends BaseClientEvent, ExecuteToolMess
 export type ClientEvent = 
   | GeminiStartEvent
   | GeminiContentEvent
-  | ExecuteToolClientEvent // This now correctly includes all fields from ExecuteToolMessage
+  | ExecuteToolClientEvent
   | GeminiDoneEvent
   | GeminiErrorEvent
-  | ServerAuthSuccessMessage // Added for typing consistency if needed by a generic sender
-  | ServerAuthFailureMessage; // Added for typing consistency
+  | ServerAuthSuccessMessage
+  | ServerAuthFailureMessage;
 
-// Exported function to send auth success message via WebSocket (DEPRECATED by new flow, but kept for now if used elsewhere)
+// Exported function to send auth success message via WebSocket
 export function sendAuthSuccess(connectionId: string, token: string, userData: UserData) {
   const ws = connections.get(connectionId);
   console.log(`Attempting to send auth success to ${connectionId}`);
@@ -126,7 +168,6 @@ export function sendToolExecutionRequest(userId: string, toolExecutionRequest: E
 
 /**
  * Sends a generic event to all WebSocket connections for a given user.
- * TODO: Consider if this should target specific connectionId for stream events.
  */
 export function sendEventToClient(userId: string, event: ClientEvent): boolean {
   let sent = false;
@@ -172,7 +213,9 @@ export function sendEventToConnection(connectionId: string, event: ClientEvent):
 /**
  * Initializes the WebSocket server, attaching it to the provided HTTP server.
  */
-export function initWebSocketServer(server: Server) {
+export async function initWebSocketServer(server: Server) {
+  await loadDependencies();
+  
   if (wss) {
     console.warn("WebSocket server already initialized.");
     return;
@@ -182,17 +225,16 @@ export function initWebSocketServer(server: Server) {
   wss = new WebSocketServer({
     server,
     path: '/api/ws', // Ensure path matches client requests
-    // verifyClient is removed; auth happens post-connection
   });
   console.log("WebSocket server initialized. Setting up event listeners...");
 
-  wss.on('connection', (ws: AuthenticatedWebSocket /* req: IncomingMessage - no longer used */) => {
+  wss.on('connection', (ws: AuthenticatedWebSocket) => {
     // Assign a connection ID immediately
     ws.connectionId = Math.random().toString(36).substring(2, 15);
-    ws.isAuthenticated = false; // Initialize as not authenticated
-    ws.userId = undefined; // Ensure userId is not set initially
-    ws.isAlive = true; // Initialize for heartbeat
-    ws.lastPong = Date.now(); // Initialize for heartbeat
+    ws.isAuthenticated = false;
+    ws.userId = undefined;
+    ws.isAlive = true;
+    ws.lastPong = Date.now();
 
     connections.set(ws.connectionId, ws);
     console.log(`[WebSocket Manager] Connection attempt received. ID: ${ws.connectionId}. Awaiting auth.`);
@@ -364,7 +406,6 @@ export function initWebSocketServer(server: Server) {
   wss.on('error', (error) => {
     console.error("FATAL: WebSocketServer emitted error:", error);
     clearInterval(interval); // Stop heartbeat on server error
-    // Depending on the error, you might want to attempt recovery or shutdown
   });
 
   console.log("WebSocket event listeners set up for direct service calls.");

@@ -4,9 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "npm run build:ws && node server.js",
-    "build": "next build && npm run build:ws",
+    "build": "next build && npm run build:ws && npm run copy:ws",
     "build:ws": "cd websocket-server && npm run build",
-    "start": "npm run build:ws && node server.js",
+    "copy:ws": "mkdir -p .next/standalone/websocket-server/dist && cp -r websocket-server/dist/* .next/standalone/websocket-server/dist/",
+    "start": "node server.js",
     "lint": "next lint"
   },
   "dependencies": {

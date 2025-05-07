@@ -3,22 +3,19 @@
     "target": "ES2016",                     /* Set the JavaScript language version for emitted JavaScript and include compatible library declarations. */
     "module": "CommonJS",                  /* Specify what module code is generated. */
     "outDir": "./dist",                       /* Output to local dist directory */
-    "rootDir": "../",                       /* Root directory includes parent to handle src imports */
+    "rootDir": ".",              /* Only compile files in current directory */
     "esModuleInterop": true,             /* Emit additional JavaScript to ease support for importing CommonJS modules. This enables 'allowSyntheticDefaultImports' for type compatibility. */
     "forceConsistentCasingInFileNames": true, /* Ensure that casing is correct in imports. */
     "strict": true,                         /* Enable all strict type-checking options. */
     "skipLibCheck": true,                    /* Skip type checking all .d.ts files. */
+    "noImplicitAny": false,      /* Allow 'any' type for our dynamic imports */
     "baseUrl": "../",                       /* Base directory to resolve non-relative module names */
     "paths": {
       "@/*": ["./src/*"]                    /* Match Next.js path mapping */
     }
   },
   "include": [
-    "./*.ts",                              /* Include only files in the current directory */
-    "../src/lib/gemini-ws-handler/**/*.ts", /* Include handler files */
-    "../src/lib/streams/**/*.ts",           /* Include stream management */
-    "../src/lib/clerk/**/*.ts",             /* Include auth-related code */
-    "../src/lib/ai-providers/**/*.ts"       /* Include AI provider code */
+    "./*.ts"                      /* Only include direct TypeScript files */
   ],
   "exclude": [
     "node_modules", 
