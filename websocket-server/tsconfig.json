@@ -3,12 +3,30 @@
     "target": "ES2016",                     /* Set the JavaScript language version for emitted JavaScript and include compatible library declarations. */
     "module": "CommonJS",                  /* Specify what module code is generated. */
     "outDir": "./dist",                     /* Specify an output folder for all emitted files. */
-    "rootDir": "./",                    /* Specify the root folder within your source files. */
+    "rootDir": "../",                    /* Changed to parent directory to include imports from src/ */
     "esModuleInterop": true,             /* Emit additional JavaScript to ease support for importing CommonJS modules. This enables 'allowSyntheticDefaultImports' for type compatibility. */
     "forceConsistentCasingInFileNames": true, /* Ensure that casing is correct in imports. */
     "strict": true,                         /* Enable all strict type-checking options. */
-    "skipLibCheck": true                    /* Skip type checking all .d.ts files. */
+    "skipLibCheck": true,                    /* Skip type checking all .d.ts files. */
+    "baseUrl": "../",                       /* Base directory to resolve non-relative module names */
+    "paths": {
+      "@/*": ["./src/*"]                    /* Match Next.js path mapping */
+    }
   },
-  "include": ["server.ts", "manager.ts"], /* Files to include in compilation */
-  "exclude": ["node_modules", "dist"]    /* Folders to exclude */
+  "include": [
+    "server.ts", 
+    "manager.ts",
+    "../src/lib/gemini-ws-handler/**/*.ts", /* Include handler files */
+    "../src/lib/streams/**/*.ts",           /* Include stream management */
+    "../src/lib/clerk/**/*.ts",             /* Include auth-related code */
+    "../src/lib/ai-providers/**/*.ts"       /* Include AI provider code */
+  ],
+  "exclude": [
+    "node_modules", 
+    "dist",
+    "**/*.test.ts",                         /* Exclude test files */
+    "**/*.spec.ts",                         /* Exclude spec files */
+    "../src/lib/ai-providers/client-api.test.ts",       /* Explicitly exclude problem files */
+    "../src/lib/ai-providers/gemini-provider.test.ts"   /* Explicitly exclude problem files */
+  ]
 }

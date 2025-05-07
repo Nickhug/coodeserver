@@ -93,6 +93,39 @@ export async function checkUserCredits(requiredCredits: number = 1, req?: NextRe
 }
 
 /**
+ * Check if a user has credits available, looking up user by ID
+ */
+export async function checkUserCreditsById(userId: string, requiredCredits: number = 1) {
+  if (!userId) {
+    console.warn('[checkUserCreditsById] userId not provided.');
+    return {
+      hasCredits: false,
+      creditsRemaining: 0,
+    };
+  }
+  try {
+    const dbUser = await getUser(userId); // getUser is from ../supabase/client
+    if (!dbUser) {
+      console.warn(`[checkUserCreditsById] User with id ${userId} not found in database.`);
+      return {
+        hasCredits: false,
+        creditsRemaining: 0,
+      };
+    }
+    return {
+      hasCredits: dbUser.credits_remaining >= requiredCredits,
+      creditsRemaining: dbUser.credits_remaining,
+    };
+  } catch (error) {
+    console.error(`[checkUserCreditsById] Error checking credits for user ${userId}:`, error);
+    return {
+      hasCredits: false,
+      creditsRemaining: 0,
+    };
+  }
+}
+
+/**
  * Helper to check if the user is authenticated
  * For use in middleware or server actions
  */

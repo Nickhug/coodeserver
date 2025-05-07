@@ -1,7 +1,7 @@
-import { Server, IncomingMessage } from 'http';
+import { Server /*, IncomingMessage - no longer used */ } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { verifyToken } from '@clerk/backend';
-import { URL } from 'url';
+import { geminiWebSocketService } from '../src/lib/gemini-ws-handler/GeminiWebSocketService'; // Import the new service
 
 // Interface definitions for imported types
 export interface ToolCall {
@@ -21,9 +21,11 @@ export interface StreamContext {
   userId: string;
 }
 
-// Store connections mapped by connectionId, including authenticated userId
+// Store connections mapped by connectionId, including authenticated userId and state
 interface AuthenticatedWebSocket extends WebSocket {
   userId?: string;
+  connectionId: string; // Ensure connectionId is part of the type
+  isAuthenticated: boolean;
 }
 const connections = new Map<string, AuthenticatedWebSocket>();
 let wss: WebSocketServer | null = null;
@@ -49,32 +51,52 @@ export interface ToolResultMessage {
   output: unknown;
 }
 
+// Client to Server Auth Message
+export interface ClientAuthInitiateMessage {
+  type: 'auth.initiate';
+  token: string;
+}
+
+// Server to Client Auth Messages
+export interface ServerAuthSuccessMessage {
+  type: 'auth.success';
+  userId: string;
+  connectionId: string;
+}
+
+export interface ServerAuthFailureMessage {
+  type: 'auth.failure';
+  error: string;
+}
+
 // General event structure for client communication
 export interface BaseClientEvent {
   type: string;
-  requestId: string; // requestId is now mandatory for all client events for routing
+  requestId?: string; // requestId is now optional, as not all server-to-client events have it (e.g. auth responses)
 }
 
-export interface GeminiStartEvent extends BaseClientEvent { type: 'geminiStart'; }
-export interface GeminiContentEvent extends BaseClientEvent { type: 'geminiContent'; chunk: string; }
-export interface GeminiDoneEvent extends BaseClientEvent { type: 'geminiDone'; }
-export interface GeminiErrorEvent extends BaseClientEvent { type: 'geminiError'; error: string; message?: string; [key: string]: unknown; }
-export interface ExecuteToolClientEvent extends BaseClientEvent, ExecuteToolMessage { type: 'executeTool'; }
+export interface GeminiStartEvent extends BaseClientEvent { type: 'geminiStart'; requestId: string; } // Ensure requestId is mandatory here
+export interface GeminiContentEvent extends BaseClientEvent { type: 'geminiContent'; chunk: string; requestId: string; }
+export interface GeminiDoneEvent extends BaseClientEvent { type: 'geminiDone'; requestId: string; }
+export interface GeminiErrorEvent extends BaseClientEvent { type: 'geminiError'; error: string; message?: string; [key: string]: unknown; requestId: string; }
+export interface ExecuteToolClientEvent extends BaseClientEvent, ExecuteToolMessage { type: 'executeTool'; requestId: string; }
 
-export type ClientEvent = 
+export type ClientEvent =
   | GeminiStartEvent
   | GeminiContentEvent
   | ExecuteToolClientEvent // This now correctly includes all fields from ExecuteToolMessage
   | GeminiDoneEvent
-  | GeminiErrorEvent;
+  | GeminiErrorEvent
+  | ServerAuthSuccessMessage // Added for typing consistency if needed by a generic sender
+  | ServerAuthFailureMessage; // Added for typing consistency
 
-// Exported function to send auth success message via WebSocket
+// Exported function to send auth success message via WebSocket (DEPRECATED by new flow, but kept for now if used elsewhere)
 export function sendAuthSuccess(connectionId: string, token: string, userData: UserData) {
   const ws = connections.get(connectionId);
   console.log(`Attempting to send auth success to ${connectionId}`);
   if (ws) {
     ws.send(JSON.stringify({
-      type: 'auth:success',
+      type: 'auth:success', // Old type, consider updating if this function is reused
       token,
       user: userData
     }));
@@ -90,41 +112,61 @@ export function sendAuthSuccess(connectionId: string, token: string, userData: U
  * Sends a tool execution request to the client via WebSocket
  */
 export function sendToolExecutionRequest(userId: string, toolExecutionRequest: ExecuteToolMessage): boolean {
-  // Construct the event that matches ExecuteToolClientEvent structure
   const event: ExecuteToolClientEvent = {
-    ...toolExecutionRequest, // Spread properties from toolExecutionRequest
-    type: 'executeTool',    // Explicitly set type
-    requestId: toolExecutionRequest.requestId // Ensure requestId is set
+    ...toolExecutionRequest,
+    type: 'executeTool',
+    requestId: toolExecutionRequest.requestId
   };
   return sendEventToClient(userId, event);
 }
 
 /**
  * Sends a generic event to all WebSocket connections for a given user.
+ * TODO: Consider if this should target specific connectionId for stream events.
  */
 export function sendEventToClient(userId: string, event: ClientEvent): boolean {
   let sent = false;
-  console.log(`[WebSocket Manager] Attempting to send event type ${event.type} for requestId ${event.requestId} to user ${userId}`);
-  for (const [connectionId, ws] of connections.entries()) {
-    if (ws.userId === userId) {
+  const requestIdLog = 'requestId' in event && event.requestId ? event.requestId : 'N/A';
+  console.log(`[WebSocket Manager] Attempting to send event type ${event.type} for requestId ${requestIdLog} to user ${userId}`);
+  for (const [connId, ws] of connections.entries()) {
+    if (ws.userId === userId && ws.isAuthenticated) { // Only send to authenticated connections of the user
       try {
-        ws.send(JSON.stringify(event)); // event already includes requestId
-        console.log(`[WebSocket Manager] Sent event ${event.type} to connection ${connectionId} for user ${userId}`);
+        ws.send(JSON.stringify(event));
+        console.log(`[WebSocket Manager] Sent event ${event.type} to connection ${connId} for user ${userId}`);
         sent = true;
       } catch (error) {
-        console.error(`[WebSocket Manager] Error sending event ${event.type} to ${connectionId}:`, error);
+        console.error(`[WebSocket Manager] Error sending event ${event.type} to ${connId}:`, error);
       }
     }
   }
   if (!sent) {
-    console.warn(`[WebSocket Manager] No active WebSocket connections found for user ${userId} to send event ${event.type}`);
+    console.warn(`[WebSocket Manager] No active authenticated WebSocket connections found for user ${userId} to send event ${event.type}`);
   }
   return sent;
 }
 
 /**
+ * Sends an event to a specific WebSocket connection.
+ */
+export function sendEventToConnection(connectionId: string, event: ClientEvent): boolean {
+  const ws = connections.get(connectionId);
+  if (ws && ws.isAuthenticated) {
+    try {
+      ws.send(JSON.stringify(event));
+      console.log(`[WebSocket Manager] Sent event ${event.type} to specific connection ${connectionId}`);
+      return true;
+    } catch (error) {
+      console.error(`[WebSocket Manager] Error sending event ${event.type} to ${connectionId}:`, error);
+      return false;
+    }
+  } else {
+    console.warn(`[WebSocket Manager] Connection ${connectionId} not found or not authenticated for event ${event.type}`);
+    return false;
+  }
+}
+
+/**
  * Initializes the WebSocket server, attaching it to the provided HTTP server.
- * Includes authentication logic using Clerk during the handshake.
  */
 export function initWebSocketServer(server: Server) {
   if (wss) {
@@ -136,138 +178,144 @@ export function initWebSocketServer(server: Server) {
   wss = new WebSocketServer({
     server,
     path: '/api/ws', // Ensure path matches client requests
-    verifyClient: async (info: { origin: string; secure: boolean; req: IncomingMessage }, callback) => {
-      console.log(`[WebSocket Auth] Verifying client from origin: ${info.origin}`);
-
-      const url = new URL(info.req.url || '', `http://${info.req.headers.host}`);
-      const sessionToken = url.searchParams.get('__session'); // Clerk token often passed as '__session' query param
-
-      if (!sessionToken) {
-        console.error('[WebSocket Auth] Failed: No session token provided.');
-        return callback(false, 401, 'Unauthorized: No token');
-      }
-
-      try {
-        const claims = await verifyToken(sessionToken, {
-          secretKey: process.env.CLERK_SECRET_KEY,
-          // Add other verification options if needed (e.g., authorizedParty, clockSkew)
-        });
-        if (!claims.sub) {
-          console.error('[WebSocket Auth] Failed: Invalid token claims (no sub).');
-          return callback(false, 401, 'Unauthorized: Invalid token');
-        }
-        const userId = claims.sub;
-        console.log(`[WebSocket Auth] Success: Token verified for user ${userId}`);
-
-        // Attach userId to the request object to be used in the 'connection' event
-        (info.req as unknown as { userId: string }).userId = userId;
-
-        return callback(true); // Authentication successful
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error(`[WebSocket Auth] Failed: Token verification error: ${errorMessage}`);
-        return callback(false, 401, `Unauthorized: ${errorMessage}`);
-      }
-    },
+    // verifyClient is removed; auth happens post-connection
   });
   console.log("WebSocket server initialized. Setting up event listeners...");
 
-  wss.on('connection', (ws: AuthenticatedWebSocket, req: IncomingMessage) => {
-    const connectionId = Math.random().toString(36).substring(2, 15);
-    // Safely access userId from request
-    const userId = (req as unknown as { userId?: string }).userId;
+  wss.on('connection', (ws: AuthenticatedWebSocket /* req: IncomingMessage - no longer used */) => {
+    // Assign a connection ID immediately
+    ws.connectionId = Math.random().toString(36).substring(2, 15);
+    ws.isAuthenticated = false; // Initialize as not authenticated
+    ws.userId = undefined; // Ensure userId is not set initially
 
-    if (!userId) {
-      console.error(`[WebSocket Manager] Connection rejected for ${connectionId}: Missing user ID after auth.`);
-      ws.terminate();
-      return;
-    }
+    // Temporarily store the potentially unauthenticated connection to handle the auth message
+    // This is a simplified approach; a more robust system might use a separate map for pending connections.
+    connections.set(ws.connectionId, ws);
+    console.log(`[WebSocket Manager] Connection attempt received. ID: ${ws.connectionId}. Awaiting auth.`);
 
-    console.log(`[WebSocket Manager] Connection attempt received. Assigning ID: ${connectionId}`);
-
-    try {
-      ws.userId = userId; // Store userId on the WebSocket object itself
-      connections.set(connectionId, ws);
-      console.log(`[WebSocket Manager] Client connected and stored: ${connectionId} for user ${userId}`);
-
-      // Send connection ID back to the client
-      ws.send(JSON.stringify({ type: 'connection', connectionId }));
-      console.log(`[WebSocket Manager] Sent connectionId ${connectionId} to client.`);
-
-    } catch (error) {
-      console.error(`[WebSocket Manager] Error during initial connection setup for ${connectionId}:`, error);
-      try {
-        ws.terminate(); // Attempt to close the connection gracefully on error
-      } catch (terminateError) {
-        console.error(`[WebSocket Manager] Error terminating WebSocket for ${connectionId} after setup error:`, terminateError);
-      }
-      return; // Stop further setup if initial phase failed
-    }
+    // Send connection ID back to the client, indicating it needs to authenticate
+    ws.send(JSON.stringify({ type: 'connection.established', connectionId: ws.connectionId }));
 
     ws.on('message', async (message) => {
-      console.log(`[WebSocket Manager] Received message from ${connectionId}`);
+      let parsedMessage;
       try {
-        const parsedMessage = JSON.parse(message.toString());
+        parsedMessage = JSON.parse(message.toString());
+      } catch (error) {
+        console.error(`[WebSocket Manager] Error parsing message from ${ws.connectionId}:`, error);
+        ws.send(JSON.stringify({ type: 'error', message: 'Invalid JSON message' }));
+        return;
+      }
 
-        // Remove auth:poll handling, auth is done at connection time
-        if (parsedMessage.type === 'auth:poll') {
-          console.warn(`[WebSocket Manager] Received deprecated 'auth:poll' from ${connectionId}. Auth now happens at connection.`);
-          // Optionally send back a message indicating successful connection-time auth
-          ws.send(JSON.stringify({ type: 'auth:status', authenticated: true, userId: ws.userId }));
-        } 
-        // Handle tool result messages
-        else if (parsedMessage.type === 'toolResult') {
-          // Forward to the main Next.js app which has access to ActiveStreamManager
-          console.log(`[WebSocket Manager] Received toolResult. Forwarding to main app.`);
-          
-          // Forward tool result to the API endpoint
+      console.log(`[WebSocket Manager] Msg type ${parsedMessage.type} from ${ws.connectionId}`);
+
+      if (!ws.isAuthenticated) {
+        if (parsedMessage.type === 'auth.initiate') {
+          const authMessage = parsedMessage as ClientAuthInitiateMessage;
           try {
-            const { requestId, toolCallId, output } = parsedMessage as ToolResultMessage;
-            
-            // Make an HTTP request to the tool-result endpoint
-            fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/void/tool-result`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${userId}` // Use the userId as the auth token
-              },
-              body: JSON.stringify({
-                requestId, 
-                toolCallId, 
-                output
-              })
-            })
-            .then(res => {
-              if (!res.ok) {
-                console.error(`[WebSocket Manager] Error forwarding tool result: ${res.status} ${res.statusText}`);
-              }
-            })
-            .catch(err => {
-              console.error(`[WebSocket Manager] Failed to forward tool result:`, err);
+            const claims = await verifyToken(authMessage.token, {
+              secretKey: process.env.CLERK_SECRET_KEY,
             });
-            
-            console.log(`Tool result for ${requestId}/${toolCallId} forwarded to API`);
-          } catch (err) {
-            console.error('Error forwarding tool result:', err);
+            if (!claims.sub) {
+              throw new Error('Invalid token claims (no sub)');
+            }
+            ws.userId = claims.sub;
+            ws.isAuthenticated = true;
+            // Update the connection in the map now that it's authenticated
+            connections.set(ws.connectionId, ws); 
+
+            const successMessage: ServerAuthSuccessMessage = {
+              type: 'auth.success',
+              userId: ws.userId,
+              connectionId: ws.connectionId
+            };
+            ws.send(JSON.stringify(successMessage));
+            console.log(`[WebSocket Manager] Authentication successful for ${ws.connectionId}, user ${ws.userId}`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error(`[WebSocket Manager] Authentication failed for ${ws.connectionId}: ${errorMessage}`);
+            const failureMessage: ServerAuthFailureMessage = {
+              type: 'auth.failure',
+              error: `Authentication failed: ${errorMessage}`
+            };
+            ws.send(JSON.stringify(failureMessage));
+            ws.terminate(); // Close connection on auth failure
+            connections.delete(ws.connectionId); // Clean up
           }
         } else {
-          // Handle other message types here...
-          console.log(`[WebSocket Manager] Handling message type ${parsedMessage.type} for ${connectionId}`);
+          console.warn(`[WebSocket Manager] Received message type ${parsedMessage.type} from unauthenticated connection ${ws.connectionId}. Closing connection.`);
+          ws.send(JSON.stringify({ type: 'error', message: 'Authentication required. Please send auth.initiate message first.' }));
+          ws.terminate();
+          connections.delete(ws.connectionId); // Clean up
         }
-      } catch (error) {
-        console.error(`[WebSocket Manager] Error processing message from ${connectionId}:`, error);
-        ws.send(JSON.stringify({ type: 'error', message: 'Failed to process message' }));
+        return; // Do not process further messages if not authenticated or if it was an auth attempt
+      }
+
+      // Authenticated message handling (userId is guaranteed to be set here)
+      const userId = ws.userId!;
+
+      if (parsedMessage.type === 'toolResult') {
+        console.log(`[WebSocket Manager] Received toolResult for ${ws.connectionId}. Calling service.`);
+        try {
+          const { requestId, toolCallId, output } = parsedMessage as ToolResultMessage;
+          geminiWebSocketService.handleToolResult({
+            userId,
+            connectionId: ws.connectionId,
+            requestId,
+            toolCallId,
+            output
+          });
+        } catch (err: unknown) {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          console.error(`[WebSocket Manager] Error processing toolResult for service: ${errorMessage}`);
+          sendEventToConnection(ws.connectionId, {
+            type: 'geminiError',
+            requestId: parsedMessage.requestId, // Assuming toolResult messages have requestId
+            error: 'ToolResultServiceError',
+            message: `Error processing tool result: ${errorMessage}`
+          } as ClientEvent);
+        }
+      } else if (parsedMessage.type === 'gemini.startStream') {
+        console.log(`[WebSocket Manager] Received gemini.startStream for ${ws.connectionId}. Calling service.`);
+        try {
+          const { 
+            requestId, model, messages, systemMessage, 
+            temperature, maxTokens, tools 
+          } = parsedMessage;
+          
+          geminiWebSocketService.initiateStream({
+            userId,
+            connectionId: ws.connectionId,
+            requestId,
+            model,
+            messages,
+            systemMessage,
+            temperature,
+            maxTokens,
+            tools
+          });
+        } catch (err: unknown) {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          console.error(`[WebSocket Manager] Error processing gemini.startStream for service: ${errorMessage}`);
+          sendEventToConnection(ws.connectionId, {
+            type: 'geminiError',
+            requestId: parsedMessage.requestId, // Assuming gemini.startStream messages have requestId
+            error: 'StartStreamServiceError',
+            message: `Error initiating stream: ${errorMessage}`
+          } as ClientEvent);
+        }
+      } else {
+        console.log(`[WebSocket Manager] Unhandled authenticated message type ${parsedMessage.type} for ${ws.connectionId}`);
       }
     });
 
     ws.on('close', () => {
-      connections.delete(connectionId);
-      console.log(`[WebSocket Manager] Client disconnected: ${connectionId}`);
+      connections.delete(ws.connectionId);
+      console.log(`[WebSocket Manager] Client disconnected: ${ws.connectionId}, User: ${ws.userId || 'N/A'}`);
     });
 
     ws.on('error', (error) => {
-      console.error(`[WebSocket Manager] WebSocket error for ${connectionId}:`, error);
-      connections.delete(connectionId); // Ensure cleanup on error
+      console.error(`[WebSocket Manager] WebSocket error for ${ws.connectionId}:`, error);
+      connections.delete(ws.connectionId); // Ensure cleanup on error
     });
   });
 
@@ -276,6 +324,6 @@ export function initWebSocketServer(server: Server) {
     // Depending on the error, you might want to attempt recovery or shutdown
   });
 
-  console.log("WebSocket event listeners set up.");
+  console.log("WebSocket event listeners set up for direct service calls.");
 }
 
