@@ -3,7 +3,7 @@
  * This file contains the implementation of the Gemini provider API
  */
 
-import { GoogleGenerativeAI, Tool, SchemaType, Content, Part } from '@google/generative-ai';
+import { GoogleGenerativeAI, SchemaType, Content, Part } from '@google/generative-ai';
 import { LLMResponse } from './providers';
 import { generateUuid } from '../../utils/uuid';
 import { logger } from '../logger';
@@ -196,7 +196,7 @@ export async function sendGeminiRequest({
     parts?: any[];
     displayContent?: string;
     reasoning?: string;
-    anthropicReasoning?: any;
+
   }[];
   systemMessage?: string;
   temperature?: number;

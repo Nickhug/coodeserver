@@ -44,13 +44,13 @@ export async function POST(req: NextRequest) {
 
     // Check if user has enough credits
     const { hasCredits, creditsRemaining } = await checkUserCredits(requiredCredits);
-    
+
     if (!hasCredits) {
       return NextResponse.json(
-        { 
-          error: 'Insufficient credits', 
+        {
+          error: 'Insufficient credits',
           creditsRemaining,
-          requiredCredits 
+          requiredCredits
         },
         { status: 402 }
       );
@@ -79,7 +79,7 @@ export async function POST(req: NextRequest) {
 
   } catch (error) {
     console.error('Error in AI provider API:', error);
-    
+
     return NextResponse.json(
       { error: 'Internal server error', message: (error as Error).message },
       { status: 500 }
@@ -93,7 +93,6 @@ export async function GET() {
     // This could be expanded to fetch from a database or filter based on the user's plan
     const providers = {
       openai: ['gpt-4o', 'gpt-4', 'gpt-3.5-turbo'],
-      anthropic: ['claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku'],
       groq: ['llama3-70b-8192', 'mixtral-8x7b-32768'],
       mistral: ['mistral-large', 'mistral-medium', 'mistral-small'],
     };
@@ -101,10 +100,10 @@ export async function GET() {
     return NextResponse.json({ providers });
   } catch (error) {
     console.error('Error fetching providers:', error);
-    
+
     return NextResponse.json(
       { error: 'Internal server error', message: (error as Error).message },
       { status: 500 }
     );
   }
-} 
+}

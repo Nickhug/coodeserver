@@ -1,10 +1,9 @@
 import axios from 'axios';
 import { logUsage } from '../supabase/client';
 import { sendGeminiRequest, GEMINI_MODELS } from './gemini-provider';
-import { sendAnthropicRequest, ANTHROPIC_MODELS } from './anthropic-provider';
 
 // Provider types
-export type ApiProvider = 'openai' | 'anthropic' | 'groq' | 'mistral' | 'ollama' | 'custom' | 'gemini';
+export type ApiProvider = 'openai' | 'groq' | 'mistral' | 'ollama' | 'custom' | 'gemini';
 
 // Request/response types
 export type LLMRequestParams = {
@@ -34,11 +33,7 @@ export const providerConfig = {
     models: ['gpt-4o', 'gpt-4', 'gpt-3.5-turbo'],
     tokenMultiplier: 1.0, // 1 token = 1 credit
   },
-  anthropic: {
-    apiUrl: 'https://api.anthropic.com/v1/messages',
-    models: Object.keys(ANTHROPIC_MODELS),
-    tokenMultiplier: 1.0, // Varies by model, handled in anthropic-provider.ts
-  },
+
   groq: {
     apiUrl: 'https://api.groq.com/openai/v1/chat/completions',
     models: ['llama3-70b-8192', 'mixtral-8x7b-32768'],
@@ -69,7 +64,6 @@ export const providerConfig = {
 // Map to store API keys for each provider
 const apiKeys: Record<ApiProvider, string | null> = {
   openai: process.env.OPENAI_API_KEY || null,
-  anthropic: process.env.ANTHROPIC_API_KEY || null,
   groq: process.env.GROQ_API_KEY || null,
   mistral: process.env.MISTRAL_API_KEY || null,
   gemini: process.env.GEMINI_API_KEY || null,
@@ -157,26 +151,7 @@ export async function sendLLMRequest({
         tokensUsed = response.data.usage.total_tokens;
         break;
 
-      case 'anthropic':
-        // Use the dedicated Anthropic implementation
-        const anthropicResponse = await sendAnthropicRequest({
-          apiKey: apiKey!,
-          model,
-          messages: [{ role: 'user', content: prompt }],
-          temperature,
-          maxTokens,
-        });
 
-        // Log usage to database
-        await logUsage({
-          user_id: userId,
-          provider,
-          model,
-          tokens_used: anthropicResponse.tokensUsed,
-          credits_used: anthropicResponse.creditsUsed,
-        });
-
-        return anthropicResponse;
 
       case 'groq':
         response = await axios.post(
@@ -251,7 +226,6 @@ export async function sendLLMRequest({
       case 'mistral':
         responseText = response.data.choices[0].message.content;
         break;
-      // Anthropic is handled separately above
       case 'ollama':
         responseText = response.data.message.content;
         break;

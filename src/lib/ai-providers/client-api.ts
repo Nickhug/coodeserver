@@ -91,7 +91,6 @@ const requestSchema = z.object({
 // Map client provider names to server provider names
 const providerNameMap: Record<string, ApiProvider> = {
   'openAI': 'openai',
-  'anthropic': 'anthropic',
   'groq': 'groq',
   'mistral': 'mistral',
   'ollama': 'ollama',
@@ -195,17 +194,7 @@ export async function handleClientRequest(req: NextRequest) {
       });
     }
 
-    // Special handling for Anthropic provider
-    if (serverProviderName === 'anthropic') {
-      // For Anthropic, we'll use the dedicated endpoints
-      // The client will handle streaming directly with those endpoints
-      return NextResponse.json({
-        useSpecialEndpoint: true,
-        provider: 'anthropic',
-        streamEndpoint: '/api/void/anthropic-stream',
-        requestId
-      });
-    }
+
 
     // For other providers, use the standard approach
     const llmResponse = await sendLLMRequest({
