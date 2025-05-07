@@ -7,7 +7,6 @@ import { sendGeminiRequest } from '../../../../lib/ai-providers/gemini-provider'
 import { logUsage } from '../../../../lib/supabase/client';
 import { logger } from '../../../../lib/logger';
 import { createCorsResponse } from '../../../../lib/api-utils';
-import { generateUuid } from '../../../../utils/uuid';
 
 // Validate request body
 const requestSchema = z.object({
@@ -39,6 +38,13 @@ const requestSchema = z.object({
   providerName: z.string().optional(), // Support Void's providerName field
   isServerRequest: z.boolean().optional(), // Support Void's isServerRequest field
 });
+
+// Define interface for tracked tool calls
+interface TrackedToolCall {
+  name: string;
+  parameters: Record<string, unknown>;
+  id: string;
+}
 
 /**
  * Handle OPTIONS requests for CORS preflight
@@ -98,13 +104,8 @@ export async function POST(req: NextRequest) {
         } = result.data;
 
         // Log the received messages for debugging
-        logger.info(`Received messages: ${JSON.stringify(messages)}`);
-
-        // We'll pass the messages directly to sendGeminiRequest
-        // The convertToGeminiMessage function will handle the format conversion
-
-        // Log the received messages for detailed debugging
-        logger.info(`Received message structure: ${JSON.stringify(messages.map(m => Object.keys(m)))}`);
+        logger.debug(`Received messages: ${JSON.stringify(messages)}`);
+        logger.debug(`Received message structure: ${JSON.stringify(messages.map(m => Object.keys(m)))}`);
 
         // For credit estimation, extract text content where possible
         const textContents = messages.map(m => {
@@ -163,80 +164,97 @@ export async function POST(req: NextRequest) {
           requestId
         })));
 
-        // Variable to track accumulated text (not used, but needed for TypeScript)
+        // Variable to track accumulated text and tool calls
         let fullText = '';
+        const toolCalls: Record<string, TrackedToolCall> = {};
 
         // Ensure messages are in a format that sendGeminiRequest can handle
-        // This is a safety measure in case the type checking is still strict
-        const formattedMessages = messages.map(message => {
-          // Return the message as is - the conversion will happen in sendGeminiRequest
-          return message;
-        }) as any; // Use type assertion to bypass TypeScript's strict checking
+        const formattedMessages = messages;
 
-        // Log the formatted messages
-        logger.info(`Sending formatted messages to Gemini: ${JSON.stringify(formattedMessages)}`);
-
-        // Log system message if present
+        // Log system message and tools if present
         if (systemMessage) {
-          logger.info(`System message present, length: ${systemMessage.length}`);
-          logger.info(`System message preview: ${systemMessage.substring(0, 200)}...`);
-
-          // Check if the system message contains XML tool definitions
-          if (systemMessage.includes('<read_file>') ||
-              systemMessage.includes('Tool calling details:') ||
-              systemMessage.includes('Available tools:')) {
-            logger.info(`System message contains tool definitions`);
-          }
-        } else {
-          logger.info(`No system message provided`);
+          logger.debug(`System message present, length: ${systemMessage.length}`);
+          logger.debug(`System message preview: ${systemMessage.substring(0, 200)}...`);
         }
 
-        // Log tools if present
         if (tools && tools.length > 0) {
-          logger.info(`Tools present: ${tools.length} tools`);
-          logger.info(`Tools preview: ${JSON.stringify(tools.map(t => t.name))}`);
-        } else {
-          logger.info(`No tools provided`);
+          logger.debug(`Tools present: ${tools.length} tools`);
+          logger.debug(`Tools preview: ${JSON.stringify(tools.map(t => t.name))}`);
         }
 
         // Send request to Gemini with streaming
         const response = await sendGeminiRequest({
           apiKey: process.env.GEMINI_API_KEY!,
           model,
-          messages: formattedMessages, // Use formatted messages
+          messages: formattedMessages,
           systemMessage,
           temperature,
           maxTokens,
           tools,
           onStream: (text, toolCallUpdate) => {
-            // Format the tool call if present
-            let formattedToolCall = null;
-            if (toolCallUpdate) {
-              formattedToolCall = {
-                name: toolCallUpdate.name,
-                parameters: toolCallUpdate.parameters || {},
-                id: toolCallUpdate.id || generateUuid()
-              };
+            // If we have text content, send it
+            if (text) {
+              controller.enqueue(encoder.encode(JSON.stringify({
+                event: 'chunk',
+                text,
+                requestId
+              })));
 
-              // Log the tool call for debugging
-              logger.info(`Tool call detected in stream chunk: ${JSON.stringify(formattedToolCall)}`);
+              // Accumulate text
+              fullText += text;
             }
+            
+            // Handle tool call if present
+            if (toolCallUpdate) {
+              const { name, parameters, id } = toolCallUpdate;
+              
+              // Make sure we have a valid ID
+              if (id) {
+                // Track this tool call
+                if (!toolCalls[id]) {
+                  toolCalls[id] = { 
+                    name, 
+                    parameters: { ...(parameters || {}) }, 
+                    id 
+                  };
+                } else {
+                  // Update existing tool call parameters
+                  toolCalls[id].parameters = { 
+                    ...toolCalls[id].parameters, 
+                    ...(parameters || {}) 
+                  };
+                }
 
-            // Send chunk to client
-            controller.enqueue(encoder.encode(JSON.stringify({
-              event: 'chunk',
-              text,
-              toolCall: formattedToolCall,
-              requestId
-            })));
-
-            // Accumulate text (not used, but kept for potential future use)
-            fullText += text;
+                // Log the tool call for debugging
+                logger.info(`Tool call in stream: ${name}, ID: ${id}`);
+                
+                // Send the tool call to the client
+                controller.enqueue(encoder.encode(JSON.stringify({
+                  event: 'tool',
+                  toolCall: {
+                    name,
+                    parameters: parameters || {},
+                    id
+                  },
+                  requestId
+                })));
+              }
+            }
           }
         });
 
         // Deduct credits
         await updateUserCredits(userInfo.dbUser.id, -response.creditsUsed);
+
+        // Send final response to confirm stream completion
+        controller.enqueue(encoder.encode(JSON.stringify({
+          event: 'end',
+          text: fullText,
+          tokensUsed: response.tokensUsed,
+          creditsUsed: response.creditsUsed,
+          toolCall: response.toolCall,
+          requestId
+        })));
 
         logger.info(`Completed Gemini streaming request for user ${userInfo.dbUser.id}`, {
           tokensUsed: response.tokensUsed,
@@ -250,70 +268,34 @@ export async function POST(req: NextRequest) {
           user_id: userInfo.dbUser.id,
           provider: 'gemini',
           model,
-          tokens_used: response.tokensUsed,
           credits_used: response.creditsUsed,
+          tokens_used: response.tokensUsed,
+        }).catch(error => {
+          logger.error('Failed to log usage', error);
         });
 
-        // Format the tool call to match what the client expects
-        let formattedToolCall = null;
-        if (response.toolCall) {
-          formattedToolCall = {
-            name: response.toolCall.name,
-            parameters: response.toolCall.parameters || {},
-            id: response.toolCall.id || generateUuid()
-          };
-
-          // Log the formatted tool call for debugging
-          logger.info(`Sending formatted tool call to client: ${JSON.stringify(formattedToolCall)}`);
-        }
-
-        // Send final response
-        controller.enqueue(encoder.encode(JSON.stringify({
-          event: 'end',
-          fullText: response.text,
-          tokensUsed: response.tokensUsed,
-          creditsUsed: response.creditsUsed,
-          creditsRemaining: creditsRemaining - response.creditsUsed,
-          toolCall: formattedToolCall,
-          requestId
-        })));
-
-        // Close the stream
         controller.close();
-      } catch (error) {
-        logger.error('Error in Gemini streaming API:', error);
-
-        // Get detailed error information
-        const errorMessage = (error as Error).message;
-        const errorStack = (error as Error).stack;
-
-        // Log detailed error for debugging
-        logger.error(`Detailed error in Gemini streaming API: ${errorMessage}\n${errorStack}`);
-
-        // Send error to client
+      } catch (error: any) {
+        logger.error('Error in Gemini streaming request:', error);
         controller.enqueue(encoder.encode(JSON.stringify({
           event: 'error',
-          error: 'Internal server error',
-          message: errorMessage,
-          details: errorStack
+          error: error.message || 'Internal Server Error',
+          requestId: error.requestId || ''
         })));
-
-        // Close the stream
         controller.close();
       }
     }
   });
 
-  // Return the stream response
+  // Return streaming response with proper headers
   return new Response(customReadable, {
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': 'vscode-file://vscode-app',
-      'Access-Control-Allow-Credentials': 'true',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, HEAD, PUT, DELETE',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept, X-Request-Type, X-Request-ID',
-    },
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    }
   });
 }

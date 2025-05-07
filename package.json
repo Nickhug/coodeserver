@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.1",
     "@clerk/backend": "1.31.2",
     "@clerk/nextjs": "^6.18.5",
     "@google/generative-ai": "^0.24.1",

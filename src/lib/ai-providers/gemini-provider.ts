@@ -81,7 +81,7 @@ function convertToGeminiMessage(message: any): Content {
   const role = message.role === 'system' ? 'user' : message.role;
 
   // Log the message for debugging
-  logger.info(`Converting message to Gemini format: ${JSON.stringify(message)}`);
+  logger.debug(`Converting message to Gemini format: ${JSON.stringify(message)}`);
 
   // Handle Void's format with parts array
   if (message.parts && Array.isArray(message.parts)) {
@@ -211,7 +211,7 @@ export async function sendGeminiRequest({
 
     // Log the system message for debugging
     if (systemMessage) {
-      logger.info(`System message: ${systemMessage.substring(0, 200)}...`);
+      logger.debug(`System message: ${systemMessage.substring(0, 200)}...`);
     }
 
     // Get the generative model with system instruction
@@ -230,7 +230,7 @@ export async function sendGeminiRequest({
     // We're now using the systemInstruction parameter instead of adding a separate message
 
     // Log the converted messages for debugging
-    logger.info(`Converted Gemini messages: ${JSON.stringify(geminiMessages)}`);
+    logger.debug(`Converted Gemini messages: ${JSON.stringify(geminiMessages)}`);
 
     // Validate that the messages are in the correct format
     for (const message of geminiMessages) {
@@ -277,14 +277,14 @@ export async function sendGeminiRequest({
       logger.info(`Processing ${tools.length} tools for Gemini`);
 
       // Log the tools for debugging
-      logger.info(`Tools: ${JSON.stringify(tools.map(t => t.name))}`);
+      logger.debug(`Tools: ${JSON.stringify(tools.map(t => t.name))}`);
 
       // Convert tools to the format expected by Gemini
       // We're using any here to bypass TypeScript's strict checking
       // This is necessary because the Gemini API has complex types
       const geminiTools: any[] = [{
         functionDeclarations: tools.map(tool => {
-          logger.info(`Processing tool: ${tool.name}`);
+          logger.debug(`Processing tool: ${tool.name}`);
 
           // Create required properties array
           const requiredProperties = Object.keys(tool.parameters);
@@ -310,14 +310,13 @@ export async function sendGeminiRequest({
       toolsConfig = { tools: geminiTools };
 
       // Log the formatted tools for debugging
-      logger.info(`Formatted tools for Gemini: ${JSON.stringify(geminiTools.map((t: any) => t.functionDeclarations.map((f: any) => f.name)))}`);
+      logger.debug(`Formatted tools for Gemini: ${JSON.stringify(geminiTools.map((t: any) => t.functionDeclarations.map((f: any) => f.name)))}`);
     }
 
     // If streaming is requested
     if (onStream) {
       let fullText = '';
-      let toolName = '';
-      let toolParamsStr = '';
+      let activeToolCall: { name: string, parameters: any, id: string } | null = null;
 
       // Create the request configuration
       const requestConfig = {
@@ -326,7 +325,7 @@ export async function sendGeminiRequest({
       };
 
       // Log the full request configuration
-      logger.info(`Sending streaming request with config: ${JSON.stringify(requestConfig)}`);
+      logger.debug(`Sending streaming request with config: ${JSON.stringify(requestConfig)}`);
 
       const result = await generativeModel.generateContentStream(requestConfig);
 
@@ -337,31 +336,42 @@ export async function sendGeminiRequest({
 
         // Check for function calls
         const functionCalls = chunk.functionCalls();
-        let toolCallUpdate = null;
-
+        
         if (functionCalls && functionCalls.length > 0) {
-          const functionCall = functionCalls[0];
-          toolName = functionCall.name || '';
-          toolParamsStr = JSON.stringify(functionCall.args || {});
-
-          // Create tool call update object
-          toolCallUpdate = {
-            name: toolName,
-            parameters: functionCall.args || {},
-            id: generateUuid()
-          };
-
-          // Log the function call for debugging
-          logger.info(`Function call detected: ${toolName} with params: ${toolParamsStr}`);
+          // Process each function call in this chunk
+          for (const functionCall of functionCalls) {
+            const toolName = functionCall.name || '';
+            const toolParams = functionCall.args || {};
+            
+            // If this is a new tool call (or the first chunk with a tool call)
+            if (!activeToolCall || activeToolCall.name !== toolName) {
+              // Create a new tool call with a unique ID
+              const toolCallId = generateUuid();
+              activeToolCall = {
+                name: toolName,
+                parameters: toolParams,
+                id: toolCallId
+              };
+              
+              // Send the tool call to the client
+              onStream('', activeToolCall);
+              logger.info(`Started new tool call: ${toolName} with ID: ${toolCallId}`);
+            } else {
+              // Update parameters of existing tool call
+              activeToolCall.parameters = {
+                ...activeToolCall.parameters,
+                ...toolParams
+              };
+              
+              // Send the updated tool call to the client
+              onStream('', activeToolCall);
+              logger.info(`Updated existing tool call: ${toolName}`);
+            }
+          }
+        } else if (newText) {
+          // Only send text if we have something to send
+          onStream(newText);
         }
-
-        // Call the stream callback with tool call information if present
-        onStream(newText, toolCallUpdate || undefined);
-      }
-
-      // If we have a tool call, log it
-      if (toolName) {
-        logger.info(`Final tool call: ${toolName} with params: ${toolParamsStr}`);
       }
 
       // Calculate token usage - handle different message formats
@@ -388,11 +398,7 @@ export async function sendGeminiRequest({
         text: fullText,
         tokensUsed: totalTokens,
         creditsUsed: creditsUsed,
-        toolCall: toolName ? {
-          name: toolName,
-          parameters: JSON.parse(toolParamsStr),
-          id: generateUuid()
-        } : undefined
+        toolCall: activeToolCall || undefined
       };
     }
     // Non-streaming request
@@ -404,7 +410,7 @@ export async function sendGeminiRequest({
       };
 
       // Log the full request configuration
-      logger.info(`Sending non-streaming request with config: ${JSON.stringify(requestConfig)}`);
+      logger.debug(`Sending non-streaming request with config: ${JSON.stringify(requestConfig)}`);
 
       const result = await generativeModel.generateContent(requestConfig);
 
