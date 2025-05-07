@@ -26,9 +26,13 @@ interface AuthenticatedWebSocket extends WebSocket {
   userId?: string;
   connectionId: string; // Ensure connectionId is part of the type
   isAuthenticated: boolean;
+  isAlive?: boolean; // For heartbeat
+  lastPong?: number; // For heartbeat
 }
 const connections = new Map<string, AuthenticatedWebSocket>();
 let wss: WebSocketServer | null = null;
+const HEARTBEAT_INTERVAL = 30000; // 30 seconds
+const HEARTBEAT_TIMEOUT = 35000; // 35 seconds (must be > HEARTBEAT_INTERVAL)
 
 // Type for user data passed around
 export type UserData = {
@@ -187,14 +191,19 @@ export function initWebSocketServer(server: Server) {
     ws.connectionId = Math.random().toString(36).substring(2, 15);
     ws.isAuthenticated = false; // Initialize as not authenticated
     ws.userId = undefined; // Ensure userId is not set initially
+    ws.isAlive = true; // Initialize for heartbeat
+    ws.lastPong = Date.now(); // Initialize for heartbeat
 
-    // Temporarily store the potentially unauthenticated connection to handle the auth message
-    // This is a simplified approach; a more robust system might use a separate map for pending connections.
     connections.set(ws.connectionId, ws);
     console.log(`[WebSocket Manager] Connection attempt received. ID: ${ws.connectionId}. Awaiting auth.`);
 
-    // Send connection ID back to the client, indicating it needs to authenticate
     ws.send(JSON.stringify({ type: 'connection.established', connectionId: ws.connectionId }));
+
+    ws.on('pong', () => {
+      ws.isAlive = true;
+      ws.lastPong = Date.now();
+      console.debug(`[WebSocket Manager] Pong received from ${ws.connectionId}`);
+    });
 
     ws.on('message', async (message) => {
       let parsedMessage;
@@ -208,6 +217,13 @@ export function initWebSocketServer(server: Server) {
 
       console.log(`[WebSocket Manager] Msg type ${parsedMessage.type} from ${ws.connectionId}`);
 
+      // Handle ping from client, respond with pong
+      if (parsedMessage.type === 'ping') {
+        ws.send(JSON.stringify({ type: 'pong' }));
+        console.debug(`[WebSocket Manager] Responded to ping from ${ws.connectionId}`);
+        return;
+      }
+      
       if (!ws.isAuthenticated) {
         if (parsedMessage.type === 'auth.initiate') {
           const authMessage = parsedMessage as ClientAuthInitiateMessage;
@@ -319,8 +335,35 @@ export function initWebSocketServer(server: Server) {
     });
   });
 
+  // Heartbeat mechanism to detect and close dead connections
+  const interval = setInterval(function ping() {
+    wss?.clients.forEach((client) => {
+      const ws = client as AuthenticatedWebSocket;
+      if (!ws.isAlive || (Date.now() - (ws.lastPong || 0)) > HEARTBEAT_TIMEOUT) {
+        console.log(`[WebSocket Manager] Heartbeat: Terminating dead connection ${ws.connectionId}`);
+        connections.delete(ws.connectionId);
+        return ws.terminate();
+      }
+
+      ws.isAlive = false; // Assume client is dead until pong is received
+      try {
+        ws.ping(() => {}); // Send ping
+        console.debug(`[WebSocket Manager] Heartbeat: Ping sent to ${ws.connectionId}`);
+      } catch (e) {
+        console.error(`[WebSocket Manager] Heartbeat: Error sending ping to ${ws.connectionId}`, e);
+        connections.delete(ws.connectionId);
+        ws.terminate(); // Terminate if ping fails to send
+      }
+    });
+  }, HEARTBEAT_INTERVAL);
+
+  wss.on('close', () => {
+    clearInterval(interval);
+  });
+
   wss.on('error', (error) => {
     console.error("FATAL: WebSocketServer emitted error:", error);
+    clearInterval(interval); // Stop heartbeat on server error
     // Depending on the error, you might want to attempt recovery or shutdown
   });
 

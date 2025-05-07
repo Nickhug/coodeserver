@@ -3,9 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "node server.js",
-    "build": "next build",
-    "start": "node server.js",
+    "dev": "npm run build:ws && node server.js",
+    "build": "next build && npm run build:ws",
+    "build:ws": "cd websocket-server && npm run build",
+    "start": "npm run build:ws && node server.js",
     "lint": "next lint"
   },
   "dependencies": {

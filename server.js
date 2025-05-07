@@ -1,18 +1,21 @@
-const { createServer } = require('http');
-const { parse } = require('url');
-const next = require('next');
-const ws = require('ws');
-const { verifyToken } = require('@clerk/backend');
+import { createServer } from 'http';
+import { parse } from 'url';
+import next from 'next';
+// const ws = require('ws'); // No longer need 'ws' directly here
+// const { verifyToken } = require('@clerk/backend'); // verifyToken will be handled by the new manager
 
-// Make sure we have the WebSocketServer
-const WebSocketServer = ws.WebSocketServer || ws.Server;
+// Import the new WebSocket server initializer with the correct path to the compiled file
+import { initWebSocketServer } from './websocket-server/dist/websocket-server/manager.js';
+
+// Make sure we have the WebSocketServer - NO LONGER NEEDED HERE
+// const WebSocketServer = ws.WebSocketServer || ws.Server;
 
 const dev = process.env.NODE_ENV !== 'production';
 const app = next({ dev });
 const handle = app.getRequestHandler();
 
-// Store authenticated WebSocket connections with their user IDs
-const connections = new Map();
+// Store authenticated WebSocket connections with their user IDs - NO LONGER NEEDED HERE
+// const connections = new Map();
 
 app.prepare().then(() => {
   const server = createServer(async (req, res) => {
@@ -26,94 +29,31 @@ app.prepare().then(() => {
     }
   });
 
-  // Initialize WebSocket server
-  const wss = new WebSocketServer({
-    server,
-    path: '/api/ws',
-    // Allow all connections initially, we'll handle authentication after connection
-    verifyClient: (info, callback) => {
-      console.log(`[WebSocket Auth] Client connecting from origin: ${info.origin}`);
-      // Accept all connections initially
-      return callback(true);
-    }
-  });
+  // Initialize WebSocket server - OLD IMPLEMENTATION REMOVED
+  // const wss = new WebSocketServer({
+  // server,
+  // path: '/api/ws',
+  // verifyClient: (info, callback) => {
+  // console.log(`[WebSocket Auth] Client connecting from origin: ${info.origin}`);
+  // return callback(true);
+  // }
+  // });
 
-  // Handle WebSocket connections
-  wss.on('connection', (ws, req) => {
-    const connectionId = Math.random().toString(36).substring(2, 15);
+  // Handle WebSocket connections - OLD IMPLEMENTATION REMOVED
+  // wss.on('connection', (ws, req) => { ... });
 
-    console.log(`[WebSocket Manager] Connection attempt received. Assigning ID: ${connectionId}`);
+  // Initialize the new WebSocket server from manager.ts
+  initWebSocketServer(server);
+  console.log('[Main Server] New WebSocket server initialized via manager.');
 
-    try {
-      // Store the connection without requiring authentication initially
-      connections.set(connectionId, ws);
-      console.log(`[WebSocket Manager] Client connected and stored: ${connectionId}`);
 
-      // Send connection ID back to the client
-      ws.send(JSON.stringify({ type: 'connection', connectionId }));
-      console.log(`[WebSocket Manager] Sent connectionId ${connectionId} to client.`);
+  // Export a function to send auth success messages - NO LONGER NEEDED HERE, handled by manager
+  // global.sendAuthSuccess = (connectionId, token, userData) => { ... };
 
-      // Handle messages
-      ws.on('message', async (message) => {
-        console.log(`[WebSocket Manager] Received message from ${connectionId}: ${message}`);
-        try {
-          const parsedMessage = JSON.parse(message.toString());
-
-          if (parsedMessage.type === 'ping') {
-            ws.send(JSON.stringify({ type: 'pong' }));
-          } else {
-            // Handle other message types here
-            console.log(`[WebSocket Manager] Handling message type ${parsedMessage.type} for ${connectionId}`);
-          }
-        } catch (error) {
-          console.error(`[WebSocket Manager] Error processing message from ${connectionId}:`, error);
-          ws.send(JSON.stringify({ type: 'error', message: 'Failed to process message' }));
-        }
-      });
-
-      // Handle connection close
-      ws.on('close', () => {
-        connections.delete(connectionId);
-        console.log(`[WebSocket Manager] Client disconnected: ${connectionId}`);
-      });
-
-      // Handle errors
-      ws.on('error', (error) => {
-        console.error(`[WebSocket Manager] WebSocket error for ${connectionId}:`, error);
-        connections.delete(connectionId); // Ensure cleanup on error
-      });
-    } catch (error) {
-      console.error(`[WebSocket Manager] Error during initial connection setup for ${connectionId}:`, error);
-      try {
-        ws.terminate(); // Attempt to close the connection gracefully on error
-      } catch (terminateError) {
-        console.error(`[WebSocket Manager] Error terminating WebSocket for ${connectionId} after setup error:`, terminateError);
-      }
-    }
-  });
-
-  // Export a function to send auth success messages
-  global.sendAuthSuccess = (connectionId, token, userData) => {
-    const ws = connections.get(connectionId);
-    console.log(`Attempting to send auth success to ${connectionId}`);
-    if (ws) {
-      ws.send(JSON.stringify({
-        type: 'auth:success',
-        token,
-        user: userData
-      }));
-      console.log(`Sent auth success to ${connectionId}`);
-      return true;
-    } else {
-      console.log(`WebSocket connection ${connectionId} not found.`);
-    }
-    return false;
-  };
-
-  // Handle server errors
-  wss.on('error', (error) => {
-    console.error("FATAL: WebSocketServer emitted error:", error);
-  });
+  // Handle server errors - OLD WSS ERRORS NO LONGER NEEDED HERE
+  // wss.on('error', (error) => {
+  // console.error("FATAL: WebSocketServer emitted error:", error);
+  // });
 
   // Start the server
   const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -121,6 +61,7 @@ app.prepare().then(() => {
   server.listen(PORT, HOST, (err) => {
     if (err) throw err;
     console.log(`> Ready on http://${HOST}:${PORT}`);
-    console.log(`> WebSocket server attached and listening on ws://${HOST}:${PORT}/api/ws`);
+    // The new manager should log its own WebSocket path
+    // console.log(`> WebSocket server attached and listening on ws://${HOST}:${PORT}/api/ws`);
   });
 });
