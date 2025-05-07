@@ -23,33 +23,33 @@ const shouldLog = (level: LogLevel): boolean => {
 };
 
 // Format the log message
-const formatLog = (level: LogLevel, message: string, data?: any): string => {
+const formatLog = (level: LogLevel, message: string, data?: unknown): string => {
   const timestamp = new Date().toISOString();
-  const dataStr = data ? `\n${JSON.stringify(data, null, 2)}` : '';
+  const dataStr = data !== undefined ? `\n${JSON.stringify(data, null, 2)}` : '';
   return `[${timestamp}] [${level.toUpperCase()}] ${message}${dataStr}`;
 };
 
 // Logger implementation
 export const logger = {
-  debug: (message: string, data?: any) => {
+  debug: (message: string, data?: unknown) => {
     if (shouldLog('debug')) {
       console.debug(formatLog('debug', message, data));
     }
   },
   
-  info: (message: string, data?: any) => {
+  info: (message: string, data?: unknown) => {
     if (shouldLog('info')) {
       console.info(formatLog('info', message, data));
     }
   },
   
-  warn: (message: string, data?: any) => {
+  warn: (message: string, data?: unknown) => {
     if (shouldLog('warn')) {
       console.warn(formatLog('warn', message, data));
     }
   },
   
-  error: (message: string, error?: any) => {
+  error: (message: string, error?: unknown) => {
     if (shouldLog('error')) {
       console.error(formatLog('error', message, error));
       if (error instanceof Error) {

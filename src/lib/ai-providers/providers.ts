@@ -19,9 +19,14 @@ export type LLMResponse = {
   text: string;
   tokensUsed: number;
   creditsUsed: number;
+  // Additional properties for tool calling
+  success?: boolean;
+  error?: string;
+  generatedText?: string;
+  waitingForToolCall?: boolean;
   toolCall?: {
     name: string;
-    parameters: any;
+    parameters: Record<string, unknown>;
     id: string;
   };
 };
@@ -116,7 +121,7 @@ export async function sendLLMRequest({
         const geminiResponse = await sendGeminiRequest({
           apiKey: apiKey!,
           model,
-          messages: [{ role: 'user', content: prompt }],
+          messages: [{ role: 'user', parts: [{ text: prompt }] }],
           temperature,
           maxTokens,
         });
@@ -150,8 +155,6 @@ export async function sendLLMRequest({
         );
         tokensUsed = response.data.usage.total_tokens;
         break;
-
-
 
       case 'groq':
         response = await axios.post(

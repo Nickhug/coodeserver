@@ -3,10 +3,30 @@
  * This file contains the implementation of the Gemini provider API
  */
 
-import { GoogleGenerativeAI, SchemaType, Content, Part } from '@google/generative-ai';
+import { GoogleGenerativeAI, SchemaType, Content, Part as GeminiSDKPart } from '@google/generative-ai';
 import { LLMResponse } from './providers';
 import { generateUuid } from '../../utils/uuid';
 import { logger } from '../logger';
+
+// Export GeminiPart and GeminiMessage interfaces
+export interface GeminiPart {
+  text?: string;
+  inlineData?: {
+    mimeType: string;
+    data: string;
+  };
+  // functionCall?: any; // Consider defining a proper type if used for function calls
+  // functionResponse?: any; // Consider defining a proper type if used for function responses
+}
+
+export interface GeminiMessage {
+  role: 'user' | 'assistant' | 'system' | 'model' | 'tool'; // 'model' is equivalent to 'assistant' for Gemini
+  parts: GeminiPart[];
+  content?: string | Record<string, unknown>; // For flexibility, though 'parts' is preferred by Gemini
+  displayContent?: string; // Void-specific, for display
+  reasoning?: string; // Void-specific
+  toolCallId?: string; // For associating tool responses
+}
 
 // Define Gemini model types
 export type GeminiModelName =
@@ -54,12 +74,9 @@ export const GEMINI_MODELS: Record<GeminiModelName, GeminiModelConfig> = {
 
 // Helper function to get model config with fallback for unknown models
 function getModelConfig(model: string): GeminiModelConfig {
-  // Check if the model is in our predefined list
   if (model in GEMINI_MODELS) {
     return GEMINI_MODELS[model as GeminiModelName];
   }
-
-  // Default config for unknown models
   return {
     contextWindow: 1_048_576,
     maxOutputTokens: 8_192,
@@ -67,116 +84,53 @@ function getModelConfig(model: string): GeminiModelConfig {
   };
 }
 
-// Estimate token count (very rough estimate)
 function estimateTokenCount(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-/**
- * Convert a chat message to Gemini format
- * Handles both standard format and Void's format with parts array
- */
-function convertToGeminiMessage(message: any): Content {
-  // Determine the role (convert 'system' to 'user' as Gemini doesn't support system role)
-  const role = message.role === 'system' ? 'user' : message.role;
+function convertToGeminiContent(message: GeminiMessage): Content {
+  const role = message.role === 'system' ? 'user' : (message.role === 'assistant' ? 'model' : message.role);
+  logger.debug(`Converting message to Gemini content: ${JSON.stringify(message)}`);
 
-  // Log the message for debugging
-  logger.debug(`Converting message to Gemini format: ${JSON.stringify(message)}`);
-
-  // Handle Void's format with parts array
-  if (message.parts && Array.isArray(message.parts)) {
-    // If message already has parts array in Void format, convert it to Gemini format
-    return {
-      role: role,
-      parts: message.parts.map((part: any) => {
-        // If part has text property, use it directly
-        if (part.text !== undefined) {
-          return { text: part.text };
-        }
-        // If part has data property (for images, etc.), use it directly
-        if (part.data !== undefined) {
-          return {
-            inlineData: {
-              data: part.data,
-              mimeType: part.mimeType || 'text/plain'
-            }
-          };
-        }
-        // Otherwise, convert to string
-        return { text: JSON.stringify(part) };
-      })
-    };
-  }
-
-  // Handle displayContent field from Void
-  if (message.displayContent) {
-    return {
-      role: role,
-      parts: [{ text: message.displayContent }],
-    };
-  }
-
-  // Handle standard format with content field
-  if (typeof message.content === 'string') {
-    return {
-      role: role,
-      parts: [{ text: message.content }],
-    };
-  }
-
-  // Handle case where content is an object or array
-  if (message.content) {
-    return {
-      role: role,
-      parts: [{ text: JSON.stringify(message.content) }],
-    };
-  }
-
-  // Fallback for empty messages
-  return {
-    role: role,
-    parts: [{ text: "" }],
-  };
-}
-
-/**
- * Convert a file to a Gemini Part
- */
-export function fileToGeminiPart(file: Express.Multer.File): Part {
-  const mimeType = file.mimetype;
-
-  // For images
-  if (mimeType.startsWith('image/')) {
-    return {
-      inlineData: {
-        data: file.buffer.toString('base64'),
-        mimeType: file.mimetype
-      }
-    };
-  }
-
-  // For text files, convert to text
-  if (mimeType.startsWith('text/') ||
-      mimeType === 'application/json' ||
-      mimeType === 'application/xml' ||
-      mimeType === 'application/javascript') {
-    return {
-      text: file.buffer.toString('utf-8')
-    };
-  }
-
-  // Default to binary data
-  return {
-    inlineData: {
-      data: file.buffer.toString('base64'),
-      mimeType: file.mimetype
+  const parts: GeminiSDKPart[] = message.parts.map(part => {
+    if (part.text !== undefined) {
+      return { text: part.text };
     }
-  };
+    if (part.inlineData) {
+      return { inlineData: { data: part.inlineData.data, mimeType: part.inlineData.mimeType } };
+    }
+    // Add handling for functionCall and functionResponse if defined in GeminiPart
+    // if (part.functionCall) { return { functionCall: part.functionCall }; }
+    // if (part.functionResponse) { return { functionResponse: part.functionResponse }; }
+    return { text: '' }; // Fallback for empty/unknown part
+  });
+
+  return { role, parts };
 }
 
-/**
- * Send a request to Gemini with streaming support
- */
+export function fileToGeminiPart(file: Express.Multer.File): GeminiSDKPart {
+  const mimeType = file.mimetype;
+  if (mimeType.startsWith('image/')) {
+    return { inlineData: { data: file.buffer.toString('base64'), mimeType: file.mimetype } };
+  }
+  if (mimeType.startsWith('text/') || ['application/json', 'application/xml', 'application/javascript'].includes(mimeType)) {
+    return { text: file.buffer.toString('utf-8') };
+  }
+  return { inlineData: { data: file.buffer.toString('base64'), mimeType: file.mimetype } };
+}
+
+interface SendGeminiRequestParams {
+  apiKey: string;
+  model: string;
+  messages: GeminiMessage[];
+  systemMessage?: string;
+  temperature?: number;
+  maxTokens?: number;
+  files?: Express.Multer.File[];
+  tools?: { name: string; description: string; parameters: Record<string, { description: string }> }[] | null;
+  onStream?: ((text: string, toolCallUpdate?: { name: string; parameters: Record<string, unknown>; id?: string }) => void) | null;
+}
+
 export async function sendGeminiRequest({
   apiKey,
   model,
@@ -187,280 +141,149 @@ export async function sendGeminiRequest({
   files = [],
   tools = null,
   onStream = null,
-}: {
-  apiKey: string;
-  model: string; // Can be any Gemini model, including ones not in our predefined list
-  messages: {
-    role: string;
-    content?: string | any;
-    parts?: any[];
-    displayContent?: string;
-    reasoning?: string;
-
-  }[];
-  systemMessage?: string;
-  temperature?: number;
-  maxTokens?: number;
-  files?: Express.Multer.File[];
-  tools?: { name: string; description: string; parameters: Record<string, { description: string }> }[] | null;
-  onStream?: ((text: string, toolCallUpdate?: { name: string; parameters: any; id?: string }) => void) | null;
-}): Promise<LLMResponse> {
+}: SendGeminiRequestParams): Promise<LLMResponse> {
   try {
-    // Initialize the Gemini API
     const genAI = new GoogleGenerativeAI(apiKey);
-
-    // Log the system message for debugging
     if (systemMessage) {
       logger.debug(`System message: ${systemMessage.substring(0, 200)}...`);
     }
 
-    // Get the generative model with system instruction
     const generativeModel = genAI.getGenerativeModel({
       model: model,
-      systemInstruction: systemMessage, // Use the proper system instruction parameter
+      systemInstruction: systemMessage ? { role: 'user', parts: [{text: systemMessage}]} : undefined,
       generationConfig: {
         temperature: temperature,
         maxOutputTokens: maxTokens || getModelConfig(model).maxOutputTokens,
       },
     });
 
-    // Convert messages to Gemini format
-    const geminiMessages: Content[] = messages.map(convertToGeminiMessage);
+    const geminiContents: Content[] = messages.map(convertToGeminiContent);
 
-    // We're now using the systemInstruction parameter instead of adding a separate message
+    logger.debug(`Converted Gemini contents: ${JSON.stringify(geminiContents)}`);
 
-    // Log the converted messages for debugging
-    logger.debug(`Converted Gemini messages: ${JSON.stringify(geminiMessages)}`);
-
-    // Validate that the messages are in the correct format
-    for (const message of geminiMessages) {
-      if (!message.parts || !Array.isArray(message.parts) || message.parts.length === 0) {
-        throw new Error(`Invalid message format: Each message must have a non-empty parts array`);
-      }
-
-      for (const part of message.parts) {
-        if (part.text === undefined && part.inlineData === undefined) {
-          throw new Error(`Invalid part format: Each part must have either text or inlineData`);
-        }
-      }
-    }
-
-    // Handle files if present
     if (files.length > 0) {
-      // For the first user message, add files as parts
-      for (let i = 0; i < geminiMessages.length; i++) {
-        if (geminiMessages[i].role === 'user') {
-          // Get the original text
-          const originalText = geminiMessages[i].parts[0].text || '';
-
-          // Create a new array of parts with the text first
-          const newParts: Part[] = [{ text: originalText }];
-
-          // Add file parts - convert them to the right format
+      for (let i = 0; i < geminiContents.length; i++) {
+        if (geminiContents[i].role === 'user') {
+          const originalText = geminiContents[i].parts[0]?.text || '';
+          const newParts: GeminiSDKPart[] = [{ text: originalText }];
           for (const file of files) {
-            const filePart = fileToGeminiPart(file);
-            // Explicitly cast to any to bypass type checking
-            // This is safe because we know the structure is compatible
-            newParts.push(filePart as any);
+            newParts.push(fileToGeminiPart(file));
           }
-
-          // Replace the parts array
-          geminiMessages[i].parts = newParts;
-          break; // Only add to the first user message
+          geminiContents[i].parts = newParts;
+          break;
         }
       }
     }
 
-    // Handle tools if present
     let toolsConfig = {};
     if (tools && tools.length > 0) {
       logger.info(`Processing ${tools.length} tools for Gemini`);
-
-      // Log the tools for debugging
       logger.debug(`Tools: ${JSON.stringify(tools.map(t => t.name))}`);
-
-      // Convert tools to the format expected by Gemini
-      // We're using any here to bypass TypeScript's strict checking
-      // This is necessary because the Gemini API has complex types
-      const geminiTools: any[] = [{
-        functionDeclarations: tools.map(tool => {
-          logger.debug(`Processing tool: ${tool.name}`);
-
-          // Create required properties array
-          const requiredProperties = Object.keys(tool.parameters);
-
-          return {
-            name: tool.name,
-            description: tool.description,
-            parameters: {
-              type: SchemaType.OBJECT,
-              properties: Object.entries(tool.parameters).reduce((acc: any, [key, value]) => {
-                acc[key] = {
-                  type: SchemaType.STRING,
-                  description: value.description
-                };
-                return acc;
-              }, {}),
-              required: requiredProperties
-            }
-          };
-        })
+      const geminiTools = [{
+        functionDeclarations: tools.map(tool => ({
+          name: tool.name,
+          description: tool.description,
+          parameters: {
+            type: SchemaType.OBJECT,
+            properties: Object.entries(tool.parameters).reduce((acc, [key, value]) => {
+              acc[key] = { type: SchemaType.STRING, description: value.description };
+              return acc;
+            }, {} as Record<string, { type: SchemaType; description: string }>),
+            required: Object.keys(tool.parameters),
+          }
+        }))
       }];
-
       toolsConfig = { tools: geminiTools };
-
-      // Log the formatted tools for debugging
-      logger.debug(`Formatted tools for Gemini: ${JSON.stringify(geminiTools.map((t: any) => t.functionDeclarations.map((f: any) => f.name)))}`);
+      logger.debug(`Formatted tools for Gemini: ${JSON.stringify(geminiTools[0].functionDeclarations.map(f => f.name))}`);
     }
 
-    // If streaming is requested
     if (onStream) {
       let fullText = '';
-      let activeToolCall: { name: string, parameters: any, id: string } | null = null;
+      const activeToolCalls: Record<string, { name: string, parameters: Record<string, unknown>, id: string }> = {};
 
-      // Create the request configuration
-      const requestConfig = {
-        contents: geminiMessages,
-        ...toolsConfig,
-      };
-
-      // Log the full request configuration
+      const requestConfig = { contents: geminiContents, ...toolsConfig };
       logger.debug(`Sending streaming request with config: ${JSON.stringify(requestConfig)}`);
 
       const result = await generativeModel.generateContentStream(requestConfig);
-
-      // Process the stream
       for await (const chunk of result.stream) {
         const newText = chunk.text() || '';
-        fullText += newText;
-
-        // Check for function calls
+        if (newText) {
+          fullText += newText;
+          onStream(newText);
+        }
         const functionCalls = chunk.functionCalls();
-        
         if (functionCalls && functionCalls.length > 0) {
-          // Process each function call in this chunk
           for (const functionCall of functionCalls) {
             const toolName = functionCall.name || '';
             const toolParams = functionCall.args || {};
-            
-            // If this is a new tool call (or the first chunk with a tool call)
-            if (!activeToolCall || activeToolCall.name !== toolName) {
-              // Create a new tool call with a unique ID
-              const toolCallId = generateUuid();
-              activeToolCall = {
-                name: toolName,
-                parameters: toolParams,
-                id: toolCallId
-              };
-              
-              // Send the tool call to the client
-              onStream('', activeToolCall);
+            const toolCallId = generateUuid(); 
+            if (!activeToolCalls[toolCallId]) { // Use toolCallId for uniqueness
+              activeToolCalls[toolCallId] = { name: toolName, parameters: toolParams as Record<string, unknown>, id: toolCallId };
+              onStream('', activeToolCalls[toolCallId]);
               logger.info(`Started new tool call: ${toolName} with ID: ${toolCallId}`);
             } else {
-              // Update parameters of existing tool call
-              activeToolCall.parameters = {
-                ...activeToolCall.parameters,
-                ...toolParams
-              };
-              
-              // Send the updated tool call to the client
-              onStream('', activeToolCall);
-              logger.info(`Updated existing tool call: ${toolName}`);
+              const existingToolCall = activeToolCalls[toolCallId];
+              existingToolCall.parameters = { ...existingToolCall.parameters, ...(toolParams as Record<string, unknown>) };
+              onStream('', existingToolCall);
+              logger.debug(`Updated existing tool call: ${toolName} with ID: ${existingToolCall.id}`);
             }
           }
-        } else if (newText) {
-          // Only send text if we have something to send
-          onStream(newText);
         }
       }
 
-      // Calculate token usage - handle different message formats
-      const inputTokens = estimateTokenCount(messages.map(m => {
-        if (m.parts && Array.isArray(m.parts)) {
-          return m.parts.map(part => part.text || '').join(' ');
-        } else if (typeof m.content === 'string') {
-          return m.content;
-        } else if (m.displayContent) {
-          return m.displayContent;
-        } else if (m.content) {
-          return JSON.stringify(m.content);
-        }
-        return '';
-      }).join(' '));
+      const inputTokens = estimateTokenCount(messages.map(m => m.parts.map(p => p.text || '').join(' ')).join(' '));
       const outputTokens = estimateTokenCount(fullText);
       const totalTokens = inputTokens + outputTokens;
-
-      // Calculate credits used
       const tokenMultiplier = getModelConfig(model).tokenMultiplier;
       const creditsUsed = (totalTokens / 1000) * tokenMultiplier;
+      const lastToolCallEntry = Object.values(activeToolCalls).pop();
+      const typedToolCall = lastToolCallEntry ? { name: lastToolCallEntry.name, parameters: lastToolCallEntry.parameters, id: lastToolCallEntry.id } : undefined;
 
       return {
         text: fullText,
         tokensUsed: totalTokens,
         creditsUsed: creditsUsed,
-        toolCall: activeToolCall || undefined
+        toolCall: typedToolCall,
+        success: true,
+        generatedText: fullText,
+        waitingForToolCall: !!typedToolCall,
       };
-    }
-    // Non-streaming request
-    else {
-      // Create the request configuration
-      const requestConfig = {
-        contents: geminiMessages,
-        ...toolsConfig,
-      };
-
-      // Log the full request configuration
+    } else {
+      const requestConfig = { contents: geminiContents, ...toolsConfig };
       logger.debug(`Sending non-streaming request with config: ${JSON.stringify(requestConfig)}`);
-
       const result = await generativeModel.generateContent(requestConfig);
-
       const response = result.response;
       const text = response.text();
-
-      // Check for function calls
       let toolCall;
       const functionCalls = response.functionCalls();
       if (functionCalls && functionCalls.length > 0) {
         const functionCall = functionCalls[0];
-        toolCall = {
-          name: functionCall.name,
-          parameters: functionCall.args,
-          id: generateUuid()
-        };
-
-        // Log the function call for debugging
+        toolCall = { name: functionCall.name, parameters: functionCall.args as Record<string, unknown>, id: generateUuid() };
         logger.info(`Function call detected in non-streaming response: ${functionCall.name} with params: ${JSON.stringify(functionCall.args)}`);
       }
-
-      // Calculate token usage - handle different message formats
-      const inputTokens = estimateTokenCount(messages.map(m => {
-        if (m.parts && Array.isArray(m.parts)) {
-          return m.parts.map(part => part.text || '').join(' ');
-        } else if (typeof m.content === 'string') {
-          return m.content;
-        } else if (m.displayContent) {
-          return m.displayContent;
-        } else if (m.content) {
-          return JSON.stringify(m.content);
-        }
-        return '';
-      }).join(' '));
+      const inputTokens = estimateTokenCount(messages.map(m => m.parts.map(p => p.text || '').join(' ')).join(' '));
       const outputTokens = estimateTokenCount(text);
       const totalTokens = inputTokens + outputTokens;
-
-      // Calculate credits used
       const tokenMultiplier = getModelConfig(model).tokenMultiplier;
       const creditsUsed = (totalTokens / 1000) * tokenMultiplier;
-
       return {
         text,
         tokensUsed: totalTokens,
         creditsUsed: creditsUsed,
-        toolCall
+        toolCall,
+        success: true,
+        generatedText: text,
+        waitingForToolCall: !!toolCall,
       };
     }
   } catch (error) {
     logger.error('Error in Gemini request:', error);
-    throw error;
+    return {
+      text: '',
+      tokensUsed: 0,
+      creditsUsed: 0,
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }
