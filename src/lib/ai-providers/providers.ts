@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { logUsage } from '../supabase/client';
 import { sendGeminiRequest, GEMINI_MODELS } from './gemini-provider';
+import { sendAnthropicRequest, ANTHROPIC_MODELS } from './anthropic-provider';
 
 // Provider types
 export type ApiProvider = 'openai' | 'anthropic' | 'groq' | 'mistral' | 'ollama' | 'custom' | 'gemini';
@@ -35,8 +36,8 @@ export const providerConfig = {
   },
   anthropic: {
     apiUrl: 'https://api.anthropic.com/v1/messages',
-    models: ['claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku'],
-    tokenMultiplier: 1.2, // 1 token = 1.2 credits
+    models: Object.keys(ANTHROPIC_MODELS),
+    tokenMultiplier: 1.0, // Varies by model, handled in anthropic-provider.ts
   },
   groq: {
     apiUrl: 'https://api.groq.com/openai/v1/chat/completions',
@@ -157,24 +158,25 @@ export async function sendLLMRequest({
         break;
 
       case 'anthropic':
-        response = await axios.post(
-          config.apiUrl,
-          {
-            model,
-            messages: [{ role: 'user', content: prompt }],
-            max_tokens: maxTokens,
-          },
-          {
-            headers: {
-              'Content-Type': 'application/json',
-              'x-api-key': apiKey!,
-              'anthropic-version': '2023-06-01',
-            },
-          }
-        );
-        // Anthropic doesn't return token count, so estimate
-        tokensUsed = estimateTokenCount(prompt) + estimateTokenCount(response.data.content[0].text);
-        break;
+        // Use the dedicated Anthropic implementation
+        const anthropicResponse = await sendAnthropicRequest({
+          apiKey: apiKey!,
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature,
+          maxTokens,
+        });
+
+        // Log usage to database
+        await logUsage({
+          user_id: userId,
+          provider,
+          model,
+          tokens_used: anthropicResponse.tokensUsed,
+          credits_used: anthropicResponse.creditsUsed,
+        });
+
+        return anthropicResponse;
 
       case 'groq':
         response = await axios.post(
@@ -249,9 +251,7 @@ export async function sendLLMRequest({
       case 'mistral':
         responseText = response.data.choices[0].message.content;
         break;
-      case 'anthropic':
-        responseText = response.data.content[0].text;
-        break;
+      // Anthropic is handled separately above
       case 'ollama':
         responseText = response.data.message.content;
         break;

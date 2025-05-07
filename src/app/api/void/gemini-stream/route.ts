@@ -7,6 +7,7 @@ import { sendGeminiRequest } from '../../../../lib/ai-providers/gemini-provider'
 import { logUsage } from '../../../../lib/supabase/client';
 import { logger } from '../../../../lib/logger';
 import { createCorsResponse } from '../../../../lib/api-utils';
+import { generateUuid } from '../../../../utils/uuid';
 
 // Validate request body
 const requestSchema = z.object({
@@ -207,13 +208,28 @@ export async function POST(req: NextRequest) {
           temperature,
           maxTokens,
           tools,
-          onStream: (text) => {
+          onStream: (text, toolCallUpdate) => {
+            // Format the tool call if present
+            let formattedToolCall = null;
+            if (toolCallUpdate) {
+              formattedToolCall = {
+                name: toolCallUpdate.name,
+                parameters: toolCallUpdate.parameters || {},
+                id: toolCallUpdate.id || generateUuid()
+              };
+
+              // Log the tool call for debugging
+              logger.info(`Tool call detected in stream chunk: ${JSON.stringify(formattedToolCall)}`);
+            }
+
             // Send chunk to client
             controller.enqueue(encoder.encode(JSON.stringify({
               event: 'chunk',
               text,
+              toolCall: formattedToolCall,
               requestId
             })));
+
             // Accumulate text (not used, but kept for potential future use)
             fullText += text;
           }
@@ -238,6 +254,19 @@ export async function POST(req: NextRequest) {
           credits_used: response.creditsUsed,
         });
 
+        // Format the tool call to match what the client expects
+        let formattedToolCall = null;
+        if (response.toolCall) {
+          formattedToolCall = {
+            name: response.toolCall.name,
+            parameters: response.toolCall.parameters || {},
+            id: response.toolCall.id || generateUuid()
+          };
+
+          // Log the formatted tool call for debugging
+          logger.info(`Sending formatted tool call to client: ${JSON.stringify(formattedToolCall)}`);
+        }
+
         // Send final response
         controller.enqueue(encoder.encode(JSON.stringify({
           event: 'end',
@@ -245,7 +274,7 @@ export async function POST(req: NextRequest) {
           tokensUsed: response.tokensUsed,
           creditsUsed: response.creditsUsed,
           creditsRemaining: creditsRemaining - response.creditsUsed,
-          toolCall: response.toolCall,
+          toolCall: formattedToolCall,
           requestId
         })));
 

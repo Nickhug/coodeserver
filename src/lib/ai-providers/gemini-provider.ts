@@ -203,7 +203,7 @@ export async function sendGeminiRequest({
   maxTokens?: number;
   files?: Express.Multer.File[];
   tools?: { name: string; description: string; parameters: Record<string, { description: string }> }[] | null;
-  onStream?: ((text: string) => void) | null;
+  onStream?: ((text: string, toolCallUpdate?: { name: string; parameters: any; id?: string }) => void) | null;
 }): Promise<LLMResponse> {
   try {
     // Initialize the Gemini API
@@ -337,17 +337,26 @@ export async function sendGeminiRequest({
 
         // Check for function calls
         const functionCalls = chunk.functionCalls();
+        let toolCallUpdate = null;
+
         if (functionCalls && functionCalls.length > 0) {
           const functionCall = functionCalls[0];
           toolName = functionCall.name || '';
           toolParamsStr = JSON.stringify(functionCall.args || {});
 
+          // Create tool call update object
+          toolCallUpdate = {
+            name: toolName,
+            parameters: functionCall.args || {},
+            id: generateUuid()
+          };
+
           // Log the function call for debugging
           logger.info(`Function call detected: ${toolName} with params: ${toolParamsStr}`);
         }
 
-        // Call the stream callback
-        onStream(newText);
+        // Call the stream callback with tool call information if present
+        onStream(newText, toolCallUpdate || undefined);
       }
 
       // If we have a tool call, log it
