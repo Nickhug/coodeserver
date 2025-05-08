@@ -1,413 +1,125 @@
-import { Server } from 'http';
-import { WebSocketServer, WebSocket } from 'ws';
-import { verifyToken } from '@clerk/backend';
+import { Server as HttpServer } from 'http';
+import { Server as WebSocketServer, WebSocket, RawData } from 'ws';
 
-// Define an interface for the expected service structure
-interface IGeminiWebSocketService {
-  handleToolResult(params: { 
-    userId: string; 
-    connectionId: string; 
-    requestId: string; 
-    toolCallId: string; 
-    output: unknown; 
-  }): Promise<void>;
-  initiateStream(params: { 
-    userId: string; 
-    connectionId: string; 
-    requestId: string; 
-    model: string; 
-    messages: any[]; 
-    systemMessage?: string; 
-    temperature?: number; 
-    maxTokens?: number; 
-    tools?: any[]; 
-  }): Promise<void>;
-}
-
-let geminiWebSocketService: IGeminiWebSocketService;
-
-async function loadDependencies() {
-  try {
-    // The dynamic import itself returns a Promise of the module
-    const serviceModule = await import('../src/lib/gemini-ws-handler/GeminiWebSocketService');
-    if (serviceModule && serviceModule.geminiWebSocketService) {
-      geminiWebSocketService = serviceModule.geminiWebSocketService;
-      console.log("[WebSocketManager] Successfully loaded geminiWebSocketService");
-    } else {
-      throw new Error("geminiWebSocketService not found in imported module");
-    }
-  } catch (e) {
-    console.error("[WebSocketManager] Failed to load geminiWebSocketService:", e);
-    geminiWebSocketService = {
-      handleToolResult: async (params) => console.error("[WebSocketManager] DUMMY: geminiWebSocketService not available - handleToolResult called with:", params),
-      initiateStream: async (params) => console.error("[WebSocketManager] DUMMY: geminiWebSocketService not available - initiateStream called with:", params)
-    };
-  }
-}
-
-// Interface definitions for imported types
-export interface ToolCall {
-  id: string;
-  name: string;
-  parameters: Record<string, unknown>;
-}
-
-// StreamContext from ActiveStreamManager (subset to avoid circular dependencies)
-export interface StreamContext {
-  controller: ReadableStreamDefaultController;
-  systemMessage?: string;
-  tools?: { name: string; description: string; parameters: Record<string, { description: string }> }[];
-  model: string;
-  temperature?: number;
-  maxTokens?: number;
-  userId: string;
-}
-
-// Store connections mapped by connectionId, including authenticated userId and state
-interface AuthenticatedWebSocket extends WebSocket {
-  userId?: string;
-  connectionId: string; // Ensure connectionId is part of the type
-  isAuthenticated: boolean;
-  isAlive?: boolean; // For heartbeat
-  lastPong?: number; // For heartbeat
-}
-const connections = new Map<string, AuthenticatedWebSocket>();
-let wss: WebSocketServer | null = null;
-const HEARTBEAT_INTERVAL = 30000; // 30 seconds
-const HEARTBEAT_TIMEOUT = 35000; // 35 seconds (must be > HEARTBEAT_INTERVAL)
-
-// Type for user data passed around
-export type UserData = {
-  id: string;
-  email: string;
-  [key: string]: unknown;
-};
-
-// Type for tool-related messages
-export interface ExecuteToolMessage {
-  type: 'executeTool';
-  requestId: string;
-  toolCall: ToolCall;
-}
-
-export interface ToolResultMessage {
-  type: 'toolResult';
-  requestId: string;
-  toolCallId: string;
-  output: unknown;
-}
-
-// Client to Server Auth Message
-export interface ClientAuthInitiateMessage {
-  type: 'auth.initiate';
-  token: string;
-}
-
-// Server to Client Auth Messages
-export interface ServerAuthSuccessMessage {
-  type: 'auth.success';
-  userId: string;
-  connectionId: string;
-}
-
-export interface ServerAuthFailureMessage {
-  type: 'auth.failure';
-  error: string;
-}
-
-// General event structure for client communication
-export interface BaseClientEvent {
-  type: string;
-  requestId?: string;
-}
-
-export interface GeminiStartEvent extends BaseClientEvent { type: 'geminiStart'; requestId: string; }
-export interface GeminiContentEvent extends BaseClientEvent { type: 'geminiContent'; chunk: string; requestId: string; }
-export interface GeminiDoneEvent extends BaseClientEvent { type: 'geminiDone'; requestId: string; }
-export interface GeminiErrorEvent extends BaseClientEvent { type: 'geminiError'; error: string; message?: string; [key: string]: unknown; requestId: string; }
-export interface ExecuteToolClientEvent extends BaseClientEvent, ExecuteToolMessage { type: 'executeTool'; requestId: string; }
-
-export type ClientEvent = 
-  | GeminiStartEvent
-  | GeminiContentEvent
-  | ExecuteToolClientEvent
-  | GeminiDoneEvent
-  | GeminiErrorEvent
-  | ServerAuthSuccessMessage
-  | ServerAuthFailureMessage;
-
-// Exported function to send auth success message via WebSocket
-export function sendAuthSuccess(connectionId: string, token: string, userData: UserData) {
-  const ws = connections.get(connectionId);
-  console.log(`Attempting to send auth success to ${connectionId}`);
-  if (ws) {
-    ws.send(JSON.stringify({
-      type: 'auth:success', // Old type, consider updating if this function is reused
-      token,
-      user: userData
-    }));
-    console.log(`Sent auth success to ${connectionId}`);
-    return true;
-  } else {
-    console.log(`WebSocket connection ${connectionId} not found.`);
-  }
-  return false;
+// Interface for dynamically loaded WebSocket services
+interface IDynamicWebSocketService {
+  initialize?: (wss: WebSocketServer) => void;
+  setupWebsocketHandlers?: (wss: WebSocketServer) => void;
+  // No index signature, methods are optional
 }
 
 /**
- * Sends a tool execution request to the client via WebSocket
+ * Initialize the WebSocket server and dynamically load/initialize services.
  */
-export function sendToolExecutionRequest(userId: string, toolExecutionRequest: ExecuteToolMessage): boolean {
-  const event: ExecuteToolClientEvent = {
-    ...toolExecutionRequest,
-    type: 'executeTool',
-    requestId: toolExecutionRequest.requestId
-  };
-  return sendEventToClient(userId, event);
-}
-
-/**
- * Sends a generic event to all WebSocket connections for a given user.
- */
-export function sendEventToClient(userId: string, event: ClientEvent): boolean {
-  let sent = false;
-  const requestIdLog = 'requestId' in event && event.requestId ? event.requestId : 'N/A';
-  console.log(`[WebSocket Manager] Attempting to send event type ${event.type} for requestId ${requestIdLog} to user ${userId}`);
-  for (const [connId, ws] of connections.entries()) {
-    if (ws.userId === userId && ws.isAuthenticated) { // Only send to authenticated connections of the user
-      try {
-        ws.send(JSON.stringify(event));
-        console.log(`[WebSocket Manager] Sent event ${event.type} to connection ${connId} for user ${userId}`);
-        sent = true;
-      } catch (error) {
-        console.error(`[WebSocket Manager] Error sending event ${event.type} to ${connId}:`, error);
-      }
-    }
-  }
-  if (!sent) {
-    console.warn(`[WebSocket Manager] No active authenticated WebSocket connections found for user ${userId} to send event ${event.type}`);
-  }
-  return sent;
-}
-
-/**
- * Sends an event to a specific WebSocket connection.
- */
-export function sendEventToConnection(connectionId: string, event: ClientEvent): boolean {
-  const ws = connections.get(connectionId);
-  if (ws && ws.isAuthenticated) {
-    try {
-      ws.send(JSON.stringify(event));
-      console.log(`[WebSocket Manager] Sent event ${event.type} to specific connection ${connectionId}`);
-      return true;
-    } catch (error) {
-      console.error(`[WebSocket Manager] Error sending event ${event.type} to ${connectionId}:`, error);
-      return false;
-    }
-  } else {
-    console.warn(`[WebSocket Manager] Connection ${connectionId} not found or not authenticated for event ${event.type}`);
-    return false;
-  }
-}
-
-/**
- * Initializes the WebSocket server, attaching it to the provided HTTP server.
- */
-export async function initWebSocketServer(server: Server) {
-  await loadDependencies();
+export async function initWebSocketServer(server: HttpServer): Promise<WebSocketServer> {
+  console.log('[WS Manager] Initializing WebSocket server...');
   
-  if (wss) {
-    console.warn("WebSocket server already initialized.");
-    return;
+  const wssInstance = new WebSocketServer({ server });
+  
+  try {
+    // Dynamically import the GeminiWebSocketService.
+    // Ensure the path points to the compiled .js file for ES module resolution.
+    const GeminiServiceModule = await import('../src/lib/gemini-ws-handler/GeminiWebSocketService.js');
+    
+    if (GeminiServiceModule && typeof GeminiServiceModule.GeminiWebSocketService === 'function') {
+      console.log('[WS Manager] Initializing GeminiWebSocketService...');
+      const geminiServiceInstance = new GeminiServiceModule.GeminiWebSocketService();
+      
+      // Call initialize or setupWebsocketHandlers if they exist on the service instance
+      if (typeof (geminiServiceInstance as IDynamicWebSocketService).initialize === 'function') {
+        (geminiServiceInstance as IDynamicWebSocketService).initialize?.(wssInstance);
+        console.log('[WS Manager] GeminiWebSocketService initialized via initialize().');
+      } else if (typeof (geminiServiceInstance as IDynamicWebSocketService).setupWebsocketHandlers === 'function') {
+        (geminiServiceInstance as IDynamicWebSocketService).setupWebsocketHandlers?.(wssInstance);
+        console.log('[WS Manager] GeminiWebSocketService initialized via setupWebsocketHandlers().');
+      } else {
+        console.warn('[WS Manager] GeminiWebSocketService instance has no initialize or setupWebsocketHandlers method.');
+      }
+    } else {
+      console.error('[WS Manager] Failed to load GeminiWebSocketService: GeminiWebSocketService export not found or not a function.');
+    }
+  } catch (error) {
+    console.error('[WS Manager] Error loading or initializing GeminiWebSocketService:', error);
   }
+  
+  // Generic heartbeat mechanism for all connections managed at this level
+  wssInstance.on('connection', (socket: WebSocket) => {
+    console.log('[WS Manager] WebSocket connection established (manager level).');
+    
+    // Add isAlive property to socket for heartbeat
+    interface ExtendedWebSocket extends WebSocket {
+      isAlive: boolean;
+    }
+    const extendedSocket = socket as ExtendedWebSocket;
+    extendedSocket.isAlive = true;
+    
+    socket.on('pong', () => {
+      extendedSocket.isAlive = true;
+    });
+    
+    // Basic message logging at manager level (services should handle their specific messages)
+    socket.on('message', (message: RawData) => {
+      try {
+        let len = 0;
+        let messageType = 'Unknown';
 
-  console.log("Initializing WebSocket server...");
-  wss = new WebSocketServer({
-    server,
-    path: '/api/ws', // Ensure path matches client requests
-  });
-  console.log("WebSocket server initialized. Setting up event listeners...");
+        if (Buffer.isBuffer(message)) {
+            len = message.length;
+            messageType = 'Buffer';
+        } else if (typeof message === 'string') { // For text messages
+            len = Buffer.byteLength(message, 'utf8');
+            messageType = 'String';
+        } else if (message instanceof ArrayBuffer) { 
+            len = message.byteLength;
+            messageType = 'ArrayBuffer';
+        } else if (Array.isArray(message)) { // Buffer[]
+            len = message.reduce((sum, buf) => sum + (Buffer.isBuffer(buf) ? buf.length : 0), 0);
+            messageType = `Buffer[] (count: ${message.length})`;
+            console.log('[WS Manager] Received array of Buffers. Total Length: %d', len);
+        } else {
+            console.log('[WS Manager] Received message of unhandled RawData type.');
+        }
 
-  wss.on('connection', (ws: AuthenticatedWebSocket) => {
-    // Assign a connection ID immediately
-    ws.connectionId = Math.random().toString(36).substring(2, 15);
-    ws.isAuthenticated = false;
-    ws.userId = undefined;
-    ws.isAlive = true;
-    ws.lastPong = Date.now();
-
-    connections.set(ws.connectionId, ws);
-    console.log(`[WebSocket Manager] Connection attempt received. ID: ${ws.connectionId}. Awaiting auth.`);
-
-    ws.send(JSON.stringify({ type: 'connection.established', connectionId: ws.connectionId }));
-
-    ws.on('pong', () => {
-      ws.isAlive = true;
-      ws.lastPong = Date.now();
-      console.debug(`[WebSocket Manager] Pong received from ${ws.connectionId}`);
+        if (len > 0) {
+            console.log('[WS Manager] Received message (%s, length: %d bytes) on WebSocket server (manager level).', messageType, len);
+        } else {
+             console.log('[WS Manager] Received empty or non-standard message on WebSocket server (manager level). Type: %s', messageType);
+        }
+      } catch (error) {
+        console.error('[WS Manager] Error processing/logging WebSocket message at manager level:', error);
+      }
     });
 
-    ws.on('message', async (message) => {
-      let parsedMessage;
-      try {
-        parsedMessage = JSON.parse(message.toString());
-      } catch (error) {
-        console.error(`[WebSocket Manager] Error parsing message from ${ws.connectionId}:`, error);
-        ws.send(JSON.stringify({ type: 'error', message: 'Invalid JSON message' }));
-        return;
-      }
+    socket.on('close', (code, reason) => {
+      console.log(`[WS Manager] WebSocket connection closed (manager level). Code: ${code}, Reason: ${reason ? reason.toString() : 'N/A'}`);
+    });
 
-      console.log(`[WebSocket Manager] Msg type ${parsedMessage.type} from ${ws.connectionId}`);
-
-      // Handle ping from client, respond with pong
-      if (parsedMessage.type === 'ping') {
-        ws.send(JSON.stringify({ type: 'pong' }));
-        console.debug(`[WebSocket Manager] Responded to ping from ${ws.connectionId}`);
-        return;
+    socket.on('error', (error) => {
+      console.error('[WS Manager] WebSocket connection error (manager level):', error);
+    });
+  });
+  
+  // Set up interval to ping clients and terminate dead connections
+  const interval = setInterval(() => {
+    wssInstance.clients.forEach((socket) => {
+      const extendedSocket = socket as WebSocket & { isAlive?: boolean }; // isAlive might not be set if connection happened before this loop iteration
+      
+      if (extendedSocket.isAlive === false) { // Check if isAlive is explicitly false
+        console.log('[WS Manager] Terminating dead WebSocket connection.');
+        return socket.terminate();
       }
       
-      if (!ws.isAuthenticated) {
-        if (parsedMessage.type === 'auth.initiate') {
-          const authMessage = parsedMessage as ClientAuthInitiateMessage;
-          try {
-            const claims = await verifyToken(authMessage.token, {
-              secretKey: process.env.CLERK_SECRET_KEY,
-            });
-            if (!claims.sub) {
-              throw new Error('Invalid token claims (no sub)');
-            }
-            ws.userId = claims.sub;
-            ws.isAuthenticated = true;
-            // Update the connection in the map now that it's authenticated
-            connections.set(ws.connectionId, ws); 
-
-            const successMessage: ServerAuthSuccessMessage = {
-              type: 'auth.success',
-              userId: ws.userId,
-              connectionId: ws.connectionId
-            };
-            ws.send(JSON.stringify(successMessage));
-            console.log(`[WebSocket Manager] Authentication successful for ${ws.connectionId}, user ${ws.userId}`);
-          } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            console.error(`[WebSocket Manager] Authentication failed for ${ws.connectionId}: ${errorMessage}`);
-            const failureMessage: ServerAuthFailureMessage = {
-              type: 'auth.failure',
-              error: `Authentication failed: ${errorMessage}`
-            };
-            ws.send(JSON.stringify(failureMessage));
-            ws.terminate(); // Close connection on auth failure
-            connections.delete(ws.connectionId); // Clean up
-          }
-        } else {
-          console.warn(`[WebSocket Manager] Received message type ${parsedMessage.type} from unauthenticated connection ${ws.connectionId}. Closing connection.`);
-          ws.send(JSON.stringify({ type: 'error', message: 'Authentication required. Please send auth.initiate message first.' }));
-          ws.terminate();
-          connections.delete(ws.connectionId); // Clean up
-        }
-        return; // Do not process further messages if not authenticated or if it was an auth attempt
-      }
-
-      // Authenticated message handling (userId is guaranteed to be set here)
-      const userId = ws.userId!;
-
-      if (parsedMessage.type === 'toolResult') {
-        console.log(`[WebSocket Manager] Received toolResult for ${ws.connectionId}. Calling service.`);
-        try {
-          const { requestId, toolCallId, output } = parsedMessage as ToolResultMessage;
-          geminiWebSocketService.handleToolResult({
-            userId,
-            connectionId: ws.connectionId,
-            requestId,
-            toolCallId,
-            output
-          });
-        } catch (err: unknown) {
-          const errorMessage = err instanceof Error ? err.message : String(err);
-          console.error(`[WebSocket Manager] Error processing toolResult for service: ${errorMessage}`);
-          sendEventToConnection(ws.connectionId, {
-            type: 'geminiError',
-            requestId: parsedMessage.requestId, // Assuming toolResult messages have requestId
-            error: 'ToolResultServiceError',
-            message: `Error processing tool result: ${errorMessage}`
-          } as ClientEvent);
-        }
-      } else if (parsedMessage.type === 'gemini.startStream') {
-        console.log(`[WebSocket Manager] Received gemini.startStream for ${ws.connectionId}. Calling service.`);
-        try {
-          const { 
-            requestId, model, messages, systemMessage, 
-            temperature, maxTokens, tools 
-          } = parsedMessage;
-          
-          geminiWebSocketService.initiateStream({
-            userId,
-            connectionId: ws.connectionId,
-            requestId,
-            model,
-            messages,
-            systemMessage,
-            temperature,
-            maxTokens,
-            tools
-          });
-        } catch (err: unknown) {
-          const errorMessage = err instanceof Error ? err.message : String(err);
-          console.error(`[WebSocket Manager] Error processing gemini.startStream for service: ${errorMessage}`);
-          sendEventToConnection(ws.connectionId, {
-            type: 'geminiError',
-            requestId: parsedMessage.requestId, // Assuming gemini.startStream messages have requestId
-            error: 'StartStreamServiceError',
-            message: `Error initiating stream: ${errorMessage}`
-          } as ClientEvent);
-        }
-      } else {
-        console.log(`[WebSocket Manager] Unhandled authenticated message type ${parsedMessage.type} for ${ws.connectionId}`);
-      }
+      extendedSocket.isAlive = false; // Set to false, expect a pong to set it back to true
+      socket.ping(() => {}); // Add noop callback to prevent unhandled error events on ping
     });
-
-    ws.on('close', () => {
-      connections.delete(ws.connectionId);
-      console.log(`[WebSocket Manager] Client disconnected: ${ws.connectionId}, User: ${ws.userId || 'N/A'}`);
-    });
-
-    ws.on('error', (error) => {
-      console.error(`[WebSocket Manager] WebSocket error for ${ws.connectionId}:`, error);
-      connections.delete(ws.connectionId); // Ensure cleanup on error
-    });
-  });
-
-  // Heartbeat mechanism to detect and close dead connections
-  const interval = setInterval(function ping() {
-    wss?.clients.forEach((client) => {
-      const ws = client as AuthenticatedWebSocket;
-      if (!ws.isAlive || (Date.now() - (ws.lastPong || 0)) > HEARTBEAT_TIMEOUT) {
-        console.log(`[WebSocket Manager] Heartbeat: Terminating dead connection ${ws.connectionId}`);
-        connections.delete(ws.connectionId);
-        return ws.terminate();
-      }
-
-      ws.isAlive = false; // Assume client is dead until pong is received
-      try {
-        ws.ping(() => {}); // Send ping
-        console.debug(`[WebSocket Manager] Heartbeat: Ping sent to ${ws.connectionId}`);
-      } catch (e) {
-        console.error(`[WebSocket Manager] Heartbeat: Error sending ping to ${ws.connectionId}`, e);
-        connections.delete(ws.connectionId);
-        ws.terminate(); // Terminate if ping fails to send
-      }
-    });
-  }, HEARTBEAT_INTERVAL);
-
-  wss.on('close', () => {
+  }, 30000); // 30 seconds
+  
+  wssInstance.on('close', () => {
+    console.log('[WS Manager] WebSocket server closing, clearing heartbeat interval.');
     clearInterval(interval);
   });
-
-  wss.on('error', (error) => {
-    console.error("FATAL: WebSocketServer emitted error:", error);
-    clearInterval(interval); // Stop heartbeat on server error
-  });
-
-  console.log("WebSocket event listeners set up for direct service calls.");
+  
+  console.log('[WS Manager] WebSocket server initialized and listening.');
+  return wssInstance;
 }
 

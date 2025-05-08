@@ -2,11 +2,12 @@
   "name": "coodeserver",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "npm run build:ws && node server.js",
     "build": "next build && npm run build:ws && npm run copy:ws",
     "build:ws": "cd websocket-server && npm run build",
-    "copy:ws": "mkdir -p .next/standalone/websocket-server/dist && cp -r websocket-server/dist/* .next/standalone/websocket-server/dist/",
+    "copy:ws": "mkdir -p .next/standalone/websocket-server/dist && cp -r websocket-server/dist/* .next/standalone/websocket-server/dist/ && cp websocket-server/manager.js .next/standalone/websocket-server/",
     "start": "node server.js",
     "lint": "next lint"
   },

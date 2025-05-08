@@ -2,12 +2,13 @@
   "name": "websocket-server",
   "version": "1.0.0",
   "description": "Standalone WebSocket server for coodeserver",
-  "main": "dist/server.js",
+  "main": "dist/manager.js",
+  "type": "module",
   "scripts": {
     "clean": "rm -rf dist",
     "build": "npm run clean && tsc",
-    "start": "node dist/server.js",
-    "dev": "tsx server.ts" 
+    "start": "node dist/manager.js",
+    "dev": "tsx manager.ts" 
   },
   "keywords": [],
   "author": "",
