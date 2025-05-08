@@ -4,7 +4,7 @@
  */
 
 import { ReadableStreamDefaultController } from 'stream/web';
-import { logger } from '../logger';
+import { logger } from '../logger.js';
 
 // Tool call interface
 export interface ToolCall {

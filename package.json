@@ -4,16 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "npm run build:ws && node server.js",
-    "build": "next build && npm run build:ws && npm run copy:ws",
-    "build:ws": "cd websocket-server && npm run build",
-    "copy:ws": "mkdir -p .next/standalone/websocket-server/dist && cp -r websocket-server/dist/* .next/standalone/websocket-server/dist/ && cp websocket-server/manager.js .next/standalone/websocket-server/",
-    "start": "node server.js",
-    "lint": "next lint"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "prepare": "next-ws patch"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.1",
-    "@clerk/backend": "1.31.2",
+    "@clerk/backend": "^1.31.2",
     "@clerk/nextjs": "^6.18.5",
     "@google/generative-ai": "^0.24.1",
     "@stripe/stripe-js": "^7.3.0",
@@ -24,13 +23,14 @@
     "flyctl": "^1.2.2",
     "multer": "^1.4.5-lts.2",
     "next": "15.3.1",
+    "next-ws": "^2.0.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-hot-toast": "^2.5.2",
     "stripe": "^18.1.0",
     "svix": "^1.64.1",
     "tsx": "^4.15.0",
-    "ws": "8.18.2",
+    "ws": "^8.18.2",
     "zod": "^3.24.3"
   },
   "devDependencies": {

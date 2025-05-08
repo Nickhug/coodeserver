@@ -1,5 +1,4 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { cookies } from 'next/headers';
 
 // Environment variables typed for safety
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
@@ -73,18 +72,33 @@ export const createSupabaseBrowserClient = () => {
  * Creates a Supabase client for use in server components/actions
  * where user context might be needed (uses anon key and reads cookies).
  */
-export const createServerSupabaseClient = () => {
+export const createServerSupabaseClient = async () => {
   if (!supabaseUrl || !supabaseAnonKey) {
     throw new Error('Supabase URL and Anon Key are required for server client.');
   }
-  const cookieStore = cookies();
-  return createClient(supabaseUrl, supabaseAnonKey, {
-    global: {
-      headers: {
-        cookie: cookieStore.toString(),
+  
+  // For WebSocket server and other non-Next.js environments
+  if (typeof window !== 'undefined' || process.env.ENVIRONMENT === 'ws-server') {
+    console.log('Creating Supabase client without cookies (non-Next.js environment)');
+    return createClient(supabaseUrl, supabaseAnonKey);
+  }
+  
+  try {
+    // Dynamically import cookies
+    const { cookies: nextCookies } = await import('next/headers');
+    const cookieStore = nextCookies();
+    return createClient(supabaseUrl, supabaseAnonKey, {
+      global: {
+        headers: {
+          cookie: cookieStore.toString(),
+        },
       },
-    },
-  });
+    });
+  } catch {
+    // If next/headers is not available, create a client without cookies
+    console.warn('Unable to import next/headers, creating client without cookies');
+    return createClient(supabaseUrl, supabaseAnonKey);
+  }
 };
 
 // --- Helper Functions using Admin Client ---

@@ -3,10 +3,10 @@
  * This file contains the implementation of the Gemini provider API
  */
 
-import { GoogleGenerativeAI, SchemaType, Content, Part as GeminiSDKPart } from '@google/generative-ai';
-import { LLMResponse } from './providers';
-import { generateUuid } from '../../utils/uuid';
-import { logger } from '../logger';
+import { GoogleGenerativeAI, Content, Part, SchemaType } from '@google/generative-ai';
+import { LLMResponse } from './providers.js';
+import { generateUuid } from '../../utils/uuid.js';
+import { logger } from '../logger.js';
 
 // Export GeminiPart and GeminiMessage interfaces
 export interface GeminiPart {
@@ -92,7 +92,7 @@ function convertToGeminiContent(message: GeminiMessage): Content {
   const role = message.role === 'system' ? 'user' : (message.role === 'assistant' ? 'model' : message.role);
   logger.debug(`Converting message to Gemini content: ${JSON.stringify(message)}`);
 
-  const parts: GeminiSDKPart[] = message.parts.map(part => {
+  const parts: Part[] = message.parts.map(part => {
     if (part.text !== undefined) {
       return { text: part.text };
     }
@@ -108,7 +108,7 @@ function convertToGeminiContent(message: GeminiMessage): Content {
   return { role, parts };
 }
 
-export function fileToGeminiPart(file: Express.Multer.File): GeminiSDKPart {
+export function fileToGeminiPart(file: Express.Multer.File): Part {
   const mimeType = file.mimetype;
   if (mimeType.startsWith('image/')) {
     return { inlineData: { data: file.buffer.toString('base64'), mimeType: file.mimetype } };
@@ -165,7 +165,7 @@ export async function sendGeminiRequest({
       for (let i = 0; i < geminiContents.length; i++) {
         if (geminiContents[i].role === 'user') {
           const originalText = geminiContents[i].parts[0]?.text || '';
-          const newParts: GeminiSDKPart[] = [{ text: originalText }];
+          const newParts: Part[] = [{ text: originalText }];
           for (const file of files) {
             newParts.push(fileToGeminiPart(file));
           }

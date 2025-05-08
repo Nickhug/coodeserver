@@ -6,10 +6,10 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getCurrentUserWithDb } from '../../lib/clerk/auth';
-import { checkUserCredits } from '../../lib/clerk/auth';
-import { updateUserCredits } from '../../lib/supabase/client';
-import { ApiProvider, sendLLMRequest } from './providers';
+import { getCurrentUserWithDb } from '../../lib/clerk/auth.js';
+import { checkUserCredits } from '../../lib/clerk/auth.js';
+import { updateUserCredits } from '../../lib/supabase/client.js';
+import { ApiProvider, sendLLMRequest } from './providers.js';
 
 // Define types that match the client-side types
 export type LLMChatMessage = {
@@ -24,37 +24,6 @@ export type LLMFIMMessage = {
 };
 
 export type ChatMode = 'agent' | 'gather' | 'normal';
-
-// Request schema for chat messages
-const chatRequestSchema = z.object({
-  providerName: z.string(),
-  modelName: z.string(),
-  messages: z.array(
-    z.object({
-      role: z.enum(['user', 'assistant', 'system']),
-      content: z.string(),
-    })
-  ),
-  separateSystemMessage: z.string().optional(),
-  chatMode: z.enum(['agent', 'gather', 'normal']).nullable().optional(),
-  temperature: z.number().optional(),
-  maxTokens: z.number().optional(),
-  requestId: z.string(),
-});
-
-// Request schema for FIM (Fill In Middle) messages
-const fimRequestSchema = z.object({
-  providerName: z.string(),
-  modelName: z.string(),
-  messages: z.object({
-    prefix: z.string(),
-    suffix: z.string(),
-    stopTokens: z.array(z.string()).optional(),
-  }),
-  temperature: z.number().optional(),
-  maxTokens: z.number().optional(),
-  requestId: z.string(),
-});
 
 // Combined request schema
 const requestSchema = z.object({
@@ -193,8 +162,6 @@ export async function handleClientRequest(req: NextRequest) {
         requestId
       });
     }
-
-
 
     // For other providers, use the standard approach
     const llmResponse = await sendLLMRequest({

@@ -1,6 +1,20 @@
 import { auth } from '@clerk/nextjs/server';
-import { getUser } from '../supabase/client';
-import { NextRequest } from 'next/server';
+import { getUser } from '../supabase/client.js';
+
+// Define a fallback interface for environments where Next.js is not available
+interface BasicRequest {
+  headers: {
+    get(name: string): string | null;
+  };
+  nextUrl?: {
+    searchParams: {
+      get(name: string): string | null;
+    };
+  };
+}
+
+// Type for either Next.js request or our fallback
+type RequestType = BasicRequest;
 
 /**
  * Get the auth session from Clerk
@@ -13,12 +27,12 @@ export async function getAuthSession() {
  * Get the current user from our database based on Clerk session or custom token
  * Supports both cookie-based and custom token-based authentication
  */
-export async function getCurrentUserWithDb(req?: NextRequest) {
+export async function getCurrentUserWithDb(req?: RequestType) {
   let clerkId: string | null = null;
 
   // First try custom token-based auth if request is provided and has the token
   if (req) {
-    const sessionToken = req.nextUrl.searchParams.get('token') || req.headers.get('x-void-session-token');
+    const sessionToken = req.nextUrl?.searchParams.get('token') || req.headers.get('x-void-session-token');
     if (sessionToken) {
       console.log("Attempting custom token-based authentication");
 
@@ -76,7 +90,7 @@ export async function getCurrentUserWithDb(req?: NextRequest) {
 /**
  * Check if the current user has credits available
  */
-export async function checkUserCredits(requiredCredits: number = 1, req?: NextRequest) {
+export async function checkUserCredits(requiredCredits: number = 1, req?: RequestType) {
   const userInfo = await getCurrentUserWithDb(req);
 
   if (!userInfo || !userInfo.dbUser) {
