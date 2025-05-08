@@ -1,0 +1,30 @@
+{
+  "name": "@repo/db",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist/**"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "clean": "rm -rf dist",
+    "dev": "tsup src/index.ts --format cjs,esm --watch --dts",
+    "lint": "eslint src/",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@repo/logger": "*",
+    "@supabase/supabase-js": "^2.39.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.11",
+    "@types/node": "^20.10.6",
+    "eslint": "^8.56.0",
+    "jest": "^29.7.0",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3"
+  }
+}
