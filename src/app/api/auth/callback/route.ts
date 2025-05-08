@@ -40,7 +40,13 @@ export async function GET(req: NextRequest) {
     }
 
     // Prepare user data to be sent
-    const userData = {
+    interface UserData {
+      id: string | number; // Assuming id can be string or number based on dbUser types
+      email: string | null;
+      credits: number | null;
+      subscription: string | null;
+    }
+    const userData: UserData = {
       id: dbUser.id,
       email: dbUser.email,
       credits: dbUser.credits_remaining,
@@ -51,8 +57,10 @@ export async function GET(req: NextRequest) {
     if (connectionId) {
       try {
         // Use the global sendAuthSuccess function to send auth data to the WebSocket
-        // This function is defined in server.js
-        const success = (global as any).sendAuthSuccess?.(connectionId, token, userData);
+        interface GlobalWithSendAuth {
+          sendAuthSuccess?: (connectionId: string, token: string, userData: UserData) => boolean;
+        }
+        const success = (global as GlobalWithSendAuth).sendAuthSuccess?.(connectionId, token, userData);
 
         if (success) {
           console.log(`Successfully sent auth data to WebSocket connection ${connectionId}`);

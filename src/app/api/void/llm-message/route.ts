@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { handleClientRequest } from '../../../../lib/ai-providers/client-api';
+import { POST as handleClientRequest } from '../../../../lib/ai-providers/client-api';
 import { createCorsResponse } from '../../../../lib/api-utils';
 
 /**
@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
 /**
  * Handle model listing requests
  */
-export async function GET(req: NextRequest) {
+export async function GET(_req: NextRequest) {
   try {
     // This could be expanded to fetch from a database or filter based on the user's plan
     const providers = {

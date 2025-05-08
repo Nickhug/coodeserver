@@ -112,9 +112,20 @@ export async function POST(req: NextRequest) {
 
     console.log(`Successfully stored auth token for user ${dbUser.clerk_id}`);
 
+    // Define UserData interface (can be moved to a shared types file)
+    interface UserData {
+      id: string | number;
+      email: string | null;
+      credits: number | null;
+      subscription: string | null;
+    }
+
     // Use the global sendAuthSuccess function to send auth data to the WebSocket
-    // This function is defined in server.js
-    const success = (global as any).sendAuthSuccess?.(connectionId, token, userData);
+    interface GlobalWithSendAuth {
+      sendAuthSuccess?: (connectionId: string, token: string, userData: UserData) => boolean;
+    }
+    
+    const success = (global as GlobalWithSendAuth).sendAuthSuccess?.(connectionId, token, userData as UserData);
 
     if (!success) {
       return NextResponse.json({
