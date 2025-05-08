@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
-    "target": "ES2016",                     /* Set the JavaScript language version for emitted JavaScript and include compatible library declarations. */
-    "module": "CommonJS",                  /* Specify what module code is generated. */
+    "target": "ES2020",                     /* Set the JavaScript language version for emitted JavaScript and include compatible library declarations. */
+    "module": "NodeNext",                  /* Change to NodeNext to support ES modules and import.meta */
     "outDir": "./dist",                       /* Output to local dist directory */
     "rootDir": "..", /* Changed to parent directory to include src folder */
     "esModuleInterop": true,             /* Emit additional JavaScript to ease support for importing CommonJS modules. This enables 'allowSyntheticDefaultImports' for type compatibility. */
@@ -9,7 +9,8 @@
     "strict": true,                         /* Enable all strict type-checking options. */
     "skipLibCheck": true,                    /* Skip type checking all .d.ts files. */
     "noImplicitAny": false,      /* Allow 'any' type for our dynamic imports in manager.ts */
-    "baseUrl": ".."  /* Set baseUrl to parent directory */
+    "baseUrl": "..",  /* Set baseUrl to parent directory */
+    "moduleResolution": "NodeNext"  /* Use Node.js resolution for modules */
   },
   "include": [
     "./*.ts",         /* Include current directory .ts files */

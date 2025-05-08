@@ -1,11 +1,17 @@
 import { Server as HttpServer } from 'http';
-import { Server as WebSocketServer, WebSocket, RawData } from 'ws';
+import { WebSocketServer, WebSocket, RawData } from 'ws';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 // Interface for dynamically loaded WebSocket services
 interface IDynamicWebSocketService {
   initialize?: (wss: WebSocketServer) => void;
   setupWebsocketHandlers?: (wss: WebSocketServer) => void;
-  // No index signature, methods are optional
+}
+
+// Define an interface for the imported module
+interface GeminiServiceModule {
+  GeminiWebSocketService: new () => IDynamicWebSocketService;
 }
 
 /**
@@ -17,26 +23,68 @@ export async function initWebSocketServer(server: HttpServer): Promise<WebSocket
   const wssInstance = new WebSocketServer({ server });
   
   try {
-    // Dynamically import the GeminiWebSocketService.
-    // Ensure the path points to the compiled .js file for ES module resolution.
-    const GeminiServiceModule = await import('../src/lib/gemini-ws-handler/GeminiWebSocketService.js');
+    // In ESM, we need to use import.meta.url and fileURLToPath to get the directory path
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
     
-    if (GeminiServiceModule && typeof GeminiServiceModule.GeminiWebSocketService === 'function') {
-      console.log('[WS Manager] Initializing GeminiWebSocketService...');
-      const geminiServiceInstance = new GeminiServiceModule.GeminiWebSocketService();
-      
-      // Call initialize or setupWebsocketHandlers if they exist on the service instance
-      if (typeof (geminiServiceInstance as IDynamicWebSocketService).initialize === 'function') {
-        (geminiServiceInstance as IDynamicWebSocketService).initialize?.(wssInstance);
-        console.log('[WS Manager] GeminiWebSocketService initialized via initialize().');
-      } else if (typeof (geminiServiceInstance as IDynamicWebSocketService).setupWebsocketHandlers === 'function') {
-        (geminiServiceInstance as IDynamicWebSocketService).setupWebsocketHandlers?.(wssInstance);
-        console.log('[WS Manager] GeminiWebSocketService initialized via setupWebsocketHandlers().');
-      } else {
-        console.warn('[WS Manager] GeminiWebSocketService instance has no initialize or setupWebsocketHandlers method.');
+    console.log(`[WS Manager] Current directory: ${__dirname}`);
+    
+    // Determine the correct path based on the deployment environment
+    // In production Docker container, the structure is typically:
+    // /app/websocket-server/dist/manager.js (this file)
+    // /app/.next/standalone/node_modules/.pnpm/... (node_modules)
+    // /app/.next/server/chunks/... (compiled Next.js code)
+    
+    // Try multiple potential paths to find the service
+    const potentialPaths = [
+      // Path for development
+      path.resolve(__dirname, '../../src/lib/gemini-ws-handler/GeminiWebSocketService.js'),
+      // Path for production in Docker container
+      path.resolve(__dirname, '../../.next/server/src/lib/gemini-ws-handler/GeminiWebSocketService.js'),
+      // Fallback path if Next.js puts compiled output elsewhere
+      path.resolve(__dirname, '../../.next/standalone/src/lib/gemini-ws-handler/GeminiWebSocketService.js'),
+    ];
+    
+    let geminiServiceModule: GeminiServiceModule | null = null;
+    let loadedPath = '';
+    
+    // Try each path until we find the module
+    for (const servicePath of potentialPaths) {
+      try {
+        console.log(`[WS Manager] Attempting to import from: ${servicePath}`);
+        // Using dynamic import with type assertion
+        const importedModule = await import(servicePath) as GeminiServiceModule;
+        if (typeof importedModule.GeminiWebSocketService === 'function') {
+          geminiServiceModule = importedModule;
+          loadedPath = servicePath;
+          console.log(`[WS Manager] Successfully imported from: ${servicePath}`);
+          break;
+        } else {
+          console.log(`[WS Manager] Import succeeded but GeminiWebSocketService is not a function in: ${servicePath}`);
+        }
+      } catch (error) {
+        // Log the error message but continue to the next path
+        console.log(`[WS Manager] Import failed for path: ${servicePath}: ${error instanceof Error ? error.message : String(error)}`);
+        // Continue to the next path
       }
+    }
+    
+    if (!geminiServiceModule) {
+      throw new Error('Failed to import GeminiWebSocketService from any of the potential paths');
+    }
+    
+    console.log(`[WS Manager] Initializing GeminiWebSocketService from: ${loadedPath}`);
+    const geminiServiceInstance = new geminiServiceModule.GeminiWebSocketService();
+    
+    // Call initialize or setupWebsocketHandlers if they exist on the service instance
+    if (typeof geminiServiceInstance.initialize === 'function') {
+      geminiServiceInstance.initialize(wssInstance);
+      console.log('[WS Manager] GeminiWebSocketService initialized via initialize().');
+    } else if (typeof geminiServiceInstance.setupWebsocketHandlers === 'function') {
+      geminiServiceInstance.setupWebsocketHandlers(wssInstance);
+      console.log('[WS Manager] GeminiWebSocketService initialized via setupWebsocketHandlers().');
     } else {
-      console.error('[WS Manager] Failed to load GeminiWebSocketService: GeminiWebSocketService export not found or not a function.');
+      console.warn('[WS Manager] GeminiWebSocketService instance has no initialize or setupWebsocketHandlers method.');
     }
   } catch (error) {
     console.error('[WS Manager] Error loading or initializing GeminiWebSocketService:', error);
@@ -91,7 +139,8 @@ export async function initWebSocketServer(server: HttpServer): Promise<WebSocket
     });
 
     socket.on('close', (code, reason) => {
-      console.log(`[WS Manager] WebSocket connection closed (manager level). Code: ${code}, Reason: ${reason ? reason.toString() : 'N/A'}`);
+      const reasonStr = reason ? reason.toString() : 'N/A';
+      console.log(`[WS Manager] WebSocket connection closed (manager level). Code: ${code}, Reason: ${reasonStr}`);
     });
 
     socket.on('error', (error) => {
@@ -101,16 +150,16 @@ export async function initWebSocketServer(server: HttpServer): Promise<WebSocket
   
   // Set up interval to ping clients and terminate dead connections
   const interval = setInterval(() => {
-    wssInstance.clients.forEach((socket) => {
-      const extendedSocket = socket as WebSocket & { isAlive?: boolean }; // isAlive might not be set if connection happened before this loop iteration
+    wssInstance.clients.forEach((clientSocket: WebSocket) => {
+      const extendedSocket = clientSocket as WebSocket & { isAlive?: boolean }; // isAlive might not be set if connection happened before this loop iteration
       
       if (extendedSocket.isAlive === false) { // Check if isAlive is explicitly false
         console.log('[WS Manager] Terminating dead WebSocket connection.');
-        return socket.terminate();
+        return clientSocket.terminate();
       }
       
       extendedSocket.isAlive = false; // Set to false, expect a pong to set it back to true
-      socket.ping(() => {}); // Add noop callback to prevent unhandled error events on ping
+      clientSocket.ping(() => {}); // Add noop callback to prevent unhandled error events on ping
     });
   }, 30000); // 30 seconds
   

@@ -179,6 +179,51 @@ class ActiveStreamManager {
     }
     return stream.userId === userId;
   }
+
+  /**
+   * Clean up all streams associated with a specific user
+   * Used when a WebSocket connection is closed or experiences an error
+   */
+  cleanupStreamsForUser(userId: string): string[] {
+    if (!userId) {
+      logger.warn('Cannot cleanup streams: No userId provided');
+      return [];
+    }
+
+    const removedStreamIds: string[] = [];
+    
+    for (const [requestId, streamContext] of this.streams.entries()) {
+      if (streamContext.userId === userId) {
+        if (this.remove(requestId)) {
+          removedStreamIds.push(requestId);
+          logger.info(`Cleaned up stream ${requestId} for user ${userId}`);
+        }
+      }
+    }
+    
+    if (removedStreamIds.length > 0) {
+      logger.info(`Cleaned up ${removedStreamIds.length} streams for user ${userId}`);
+    } else {
+      logger.info(`No streams found to clean up for user ${userId}`);
+    }
+    
+    return removedStreamIds;
+  }
+
+  /**
+   * Get all request IDs associated with a user
+   */
+  getStreamIdsByUser(userId: string): string[] {
+    const streamIds: string[] = [];
+    
+    for (const [requestId, streamContext] of this.streams.entries()) {
+      if (streamContext.userId === userId) {
+        streamIds.push(requestId);
+      }
+    }
+    
+    return streamIds;
+  }
 }
 
 // Export singleton instance
