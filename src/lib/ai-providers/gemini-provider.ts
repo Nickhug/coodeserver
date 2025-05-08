@@ -4,9 +4,9 @@
  */
 
 import { GoogleGenerativeAI, Content, Part, SchemaType } from '@google/generative-ai';
-import { LLMResponse } from './providers.js';
-import { generateUuid } from '../../utils/uuid.js';
-import { logger } from '../logger.js';
+import { LLMResponse } from './providers';
+import { generateUuid } from '@/utils/uuid';
+import { logger } from '@/lib/logger';
 
 // Export GeminiPart and GeminiMessage interfaces
 export interface GeminiPart {

@@ -6,9 +6,9 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getCurrentUserWithDb, checkUserCredits } from '@/lib/clerk/auth.js';
-import { updateUserCredits } from '@/lib/supabase/client.js';
-import { ApiProvider, sendLLMRequest } from './providers.js';
+import { getCurrentUserWithDb, checkUserCredits } from '@/lib/clerk/auth';
+import { updateUserCredits } from '@/lib/supabase/client';
+import { ApiProvider, sendLLMRequest } from './providers';
 
 // Define types that match the client-side types
 const ProviderNameSchema = z.enum([
