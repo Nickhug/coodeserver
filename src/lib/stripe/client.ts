@@ -1,5 +1,5 @@
 import Stripe from 'stripe';
-import { updateUserCredits } from '../supabase/client.js';
+import { updateUserCredits } from '../supabase/client';
 
 // Memoization variable for Stripe client
 let stripeInstance: Stripe | null = null;
