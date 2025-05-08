@@ -33,6 +33,14 @@ ENV NODE_PATH=./src
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-pk_test_cHJlbWl1bS1jYWxmLTQ5LmNsZXJrLmFjY291bnRzLmRldiQ}
 
+# ---- START DIAGNOSTICS ----
+RUN echo "--- Checking files before build ---"
+RUN ls -la /app
+RUN echo "--- Checking src/lib contents ---"
+RUN ls -la /app/src/lib
+RUN echo "--- Diagnostics End ---"
+# ---- END DIAGNOSTICS ----
+
 # Next.js collects completely anonymous telemetry data about general usage.
 # Learn more here: https://nextjs.org/telemetry
 RUN npm run build
