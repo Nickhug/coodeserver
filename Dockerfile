@@ -3,13 +3,10 @@
 # 1. Install dependencies only when needed
 FROM node:20-alpine AS base
 
-# Prevent node from writing cache files to disk
-ENV NODE_ENV=production
-
-WORKDIR /app
-
 # Install dependencies based on the preferred package manager
 # This will also trigger the "prepare" script for next-ws patch
+# Do NOT set NODE_ENV=production here, as we need devDependencies for the build stage
+WORKDIR /app
 COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* ./
 RUN \
     if [ -f yarn.lock ]; then yarn --frozen-lockfile; \
@@ -49,6 +46,7 @@ RUN npm run build
 FROM base AS runner
 WORKDIR /app
 
+# Set NODE_ENV=production for the final runtime environment
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED 1
 
