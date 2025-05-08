@@ -1,6 +1,6 @@
 import axios from 'axios';
-import { logUsage } from '../supabase/client.js';
-import { sendGeminiRequest, GEMINI_MODELS } from './gemini-provider.js';
+import { logUsage } from '../supabase/client';
+import { sendGeminiRequest, GEMINI_MODELS } from './gemini-provider';
 
 // Provider types
 export type ApiProvider = 'openai' | 'groq' | 'mistral' | 'ollama' | 'custom' | 'gemini';

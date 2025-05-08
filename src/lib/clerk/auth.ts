@@ -1,5 +1,5 @@
 import { auth } from '@clerk/nextjs/server';
-import { getUser } from '../supabase/client.js';
+import { getUser } from '../supabase/client';
 
 // Define a fallback interface for environments where Next.js is not available
 interface BasicRequest {
