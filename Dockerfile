@@ -9,6 +9,7 @@ ENV NODE_ENV=production
 WORKDIR /app
 
 # Install dependencies based on the preferred package manager
+# This will also trigger the "prepare" script for next-ws patch
 COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* ./
 RUN \
     if [ -f yarn.lock ]; then yarn --frozen-lockfile; \
@@ -24,10 +25,8 @@ COPY --from=base /app/node_modules ./node_modules
 COPY . .
 
 # Set build-time secrets
-# Ensure NEXT_PUBLIC_ variables are available at build time
-# You might need to pass these using Docker build args or ensure they are in the build environment
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
-ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_cHJlbWl1bS1jYWxmLTQ5LmNsZXJrLmFjY291bnRzLmRldiQ
+ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-pk_test_cHJlbWl1bS1jYWxmLTQ5LmNsZXJrLmFjY291bnRzLmRldiQ}
 
 # Next.js collects completely anonymous telemetry data about general usage.
 # Learn more here: https://nextjs.org/telemetry
@@ -52,18 +51,13 @@ ENV PORT 3000
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static/
 
-# Copy server.js directly from the source directory
-COPY --chown=nextjs:nodejs server.js ./
-
-# Make sure server.js exists and is executable
-RUN ls -la && chmod +x server.js
-
-# Install ws package for WebSocket support
-RUN npm install ws@8.18.2 @clerk/backend@1.31.2 --no-save
+# Dependencies like ws and @clerk/backend should be in package.json and installed during the base stage
+# RUN npm install ws@8.18.2 @clerk/backend@1.31.2 --no-save
 
 # Set the correct user for running the application
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 USER nextjs
 
-CMD ["node", "server.js"]
+# Use Next.js CLI to start the application
+CMD ["node_modules/.bin/next", "start"]
