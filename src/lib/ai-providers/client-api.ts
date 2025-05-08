@@ -6,95 +6,53 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getCurrentUserWithDb } from '../../lib/clerk/auth.js';
-import { checkUserCredits } from '../../lib/clerk/auth.js';
+import { getCurrentUserWithDb, checkUserCredits } from '../../lib/clerk/auth.js';
 import { updateUserCredits } from '../../lib/supabase/client.js';
 import { ApiProvider, sendLLMRequest } from './providers.js';
 
 // Define types that match the client-side types
-export type LLMChatMessage = {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-};
+const ProviderNameSchema = z.enum([
+  'OpenAI', 'Groq', 'Mistral', 'Ollama', 'Gemini'
+]);
+type ProviderName = z.infer<typeof ProviderNameSchema>;
 
-export type LLMFIMMessage = {
-  prefix: string;
-  suffix: string;
-  stopTokens?: string[];
-};
-
-export type ChatMode = 'agent' | 'gather' | 'normal';
-
-// Combined request schema
-const requestSchema = z.object({
-  messagesType: z.enum(['chatMessages', 'FIMMessage']),
-  providerName: z.string(),
+const RequestBodySchema = z.object({
+  providerName: ProviderNameSchema,
   modelName: z.string(),
+  requestId: z.string(),
+  prompt: z.string(),
   temperature: z.number().optional(),
   maxTokens: z.number().optional(),
-  requestId: z.string(),
-}).and(
-  z.union([
-    z.object({
-      messagesType: z.literal('chatMessages'),
-      messages: z.array(
-        z.object({
-          role: z.enum(['user', 'assistant', 'system']),
-          content: z.string(),
-        })
-      ),
-      separateSystemMessage: z.string().optional(),
-      chatMode: z.enum(['agent', 'gather', 'normal']).nullable().optional(),
-    }),
-    z.object({
-      messagesType: z.literal('FIMMessage'),
-      messages: z.object({
-        prefix: z.string(),
-        suffix: z.string(),
-        stopTokens: z.array(z.string()).optional(),
-      }),
-    }),
-  ])
-);
+});
 
-// Map client provider names to server provider names
-const providerNameMap: Record<string, ApiProvider> = {
-  'openAI': 'openai',
-  'groq': 'groq',
-  'mistral': 'mistral',
-  'ollama': 'ollama',
-  'openAICompatible': 'custom',
-  'deepseek': 'custom',
-  'openRouter': 'custom',
-  'gemini': 'gemini',
-  'xAI': 'custom',
-  'vLLM': 'custom',
-  'lmStudio': 'custom',
-  'liteLLM': 'custom',
-  'microsoftAzure': 'custom',
+// Map client-side provider names to server-side names
+const providerNameMap: Record<ProviderName, ApiProvider | 'custom'> = {
+  OpenAI: 'openai',
+  Groq: 'groq',
+  Mistral: 'mistral',
+  Ollama: 'ollama',
+  Gemini: 'gemini', // Use the dedicated Gemini implementation
 };
 
-/**
- * Handle AI provider requests from the client
- */
-export async function handleClientRequest(req: NextRequest) {
+export async function POST(req: NextRequest) {
   try {
     // Authenticate user
     const userInfo = await getCurrentUserWithDb();
-    if (!userInfo) {
+    if (!userInfo || !userInfo.dbUser) {
       return NextResponse.json(
-        { error: 'Unauthorized' },
+        { error: 'Authentication required' },
         { status: 401 }
       );
     }
+    const userId = userInfo.dbUser.clerk_id; // Correctly get Clerk ID
 
     // Parse request body
-    const body = await req.json();
-    const result = requestSchema.safeParse(body);
-
-    if (!result.success) {
+    let requestBody;
+    try {
+      requestBody = RequestBodySchema.parse(await req.json());
+    } catch (validationError) {
       return NextResponse.json(
-        { error: 'Invalid request', details: result.error.format() },
+        { error: 'Invalid request body', details: validationError },
         { status: 400 }
       );
     }
@@ -102,37 +60,16 @@ export async function handleClientRequest(req: NextRequest) {
     const {
       providerName,
       modelName,
-      messagesType,
+      requestId,
+      prompt,
       temperature,
       maxTokens,
-      requestId
-    } = result.data;
+    } = requestBody;
 
-    // Prepare prompt based on message type
-    let prompt: string;
-    if (messagesType === 'chatMessages') {
-      // For chat messages, format them according to the provider's expected format
-      // This is a simplified version - in production, you'd need to handle different provider formats
-      const messages = result.data.messages;
-      const systemMessage = result.data.separateSystemMessage ||
-        messages.find(m => m.role === 'system')?.content || '';
+    // Calculate required credits (example: based on model or prompt length)
+    const requiredCredits = 1; // Replace with actual calculation if needed
 
-      // Format messages into a prompt
-      prompt = systemMessage ? `System: ${systemMessage}\n\n` : '';
-      prompt += messages
-        .filter(m => m.role !== 'system')
-        .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
-        .join('\n\n');
-    } else {
-      // For FIM messages, use the prefix as the prompt
-      prompt = result.data.messages.prefix;
-    }
-
-    // Estimate required credits (conservative estimate)
-    const estimatedTokens = Math.ceil(prompt.length / 4) * 2; // Double to account for response
-    const requiredCredits = estimatedTokens / 10; // Rough conversion
-
-    // Check if user has enough credits
+    // Check if user has enough credits using the function that gets the current user
     const { hasCredits, creditsRemaining } = await checkUserCredits(requiredCredits);
 
     if (!hasCredits) {
@@ -143,38 +80,37 @@ export async function handleClientRequest(req: NextRequest) {
           requiredCredits,
           requestId
         },
-        { status: 402 }
+        { status: 402 } // Payment Required status code
       );
     }
 
-    // Send request to the LLM provider
-    const serverProviderName = providerNameMap[providerName] || 'custom';
+    // Map to server-side provider name
+    const serverProviderName = providerNameMap[providerName];
 
     // Special handling for Gemini provider
     if (serverProviderName === 'gemini') {
-      // For Gemini, we'll use the dedicated endpoints
-      // The client will handle streaming and file uploads directly with those endpoints
+      // Instruct the client to use WebSocket for Gemini
       return NextResponse.json({
-        useSpecialEndpoint: true,
+        useWebSocket: true,
         provider: 'gemini',
-        streamEndpoint: '/api/void/gemini-stream',
-        uploadEndpoint: '/api/void/gemini-upload',
+        wsEndpoint: '/api/void/gemini-ws', // Provide the WebSocket endpoint
         requestId
       });
     }
 
-    // For other providers, use the standard approach
+    // For other providers, use the standard HTTP request approach
     const llmResponse = await sendLLMRequest({
-      provider: serverProviderName as ApiProvider,
+      provider: serverProviderName as ApiProvider, // Cast since we handled Gemini
       model: modelName,
       prompt,
       temperature,
       maxTokens,
-      userId: userInfo.dbUser.id,
+      userId: userId, // Pass the Clerk ID
     });
 
     // Deduct credits
-    await updateUserCredits(userInfo.dbUser.id, -llmResponse.creditsUsed);
+    // Use clerk_id to update credits in Supabase
+    await updateUserCredits(userId, -llmResponse.creditsUsed);
 
     // Return the response in the format expected by the client
     return NextResponse.json({
@@ -189,11 +125,20 @@ export async function handleClientRequest(req: NextRequest) {
   } catch (error) {
     console.error('Error in AI provider client API:', error);
 
+    let errorRequestId = 'unknown';
+    try {
+      // Try to get requestId from the original request if possible
+      const originalBody = await req.json();
+      errorRequestId = originalBody?.requestId || 'unknown';
+    } catch {
+      // Ignore if parsing fails
+    }
+
     return NextResponse.json(
       {
         error: 'Internal server error',
         message: (error as Error).message,
-        requestId: (await req.json()).requestId || 'unknown'
+        requestId: errorRequestId
       },
       { status: 500 }
     );

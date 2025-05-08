@@ -22,6 +22,7 @@ RUN \
 FROM base AS builder
 WORKDIR /app
 COPY --from=base /app/node_modules ./node_modules
+COPY tsconfig.json ./
 COPY . .
 
 # Set build-time secrets
