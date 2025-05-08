@@ -6,8 +6,8 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getCurrentUserWithDb, checkUserCredits } from '../../lib/clerk/auth.js';
-import { updateUserCredits } from '../../lib/supabase/client.js';
+import { getCurrentUserWithDb, checkUserCredits } from '@/lib/clerk/auth.js';
+import { updateUserCredits } from '@/lib/supabase/client.js';
 import { ApiProvider, sendLLMRequest } from './providers.js';
 
 // Define types that match the client-side types

@@ -23,7 +23,11 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=base /app/node_modules ./node_modules
 COPY tsconfig.json ./
+COPY next.config.mjs ./
 COPY . .
+
+# Explicitly set NODE_PATH to help with alias resolution during build
+ENV NODE_PATH=./src
 
 # Set build-time secrets
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
@@ -39,6 +43,9 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED 1
+
+# Set NODE_PATH for runtime as well, especially if using standalone output
+ENV NODE_PATH=./
 
 COPY --from=builder /app/public ./public
 COPY next.config.mjs ./
