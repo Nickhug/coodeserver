@@ -41,7 +41,7 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED 1
 
 COPY --from=builder /app/public ./public
-COPY next.config.cjs ./
+COPY next.config.mjs ./
 COPY tsconfig.json ./
 
 EXPOSE 3000
