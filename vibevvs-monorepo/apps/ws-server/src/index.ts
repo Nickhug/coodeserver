@@ -7,9 +7,9 @@ import { config, validateConfig } from './config';
 import { initClerk } from '@repo/auth';
 
 // Print startup banner with configuration
-logger.info('=================================');
-logger.info('🚀 Void WebSocket Server Starting');
-logger.info('=================================');
+logger.info('┋==================================┋');
+logger.info('┋🚀 Coode WebSocket Server Starting┋');
+logger.info('┋==================================┋');
 logger.info(`Environment: ${config.environment}`);
 logger.info(`WebSocket Path: ${config.wsPath}`);
 logger.info(`Port: ${config.port}`);
