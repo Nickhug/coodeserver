@@ -1,11 +1,30 @@
 [phases.setup]
-nixPkgs = ["nodejs-18_x", "nodejs-18_x.pkgs.npm"]
+# Ensure Node.js (which includes npm) and basic utilities are installed.
+# "nodejs_18" is a common Nix package name for Node.js v18.x.
+# Explicitly pin Node.js version to 18.x to match package.json requirements
+nixPkgs = ["nodejs-18_x", "bash", "coreutils"]
 
 [phases.install]
-cmds = ["npm ci"]
+cmds = [
+  "echo 'Using Node.js version:'", 
+  "node -v",
+  "echo 'Using npm version:'", 
+  "npm -v",
+  "echo '--- Installing Dependencies ---'",
+  "npm ci"
+]
 
 [phases.build]
-cmds = ["npm run build --workspace=apps/ws-server"]
+# This command will use the APP_NAME environment variable,
+# which you must set in the Railway service settings (e.g., APP_NAME=web or APP_NAME=ws-server).
+cmds = [
+  "echo '--- Building Application ---'",
+  "if [ -z \"$APP_NAME\" ]; then echo 'Error: APP_NAME environment variable is not set.' && exit 1; fi",
+  "echo \"Building application: $APP_NAME (workspace: apps/$APP_NAME)\"",
+  "npm run build --workspace=apps/$APP_NAME"
+]
 
 [start]
-cmd = "cd apps/ws-server && node dist/index.js" 
+# This command also uses the APP_NAME environment variable.
+# It dynamically constructs the start command based on APP_NAME.
+cmd = "if [ \"$APP_NAME\" = \"web\" ]; then cd apps/web && npm start; elif [ \"$APP_NAME\" = \"ws-server\" ]; then cd apps/ws-server && node dist/index.js; else echo 'Unknown APP_NAME' && exit 1; fi" 

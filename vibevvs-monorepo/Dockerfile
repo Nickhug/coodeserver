@@ -63,7 +63,11 @@ COPY packages/ai-providers/package.json ./packages/ai-providers/
 COPY apps/web/package.json ./apps/web/
 COPY apps/ws-server/package.json ./apps/ws-server/
 
-RUN npm ci --omit=dev
+RUN echo "--- In deps stage ---" && \
+    echo "PATH: $PATH" && \
+    echo "Running npm ci..." && \
+    npm ci --omit=dev && \
+    echo "npm ci complete."
 
 FROM base AS builder
 WORKDIR /app
@@ -71,8 +75,28 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 ARG APP_NAME
-RUN echo "Building app: $APP_NAME"
+RUN echo "--- In builder stage for app: $APP_NAME ---"
+RUN echo "Current user: $(whoami)"
+RUN echo "Initial PATH in builder: $PATH"
+RUN echo "Attempting to find npm with 'which npm': $(which npm || echo 'npm not found by which')"
+RUN echo "Attempting 'npm --version' with default shell:" && npm --version || echo "Default shell 'npm --version' FAILED"
 
+# If Railway executes RUN with /bin/bash -ol, let's try to mimic that for diagnostics
+# First, ensure bash is available
+RUN if ! command -v bash > /dev/null; then \
+      echo "Bash not found, installing..."; \
+      apk add --no-cache bash; \
+    else \
+      echo "Bash found"; \
+    fi
+RUN echo "Attempting 'npm --version' with 'bash -lc npm --version':" && bash -lc "npm --version" || echo "'bash -lc npm --version' FAILED"
+RUN echo "Contents of /etc/profile:" && cat /etc/profile || echo "/etc/profile not found"
+RUN echo "Contents of /etc/profile.d/*:" && cat /etc/profile.d/* || echo "/etc/profile.d/* not found"
+RUN echo "Contents of ~/.profile (if exists):" && cat ~/.profile || echo "~/.profile not found"
+RUN echo "Contents of ~/.bash_profile (if exists):" && cat ~/.bash_profile || echo "~/.bash_profile not found"
+RUN echo "Contents of ~/.bashrc (if exists):" && cat ~/.bashrc || echo "~/.bashrc not found"
+
+RUN echo "Building app: $APP_NAME"
 RUN npm run build --workspace=apps/$APP_NAME
 
 FROM base AS runner

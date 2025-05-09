@@ -1,0 +1,20 @@
+[build]
+builder = "nixpacks"
+
+# No buildCommand or startCommand here; they will come from nixpacks.toml
+# and be dynamic based on the APP_NAME environment variable.
+
+[deploy]
+restartPolicyType = "on_failure"
+
+# Explicitly tell Nixpacks to use Node.js version 18 for the build environment.
+# This should prevent it from trying to install or use any other Node.js version.
+[env]
+NIXPACKS_NODE_VERSION = "18"
+
+# The [nixpacks] table in railway.toml for nodejs_version is an alternative
+# but setting NIXPACKS_NODE_VERSION as an environment variable is often more direct.
+# Ensure any older railway.toml [nixpacks] table for nodejs_version is removed or commented out.
+
+# [nixpacks] # This section in railway.toml is often not needed if nixpacks.toml exists
+# nodejs_version = "18" # Nixpacks usually infers this or can be set in nixpacks.toml too 
