@@ -1,11 +1,15 @@
 [phases.setup]
-nixPkgs = ["nodejs-18_x", "npm-8_x"]
+nixPkgs = ["nodejs", "npm"]
 
 [phases.install]
 cmds = ["npm ci"]
 
 [phases.build]
-cmds = ["npm run build"]
+cmds = [
+  "if [ -z \"$APP_NAME\" ]; then echo 'Error: APP_NAME environment variable is not set.' && exit 1; fi",
+  "echo \"Building application: $APP_NAME\"",
+  "npm run build --workspace=apps/$APP_NAME"
+]
 
 [start]
-cmd = "npm start" 
+cmd = "if [ \"$APP_NAME\" = \"web\" ]; then cd apps/web && npm start; elif [ \"$APP_NAME\" = \"ws-server\" ]; then cd apps/ws-server && node dist/index.js; else echo 'Error: APP_NAME not set or invalid for start command ($APP_NAME)' && exit 1; fi" 
