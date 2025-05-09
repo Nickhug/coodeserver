@@ -1,0 +1,71 @@
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Build outputs
+.next/
+out/
+build/
+dist/
+.turbo/
+
+# Testing
+coverage/
+
+# Environment Variables
+.env
+.env.*
+!.env.example
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+logs
+*.log
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Misc
+.DS_Store
+*.pem
+Thumbs.db
+desktop.ini
+.vercel
+.serverless/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Docker 
+.dockerignore
+docker-compose.override.yml
+
+# Cache
+.eslintcache
+.stylelintcache
+.cache/
+
+# Project specific
+apps/web/.next/
+apps/ws-server/dist/
+packages/*/dist/ 
