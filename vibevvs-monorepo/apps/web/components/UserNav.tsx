@@ -34,7 +34,7 @@ export function UserNav() {
   return (
     <div className="flex items-center gap-4">
       <Link 
-        href="/login"
+        href="/sign-in"
         className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
       >
         Sign In

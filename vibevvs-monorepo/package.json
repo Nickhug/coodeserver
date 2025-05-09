@@ -29,6 +29,10 @@
   "packageManager": "npm@10.2.3",
   "dependencies": {
     "@clerk/backend": "^1.31.4",
-    "@google/generative-ai": "^0.24.1"
+    "@google/generative-ai": "^0.24.1",
+    "eslint-config-next": "^15.3.2",
+    "next": "^15.3.2",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
   }
 }
