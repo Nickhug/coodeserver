@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_NAME: web
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL}
+        NODE_ENV: ${NODE_ENV:-production}
+        PORT: ${PORT:-3000}
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+        CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
+        CLERK_WEBHOOK_SECRET: ${CLERK_WEBHOOK_SECRET}
+        STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+        STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+        STRIPE_BASIC_PRICE_ID: ${STRIPE_BASIC_PRICE_ID}
+        STRIPE_PRO_PRICE_ID: ${STRIPE_PRO_PRICE_ID}
+        STRIPE_ENTERPRISE_PRICE_ID: ${STRIPE_ENTERPRISE_PRICE_ID}
+        OPENAI_API_KEY: ${OPENAI_API_KEY}
+        ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+        GROQ_API_KEY: ${GROQ_API_KEY}
+        MISTRAL_API_KEY: ${MISTRAL_API_KEY}
+        GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+        GEMINI_API_KEY: ${GEMINI_API_KEY}
+        XAI_API_KEY: ${XAI_API_KEY}
+        NEXT_PUBLIC_WEBSOCKET_URL: ${NEXT_PUBLIC_WEBSOCKET_URL}
+        NEXT_PUBLIC_WS_SERVER_URL: http://ws-server:8080 # Internal Docker network URL
+    ports:
+      - "${PORT:-3000}:3000"
+    depends_on:
+      - ws-server
+    restart: unless-stopped
+
+  ws-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_NAME: ws-server
+        NODE_ENV: ${NODE_ENV:-production}
+        PORT: ${WS_PORT:-8080}
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+        CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
+        OPENAI_API_KEY: ${OPENAI_API_KEY}
+        ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+        GROQ_API_KEY: ${GROQ_API_KEY}
+        MISTRAL_API_KEY: ${MISTRAL_API_KEY}
+        GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+        GEMINI_API_KEY: ${GEMINI_API_KEY}
+        XAI_API_KEY: ${XAI_API_KEY}
+    ports:
+      - "${WS_PORT:-8080}:8080"
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  node_modules: 
