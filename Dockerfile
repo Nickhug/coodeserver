@@ -1,77 +1,43 @@
-# Dockerfile for Next.js app
-
-# 1. Install dependencies only when needed
 FROM node:20-alpine AS base
 
-# Install dependencies based on the preferred package manager
-# This will also trigger the "prepare" script for next-ws patch
-# Do NOT set NODE_ENV=production here, as we need devDependencies for the build stage
-WORKDIR /app
-COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* ./
-RUN \
-    if [ -f yarn.lock ]; then yarn --frozen-lockfile; \
-    elif [ -f package-lock.json ]; then npm ci; \
-    elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm i --frozen-lockfile; \
-    else echo "Lockfile not found." && exit 1; \
-    fi
+# 1. Install pnpm
+RUN npm install -g pnpm
 
-# 2. Build the Next.js application
-FROM base AS builder
+# 2. Set up workspace
 WORKDIR /app
-COPY --from=base /app/node_modules ./node_modules
-COPY tsconfig.json ./
-COPY next.config.mjs ./
+
+# 3. Copy files
+# Copy root package.json and lockfile
+COPY package.json pnpm-lock.yaml* ./
+# Copy turbo.json
+COPY turbo.json ./
+# Copy entire source code (apps & packages)
 COPY . .
 
-# Explicitly set NODE_PATH to help with alias resolution during build
-ENV NODE_PATH=./src
+# 4. Install dependencies
+# Prune devDependencies for production build if needed, or use --prod flag
+# RUN pnpm install --prod
+RUN pnpm install --frozen-lockfile
 
-# Set build-time secrets
-ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
-ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-pk_test_cHJlbWl1bS1jYWxmLTQ5LmNsZXJrLmFjY291bnRzLmRldiQ}
+# 5. Build applications using turbo
+# Adjust filters as necessary based on your turbo.json pipeline config
+RUN pnpm turbo run build --filter=web --filter=ws-server
 
-# ---- START DIAGNOSTICS ----
-RUN echo "--- Checking files before build ---"
-RUN ls -la /app
-RUN echo "--- Checking src/lib contents ---"
-RUN ls -la /app/src/lib
-RUN echo "--- Diagnostics End ---"
-# ---- END DIAGNOSTICS ----
+# 6. Final image setup
+FROM node:20-alpine AS final
 
-# Next.js collects completely anonymous telemetry data about general usage.
-# Learn more here: https://nextjs.org/telemetry
-RUN npm run build
-
-# 3. Production image, copy all the files and run next
-FROM base AS runner
 WORKDIR /app
 
-# Set NODE_ENV=production for the final runtime environment
-ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED 1
+# Copy necessary files from the builder stage
+COPY --from=base /app/node_modules ./node_modules
+COPY --from=base /app/apps ./apps
+COPY --from=base /app/packages ./packages
+COPY --from=base /app/package.json ./
 
-# Set NODE_PATH for runtime as well, especially if using standalone output
-ENV NODE_PATH=./
-
-COPY --from=builder /app/public ./public
-COPY next.config.mjs ./
-COPY tsconfig.json ./
-
+# Expose ports (adjust if your apps use different ports)
 EXPOSE 3000
-ENV PORT 3000
+EXPOSE 3001
 
-# Automatically leverage output traces to reduce image size
-# https://nextjs.org/docs/advanced-features/output-file-tracing
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static/
-
-# Dependencies like ws and @clerk/backend should be in package.json and installed during the base stage
-# RUN npm install ws@8.18.2 @clerk/backend@1.31.2 --no-save
-
-# Set the correct user for running the application
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
-USER nextjs
-
-# Use Next.js CLI to start the application
-CMD ["node_modules/.bin/next", "start"]
+# Default command to run the web application
+# Adjust the filter/script name ('start' assumed) based on your package.json
+CMD ["pnpm", "--filter=web", "start"] 

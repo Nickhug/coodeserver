@@ -1,20 +1,39 @@
-# VVS - Void Server
+# Coodeserver - VVS Monorepo
 
-Authentication, subscription management, and AI service proxy for Void Editor.
+Authentication, subscription management, and AI service proxy for Void Editor, built as a monorepo using Turborepo.
 
 ## Features
 
 - Authentication via Clerk
-- Database with Supabase
-- Authentication between Void editor and server
+- WebSocket-based communication
+- AI provider proxying with streaming support
+- Monorepo architecture for modular development
+
+## Monorepo Structure
+
+```
+coodeserver/
+├── apps/                   # Applications
+│   ├── web/                # Next.js web application (authentication portal)
+│   └── ws-server/          # WebSocket server for real-time communication
+├── packages/               # Shared packages
+│   ├── ai-providers/       # AI integration libraries
+│   ├── auth/               # Authentication utilities
+│   ├── db/                 # Database client and utilities
+│   ├── logger/             # Logging infrastructure
+│   ├── types/              # Shared TypeScript types
+│   ├── config/             # Configuration utilities
+│   ├── shared/             # Common utilities
+│   └── utils/              # General utility functions
+└── turbo.json              # Turborepo configuration
+```
 
 ## Getting Started
 
 ### Prerequisites
 
-1. Node.js 18+ and npm
+1. Node.js 18+ and npm/pnpm
 2. A Clerk account (for authentication)
-3. A Supabase account (for database)
 
 ### Installation
 
@@ -25,93 +44,64 @@ Authentication, subscription management, and AI service proxy for Void Editor.
 npm install
 ```
 
-3. Create a `.env.local` file with the following environment variables:
+3. Create a `.env.local` file at the root with the following variables:
 
 ```bash
 # Clerk Authentication
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_your-key-here
 CLERK_SECRET_KEY=sk_test_your-key-here
-CLERK_WEBHOOK_SECRET=whsec_your-webhook-secret
 
-# Supabase Database
-NEXT_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-
-# App URL
-NEXT_PUBLIC_APP_URL=http://localhost:3000
+# Development URLs
+NEXT_PUBLIC_WEB_URL=http://localhost:3000
+NEXT_PUBLIC_WS_URL=ws://localhost:3001
 ```
 
-4. Run the development server:
+4. Start the development server:
 
 ```bash
 npm run dev
 ```
 
-5. Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+This will start all applications in the monorepo using Turborepo.
 
-## Database Setup
+## WebSocket Communication
 
-In Supabase, create the following tables:
+The VVS client communicates with the server using WebSockets for real-time updates and streaming AI responses. The auth flow and communication are handled via WebSocket, providing a secure and efficient way to exchange data.
 
-1. `users` table:
-   - `id`: uuid, primary key, default: uuid_generate_v4()
-   - `clerk_id`: text, not null
-   - `email`: text, not null
-   - `credits_remaining`: integer, not null, default: 100
-   - `subscription_tier`: text, not null, default: 'free'
-   - `created_at`: timestamptz, not null, default: now()
-   - `updated_at`: timestamptz, not null, default: now()
+## Development 
 
-2. `usage` table:
-   - `id`: uuid, primary key, default: uuid_generate_v4() 
-   - `user_id`: uuid, references users(id)
-   - `provider`: text, not null
-   - `model`: text, not null
-   - `tokens_used`: integer, not null
-   - `credits_used`: integer, not null
-   - `created_at`: timestamptz, not null, default: now()
+### Adding a new package
 
-## Integrating with Void Editor
+1. Create a new directory in the `packages/` folder
+2. Initialize a new package with the correct name
+3. Add it to the workspace dependencies where needed
 
-The Void editor communicates with this server for authentication using browser cookies. 
-The auth flow works as follows:
+### Building
 
-1. User authenticates on the web server (using Clerk)
-2. Server sets a `vvs_auth` cookie with user information
-3. Void editor reads this cookie and verifies with the server
-4. Void stores authentication status and checks periodically
+To build all applications and packages:
 
-## Project Structure
-
-```
-src/
-├── app/                      # Next.js app router
-│   ├── api/                  # API routes
-│   │   ├── ai-providers/     # AI provider endpoints
-│   │   ├── usage/            # Usage analytics
-│   │   └── webhooks/         # Webhook handlers
-│   └── ...                   # Other application routes
-├── components/               # React components
-├── lib/                      # Shared library code
-│   ├── ai-providers/         # AI provider integrations
-│   ├── clerk/                # Authentication utilities
-│   ├── stripe/               # Subscription management
-│   └── supabase/             # Database utilities
-└── middleware.ts             # Authentication middleware
+```bash
+npm run build
 ```
 
-## Learn More
+### Testing
 
-To learn more about Next.js, take a look at the following resources:
+To run tests across all packages:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm run test
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Deployment
 
-## Deploy on Vercel
+The project is configured for deployment using Docker:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+# Build the Docker image
+docker build -t coodeserver .
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+# Run the container
+docker run -p 3000:3000 -p 3001:3001 coodeserver
+```
+
+You can also deploy individual applications as needed.
