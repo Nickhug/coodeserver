@@ -8,9 +8,12 @@
   ],
   "scripts": {
     "build": "turbo run build",
+    "build:packages": "turbo run build --filter='./packages/*'",
+    "build:app": "if [ -z \"$APP_NAME\" ]; then echo 'Error: APP_NAME environment variable is not set.' && exit 1; else turbo run build --filter=\"./apps/$APP_NAME\"; fi",
+    "build:all-for-app": "npm run build:packages && npm run build:app",
     "dev": "turbo run dev",
     "lint": "turbo run lint",
-    "start": "cd apps/web && npm start",
+    "start": "if [ \"$APP_NAME\" = \"web\" ]; then cd apps/web && npm start; elif [ \"$APP_NAME\" = \"ws-server\" ]; then cd apps/ws-server && node dist/index.js; else cd apps/web && npm start; fi",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "test": "turbo run test"
   },

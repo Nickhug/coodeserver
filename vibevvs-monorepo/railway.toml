@@ -1,8 +1,8 @@
 [build]
 builder = "nixpacks"
 
-# No buildCommand or startCommand here; they will come from nixpacks.toml
-# and be dynamic based on the APP_NAME environment variable.
+# Railway will use the build-app command from the nixpacks.toml file which 
+# properly handles building packages first and then the app
 
 [deploy]
 restartPolicyType = "on_failure"
@@ -11,6 +11,9 @@ restartPolicyType = "on_failure"
 # This should prevent it from trying to install or use any other Node.js version.
 [env]
 NIXPACKS_NODE_VERSION = "18"
+
+# You can set APP_NAME in the Railway service settings
+# Additional environment variables should be set here in Railway dashboard
 
 # The [nixpacks] table in railway.toml for nodejs_version is an alternative
 # but setting NIXPACKS_NODE_VERSION as an environment variable is often more direct.

@@ -10,7 +10,6 @@ cmds = [
   "node -v",
   "echo 'Using npm version:'", 
   "npm -v",
-  "echo '--- Installing Dependencies ---'",
   "npm ci"
 ]
 
@@ -18,10 +17,12 @@ cmds = [
 # This command will use the APP_NAME environment variable,
 # which you must set in the Railway service settings (e.g., APP_NAME=web or APP_NAME=ws-server).
 cmds = [
-  "echo '--- Building Application ---'",
   "if [ -z \"$APP_NAME\" ]; then echo 'Error: APP_NAME environment variable is not set.' && exit 1; fi",
   "echo \"Building application: $APP_NAME (workspace: apps/$APP_NAME)\"",
-  "npm run build --workspace=apps/$APP_NAME"
+  "echo '--- Building Shared Packages First ---'",
+  "npx turbo run build --filter='./packages/*'",
+  "echo '--- Now Building App ---'", 
+  "npx turbo run build --filter=\"./apps/$APP_NAME\""
 ]
 
 [start]
