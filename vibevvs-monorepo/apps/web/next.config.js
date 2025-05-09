@@ -2,9 +2,7 @@
 const nextConfig = {
   reactStrictMode: true,
   transpilePackages: ["@repo/auth", "@repo/types", "@repo/logger"],
-  experimental: {
-    serverComponentsExternalPackages: []
-  }
+  serverExternalPackages: []
 };
 
 module.exports = nextConfig; 

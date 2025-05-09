@@ -5,7 +5,7 @@ import { cookies } from "next/headers";
 import axios from 'axios';
 import { getUserByClerkId, createUser, storeAuthToken } from "@repo/db";
 import { generateToken } from "@repo/auth";
-import { logger } from "@repo/logger";
+import logger from "@repo/logger";
 
 // Get the WebSocket server base URL from environment variables or use a default
 const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_SERVER_URL || 'http://localhost:8080';
