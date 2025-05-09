@@ -8,8 +8,9 @@
   ],
   "scripts": {
     "build": "turbo run build",
-    "dev": "turbo run dev --parallel",
+    "dev": "turbo run dev",
     "lint": "turbo run lint",
+    "start": "cd apps/web && npm start",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "test": "turbo run test"
   },
@@ -20,7 +21,7 @@
     "turbo": "^1.11.3"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "18.x"
   },
   "packageManager": "npm@10.2.3",
   "dependencies": {
