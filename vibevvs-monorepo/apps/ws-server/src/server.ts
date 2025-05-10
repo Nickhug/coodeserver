@@ -94,15 +94,28 @@ export function setupWebSocketServer(server: http.Server): WebSocketServer {
       
       const timeSinceLastPing = now - wsWithData.connectionData.lastPingTime;
       
-      if (timeSinceLastPing > config.pingInterval * 2) {
-        logger.warn(`Connection ${wsWithData.connectionData.connectionId} timed out, closing`);
+      // Use a longer timeout (3x ping interval) to avoid premature disconnections
+      if (timeSinceLastPing > config.pingInterval * 3) {
+        logger.warn(`Connection ${wsWithData.connectionData.connectionId} timed out after ${timeSinceLastPing}ms, closing`);
         ws.terminate();
+        connections.delete(wsWithData.connectionData.connectionId);
         return;
       }
       
-      // Send ping
+      // Send native WebSocket ping
       try {
         ws.ping();
+        
+        // For older clients that don't handle native pings well, also send an application-level ping
+        if (timeSinceLastPing > config.pingInterval * 1.5) {
+          sendToClient(wsWithData, { 
+            type: MessageType.PONG, // Send PONG proactively
+            payload: { 
+              serverTime: new Date().toISOString(),
+              timestamp: Date.now()
+            } 
+          });
+        }
       } catch (error) {
         logger.error('Error sending ping:', error);
       }
@@ -204,13 +217,23 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
     // Parse message
     const clientMessage = JSON.parse(message) as ClientMessage;
     
-    // Update last ping time
+    // Update last ping time for all message types
     ws.connectionData.lastPingTime = Date.now();
+    connections.set(connectionId, ws.connectionData);
     
     // Handle message by type
     switch (clientMessage.type) {
       case MessageType.PING:
-        sendToClient(ws, { type: MessageType.PONG, payload: { serverTime: Date.now() } });
+        // Immediately respond with PONG to keep connection alive
+        // This is critical for client heartbeat mechanism
+        sendToClient(ws, { 
+          type: MessageType.PONG, 
+          payload: { 
+            timestamp: Date.now(),
+            serverTime: new Date().toISOString(),
+            connectionId: connectionId // Echo back the connection ID for verification
+          } 
+        });
         break;
         
       case MessageType.AUTHENTICATE:
