@@ -797,6 +797,30 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
   const { provider, model, prompt, temperature, maxTokens, stream = false } = message.payload;
   const userId = ws.connectionData.userId;
   
+  // Check if prompt is a JSON string and parse it if needed
+  let finalPrompt = prompt;
+  try {
+    // Check if the prompt is a JSON string (client sends stringified messages)
+    if (typeof prompt === 'string' && (prompt.startsWith('[') || prompt.startsWith('{'))) {
+      const parsedPrompt = JSON.parse(prompt);
+      // For Gemini, we'll convert the parsed message format back to a readable prompt
+      if (provider === 'gemini' && Array.isArray(parsedPrompt)) {
+        // Converting the message array to a proper conversation format that Gemini expects
+        finalPrompt = parsedPrompt.map((msg: any) => {
+          if (msg.role && msg.content) {
+            return `${msg.role}: ${msg.content}`;
+          }
+          return msg.content || '';
+        }).join('\n\n');
+        
+        logger.info(`Converted JSON message array to text prompt for Gemini API`);
+      }
+    }
+  } catch (err) {
+    // If parsing fails, use the original prompt
+    logger.warn(`Failed to parse prompt as JSON, using as plain text: ${err}`);
+  }
+  
   if (!userId && config.authEnabled) {
     logger.error('No user ID available for provider request');
     sendToClient(ws, {
@@ -870,7 +894,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
           await gemini.streamGeminiMessage({
             apiKey,
             model,
-            prompt,
+            prompt: finalPrompt, // Use the processed prompt
             temperature: temperature || 0.7,
             maxTokens: maxTokens || 1024,
             onStart: () => {
@@ -885,6 +909,12 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   requestId: message.payload.requestId
                 }
               });
+              
+              // Log the first few characters of each chunk for debugging
+              if (chunk.length > 0) {
+                const previewText = chunk.length > 20 ? chunk.substring(0, 20) + '...' : chunk;
+                logger.debug(`Stream chunk sent for ${message.payload.requestId}, preview: "${previewText}"`);
+              }
             },
             onError: (error: Error) => {
               logger.error(`Gemini streaming error: ${error.message}`);
@@ -933,7 +963,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
         const response = await gemini.sendGeminiMessage({
           apiKey,
           model,
-          prompt,
+          prompt: finalPrompt, // Use the processed prompt
           temperature: temperature || 0.7,
           maxTokens: maxTokens || 1024
         });

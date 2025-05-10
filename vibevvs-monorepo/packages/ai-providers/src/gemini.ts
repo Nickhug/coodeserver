@@ -144,6 +144,16 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
       }
     };
     
+    // Log request just before sending
+    logger.debug(`Sending Gemini API request to ${model}:`, JSON.stringify({
+      model,
+      temperature,
+      maxTokens,
+      // Don't log the full prompt for privacy, but log its length
+      promptLength: prompt.length,
+      requestBodyStructure: JSON.stringify(requestBody).slice(0, 100) + '...'
+    }));
+    
     // Direct API call to v1beta endpoint with API key in URL
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
     
@@ -248,6 +258,16 @@ export async function sendStreamingRequest(
         ...(maxTokens && { maxOutputTokens: maxTokens })
       }
     };
+    
+    // Log request just before sending
+    logger.debug(`Sending Gemini API request to ${model}:`, JSON.stringify({
+      model,
+      temperature,
+      maxTokens,
+      // Don't log the full prompt for privacy, but log its length
+      promptLength: prompt.length,
+      requestBodyStructure: JSON.stringify(requestBody).slice(0, 100) + '...'
+    }));
     
     // Direct API call to v1beta endpoint with API key in URL
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
