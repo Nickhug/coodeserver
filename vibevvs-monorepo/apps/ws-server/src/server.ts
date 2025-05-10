@@ -978,16 +978,21 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
     return;
   }
 
-  const { provider, model, prompt, temperature, maxTokens, stream = false } = message.payload;
+  const { provider, model, prompt, temperature, maxTokens, stream = false, requestId } = message.payload;
+  
+  // Ensure requestId is always available, generate one if needed
+  const safeRequestId = requestId || `gen-${uuidv4().substring(0, 8)}`;
+  
   const userId = ws.connectionData.userId;
   
   if (!userId && config.authEnabled) {
-    logger.error('No user ID available for provider request');
+    logger.error(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] No user ID available for provider request`);
     sendToClient(ws, {
       type: MessageType.PROVIDER_ERROR,
       payload: {
         error: 'User ID not available',
-        code: 'NO_USER_ID'
+        code: 'NO_USER_ID',
+        requestId: safeRequestId
       }
     });
     return;
@@ -1016,7 +1021,8 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
           type: MessageType.PROVIDER_ERROR,
           payload: {
             error: `Unknown provider: ${provider}`,
-            code: 'UNKNOWN_PROVIDER'
+            code: 'UNKNOWN_PROVIDER',
+            requestId: safeRequestId
           }
         });
         return;
@@ -1027,7 +1033,8 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
         type: MessageType.PROVIDER_ERROR,
         payload: {
           error: `Provider ${provider} is not configured`,
-          code: 'PROVIDER_NOT_CONFIGURED'
+          code: 'PROVIDER_NOT_CONFIGURED',
+          requestId: safeRequestId
         }
       });
       return;
@@ -1037,7 +1044,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
     if (provider === 'gemini') {
       if (stream) {
         // Handle streaming response using the proper streaming API
-        logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${message.payload.requestId}] Initiating request to model ${model}`);
+        logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Initiating request to model ${model}`);
         
         try {
           // First, notify client that streaming has started
@@ -1046,7 +1053,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             payload: {
               provider,
               model,
-              requestId: message.payload.requestId
+              requestId: safeRequestId
             }
           });
           
@@ -1067,7 +1074,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             maxTokens: maxTokens || 1024,
             onStart: () => {
               streamStats.startTime = Date.now();
-              logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${message.payload.requestId}] Stream started for model ${model}`);
+              logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Stream started for model ${model}`);
             },
             onChunk: (chunk: string) => {
               // Update stream stats
@@ -1078,7 +1085,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               // Log every 10th chunk to avoid log flooding
               if (streamStats.chunkCount % 10 === 0) {
                 logger.debug(
-                  `WS GEMINI [${ws.connectionData.connectionId}][${message.payload.requestId}] ` +
+                  `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
                   `Streaming progress: ${streamStats.chunkCount} chunks, ` +
                   `${streamStats.totalCharsStreamed} chars, ` +
                   `${Date.now() - streamStats.startTime}ms elapsed`
@@ -1090,7 +1097,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                 type: MessageType.PROVIDER_STREAM_CHUNK,
                 payload: {
                   chunk,
-                  requestId: message.payload.requestId,
+                  requestId: safeRequestId, // Use the consistent requestId
                   provider,
                   model
                 }
@@ -1098,7 +1105,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             },
             onError: (error: Error) => {
               logger.error(
-                `WS GEMINI [${ws.connectionData.connectionId}][${message.payload.requestId}] ` +
+                `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
                 `Streaming error after ${streamStats.chunkCount} chunks: ${error.message}`
               );
               
@@ -1107,7 +1114,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                 payload: {
                   error: `Streaming error: ${error.message}`,
                   code: 'STREAMING_ERROR',
-                  requestId: message.payload.requestId,
+                  requestId: safeRequestId, // Use the consistent requestId
                   provider,
                   model
                 }
@@ -1119,7 +1126,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               const charsPerSecond = streamStats.totalCharsStreamed / (elapsedMs / 1000);
               
               logger.info(
-                `WS GEMINI [${ws.connectionData.connectionId}][${message.payload.requestId}] ` +
+                `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
                 `Stream complete: ${streamStats.chunkCount} chunks, ` +
                 `${streamStats.totalCharsStreamed} chars, ` +
                 `${elapsedMs}ms total time, ` +
@@ -1133,7 +1140,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                 payload: {
                   tokensUsed: response.tokensUsed,
                   success: response.success,
-                  requestId: message.payload.requestId,
+                  requestId: safeRequestId, // Use the consistent requestId
                   provider,
                   model,
                   ...(response.toolCall && { toolCall: response.toolCall }),
@@ -1150,7 +1157,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
           });
         } catch (error) {
           logger.error(
-            `WS GEMINI [${ws.connectionData.connectionId}][${message.payload.requestId}] ` +
+            `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
             `Error in streaming setup: ${error instanceof Error ? error.message : String(error)}`
           );
           
@@ -1159,7 +1166,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             payload: {
               error: `Streaming error: ${error instanceof Error ? error.message : String(error)}`,
               code: 'STREAMING_ERROR',
-              requestId: message.payload.requestId
+              requestId: safeRequestId
             }
           });
         }
@@ -1179,7 +1186,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             text: response.text,
             tokensUsed: response.tokensUsed,
             success: response.success,
-            requestId: message.payload.requestId,
+            requestId: safeRequestId,
             ...(response.error && { error: response.error }),
             ...(response.toolCall && { toolCall: response.toolCall }),
             ...(response.waitingForToolCall && { waitingForToolCall: response.waitingForToolCall })
