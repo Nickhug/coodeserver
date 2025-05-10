@@ -164,49 +164,64 @@ function formatPrompt(prompt: string): any {
  */
 export async function sendRequest(params: GeminiRequestParams): Promise<LLMResponse> {
   try {
-  const { apiKey, model, prompt, temperature = 0.7, maxTokens } = params;
+    const { apiKey, model, prompt, temperature = 0.7, maxTokens } = params;
 
     logger.info(`Sending request to Gemini API with model: ${model}`);
     
-    const client = createGeminiClient(apiKey);
-    const geminiModel = getGeminiModel(client, model);
-    
-    // Create generation config without apiVersion (already set in getGeminiModel)
-    const generationConfig: any = {
-      temperature,
+    // Format prompt for direct API call
+    const formattedPrompt = {
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: prompt }]
+        }
+      ],
+      generationConfig: {
+        temperature,
+        ...(maxTokens && { maxOutputTokens: maxTokens })
+      }
     };
     
-    if (maxTokens) {
-      generationConfig.maxOutputTokens = maxTokens;
-    }
+    // Direct API call to v1beta endpoint
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
     
-    // Format the prompt for Gemini
-    const formattedPrompt = formatPrompt(prompt);
-    
-    // Send the request to Gemini
-    const result = await geminiModel.generateContent({
-      contents: formattedPrompt,
-      generationConfig,
+    // Using node-fetch or native fetch depending on environment
+    const fetch = globalThis.fetch;
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(formattedPrompt)
     });
     
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Gemini API error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+    
+    const data = await response.json();
+    
     // Extract the response text
-    const response = result.response;
-    const text = response.text();
-
-    // Check for function calls in the response
+    let text = '';
     let toolCall: { name: string; parameters: Record<string, unknown>; id: string } | undefined;
     
-    if (response.candidates && response.candidates.length > 0) {
-      const candidate = response.candidates[0];
+    if (data.candidates && data.candidates.length > 0) {
+      const candidate = data.candidates[0];
       if (candidate.content && candidate.content.parts && candidate.content.parts.length > 0) {
         for (const part of candidate.content.parts) {
+          // Extract text content
+          if (part.text) {
+            text += part.text;
+          }
+          
           // Check if this part contains a function call
-          const anyPart = part as any;
-          if (anyPart.functionCall) {
+          if (part.functionCall) {
             toolCall = {
-              name: anyPart.functionCall.name,
-              parameters: anyPart.functionCall.args || {},
-              id: (candidate as any).contentId || 'unknown'
+              name: part.functionCall.name,
+              parameters: part.functionCall.args || {},
+              id: candidate.contentId || 'unknown'
             };
             logger.info(`Detected tool call in response: ${toolCall.name}`);
           }
@@ -215,7 +230,6 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
     }
     
     // Estimate token usage (Google doesn't provide token counts directly)
-    // This is a very rough estimate - characters / 4 is a common approximation
     const inputTokens = Math.ceil(prompt.length / 4);
     const outputTokens = Math.ceil(text.length / 4);
     const totalTokens = inputTokens + outputTokens;
@@ -255,75 +269,111 @@ export async function sendStreamingRequest(
     
     logger.info(`Starting Gemini stream with model: ${model}`);
     
-    const client = createGeminiClient(apiKey);
-    const geminiModel = getGeminiModel(client, model);
-    
-    // Create generation config without apiVersion (already set in getGeminiModel)
-    const generationConfig: any = {
-      temperature,
-    };
-    
-    if (maxTokens) {
-      generationConfig.maxOutputTokens = maxTokens;
-    }
-
-    // Format the prompt for Gemini
-    const formattedPrompt = formatPrompt(prompt);
-    
     // Call onStart handler
     if (handlers.onStart) {
       handlers.onStart();
     }
     
-    let toolCall: { name: string; parameters: Record<string, unknown>; id: string } | undefined;
+    // Format prompt for direct API call
+    const formattedPrompt = {
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: prompt }]
+        }
+      ],
+      generationConfig: {
+        temperature,
+        ...(maxTokens && { maxOutputTokens: maxTokens })
+      }
+    };
     
-    // Process the stream
-    const streamResult: GenerateContentStreamResult = await geminiModel.generateContentStream({
-      contents: formattedPrompt,
-      generationConfig,
+    // Direct API call to v1beta endpoint
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`;
+    
+    // Using node-fetch or native fetch depending on environment
+    const fetch = globalThis.fetch;
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(formattedPrompt)
     });
     
-    let completeText = '';
-    let startTime = Date.now();
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Gemini API error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
     
-    // Process the stream
-    for await (const chunk of streamResult.stream) {
-      // Check for function calls in the response
-      if (chunk.candidates && chunk.candidates.length > 0) {
-        const candidate = chunk.candidates[0];
-        if (candidate.content && candidate.content.parts && candidate.content.parts.length > 0) {
-          for (const part of candidate.content.parts) {
-            // Check if this part contains a function call
-            // Use type assertion since the Google GenAI types might not be up to date
-            const anyPart = part as any;
-            if (anyPart.functionCall) {
-              toolCall = {
-                name: anyPart.functionCall.name,
-                parameters: anyPart.functionCall.args || {},
-                id: (candidate as any).contentId || 'unknown'
-              };
-              logger.info(`Detected tool call in stream: ${toolCall.name}`);
+    if (!response.body) {
+      throw new Error('Response body is null');
+    }
+    
+    // Process the SSE stream
+    const reader = response.body.getReader();
+    let completeText = '';
+    let toolCall: { name: string; parameters: Record<string, unknown>; id: string } | undefined;
+    const decoder = new TextDecoder();
+    
+    let chunk;
+    while (!(chunk = await reader.read()).done) {
+      const rawText = decoder.decode(chunk.value, { stream: true });
+      
+      // Parse SSE format (data: {json})
+      const lines = rawText.split('\n').filter(line => line.trim() !== '');
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            // Skip "[DONE]" message at the end
+            if (line === 'data: [DONE]') continue;
+            
+            const jsonText = line.slice(6); // Remove "data: " prefix
+            const data = JSON.parse(jsonText);
+            
+            // Extract text content
+            let chunkText = '';
+            if (data.candidates && 
+                data.candidates[0]?.content?.parts && 
+                data.candidates[0].content.parts.length > 0) {
+              
+              // Check for function calls
+              for (const part of data.candidates[0].content.parts) {
+                if (part.text) {
+                  chunkText += part.text;
+                }
+                
+                // Check for function calls (tool calls)
+                if (part.functionCall) {
+                  toolCall = {
+                    name: part.functionCall.name,
+                    parameters: part.functionCall.args || {},
+                    id: data.candidates[0].contentId || 'unknown'
+                  };
+                  logger.info(`Detected tool call in stream: ${toolCall.name}`);
+                }
+              }
+              
+              // Call onChunk handler
+              if (chunkText) {
+                handlers.onChunk(chunkText);
+                completeText += chunkText;
+              }
             }
+          } catch (error) {
+            logger.error('Error parsing SSE chunk:', error);
           }
         }
       }
-      
-      const chunkText = chunk.text();
-      completeText += chunkText;
-      
-      // Call onChunk handler for each chunk
-      handlers.onChunk(chunkText);
     }
     
-    // Calculate stream duration
-    const duration = Date.now() - startTime;
-            
     // Estimate token usage
     const inputTokens = Math.ceil(prompt.length / 4);
     const outputTokens = Math.ceil(completeText.length / 4);
     const totalTokens = inputTokens + outputTokens;
     
-    logger.info(`Gemini stream completed in ${duration}ms, estimated tokens: ${totalTokens}`);
+    logger.info(`Gemini stream completed, estimated tokens: ${totalTokens}`);
     
     // Call onComplete handler
     handlers.onComplete({
@@ -415,7 +465,7 @@ export async function sendGeminiMessage(params: {
     temperature,
     maxTokens
   });
-  }
+}
 
 export default {
   sendRequest,
