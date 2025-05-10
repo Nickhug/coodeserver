@@ -312,7 +312,27 @@ export function setupHttpRoutes(server: http.Server): void {
   
   // Debug endpoint to test API is up
   app.get('/api/health', (req, res) => {
-    res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+    res.status(200).json({ 
+      status: 'ok', 
+      timestamp: new Date().toISOString(),
+      connections: connections.size
+    });
+  });
+  
+  // Debug endpoint to list active connections (for debugging)
+  app.get('/api/debug/connections', (req, res) => {
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(403).json({ error: 'Not available in production' });
+    }
+    
+    const connectionsList = Array.from(connections.entries()).map(([id, data]) => ({
+      id,
+      isAuthenticated: data.isAuthenticated,
+      userId: data.userId || null,
+      lastPingTime: new Date(data.lastPingTime).toISOString()
+    }));
+    
+    res.status(200).json({ connections: connectionsList });
   });
   
   // Handle authentication from web app - this links web auth to WebSocket connections

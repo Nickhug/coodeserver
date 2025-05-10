@@ -130,19 +130,45 @@ export async function POST(req: NextRequest) {
       logger.info(`Using connection ID: ${connectionId}`);
       
       // Add timeout and retry logic
-      const MAX_RETRIES = 2;
+      const MAX_RETRIES = 3;
+      const RETRY_DELAY_MS = 1000;
+      const REQUEST_TIMEOUT_MS = 5000;
+      
       let retries = 0;
       let success = false;
       let lastError;
+      let responseData = null;
       
       while (retries <= MAX_RETRIES && !success) {
         try {
           if (retries > 0) {
             logger.info(`Retry attempt #${retries} for connection ${connectionId}`);
             // Wait a bit between retries
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * retries));
           }
           
+          // First check if the connection exists by requesting connection status
+          const checkUrl = `${baseUrl}/api/debug/connections`;
+          let connectionExists = false;
+
+          try {
+            const checkResponse = await axios.get(checkUrl, { timeout: REQUEST_TIMEOUT_MS });
+            if (checkResponse.status === 200 && checkResponse.data.connections) {
+              const connections = checkResponse.data.connections;
+              connectionExists = connections.some((conn: any) => conn.id === connectionId);
+              
+              if (!connectionExists) {
+                logger.warn(`Connection ID ${connectionId} not found on server. Active connections: ${connections.length}`);
+                // Don't retry if the connection doesn't exist at all
+                throw new Error('Connection not found on server');
+              }
+            }
+          } catch (checkError) {
+            // Debug endpoint might be disabled in production, so continue anyway
+            logger.info('Could not check connection status, continuing with auth attempt');
+          }
+          
+          // Send the auth data
           const response = await axios.post(authUrl, 
             {
               connectionId,
@@ -153,25 +179,58 @@ export async function POST(req: NextRequest) {
               headers: {
                 'Content-Type': 'application/json',
               },
-              timeout: 5000 // 5 second timeout
+              timeout: REQUEST_TIMEOUT_MS
             }
           );
 
-          if (response.status === 200) {
+          responseData = response.data;
+          
+          if (response.status === 200 && response.data.success) {
             logger.info(`Successfully sent auth data to WebSocket for connection ${connectionId}`);
             success = true;
           } else {
-            throw new Error(`WebSocket server responded with status ${response.status}`);
+            throw new Error(`WebSocket server responded with unexpected status: ${JSON.stringify(response.data)}`);
           }
         } catch (err) {
           lastError = err;
           retries++;
+          
+          if (axios.isAxiosError(err) && err.response && err.response.status === 404) {
+            // If the connection wasn't found, don't retry - it's gone
+            if (err.response.data && typeof err.response.data === 'object' && 
+                'message' in err.response.data && 
+                typeof err.response.data.message === 'string' && 
+                err.response.data.message.includes('Connection not found')) {
+              logger.error(`Connection ${connectionId} not found on WebSocket server, won't retry`);
+              break;
+            }
+          }
+          
           logger.warn(`Error on attempt #${retries}: ${err}`);
         }
       }
       
       if (!success) {
-        throw lastError || new Error('Failed to send auth data to WebSocket server after retries');
+        // Format error message for better debugging
+        let errorMsg = 'Failed to send auth data to WebSocket server after retries';
+        let errorDetails = '';
+        
+        if (lastError) {
+          if (axios.isAxiosError(lastError)) {
+            if (lastError.response) {
+              errorDetails = ` - ${lastError.response.status} ${lastError.response.statusText}`;
+              logger.error(`Response data:`, lastError.response.data);
+            } else if (lastError.request) {
+              errorDetails = ' - No response received';
+            } else {
+              errorDetails = ` - ${lastError.message}`;
+            }
+          } else {
+            errorDetails = ` - ${lastError.message || 'Unknown error'}`;
+          }
+        }
+        
+        throw new Error(errorMsg + errorDetails);
       }
 
       logger.info(`Found user UUID ${dbUser.id} for clerk_id ${userId}`);
