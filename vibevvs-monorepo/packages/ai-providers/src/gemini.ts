@@ -144,16 +144,6 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
       }
     };
     
-    // Log request just before sending
-    logger.debug(`Sending Gemini API request to ${model}:`, JSON.stringify({
-      model,
-      temperature,
-      maxTokens,
-      // Don't log the full prompt for privacy, but log its length
-      promptLength: prompt.length,
-      requestBodyStructure: JSON.stringify(requestBody).slice(0, 100) + '...'
-    }));
-    
     // Direct API call to v1beta endpoint with API key in URL
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
     
@@ -259,16 +249,6 @@ export async function sendStreamingRequest(
       }
     };
     
-    // Log request just before sending
-    logger.debug(`Sending Gemini API request to ${model}:`, JSON.stringify({
-      model,
-      temperature,
-      maxTokens,
-      // Don't log the full prompt for privacy, but log its length
-      promptLength: prompt.length,
-      requestBodyStructure: JSON.stringify(requestBody).slice(0, 100) + '...'
-    }));
-    
     // Direct API call to v1beta endpoint with API key in URL
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
     
@@ -335,17 +315,30 @@ export async function sendStreamingRequest(
                 }
               }
               
-              // Call onChunk handler
+              // Call onChunk handler with small delay
+              // This is critical for Gemini 2.5 models which can experience premature stream closure
               if (chunkText) {
+                // Add small delay when streaming from Gemini 2.5 models
+                if (model.includes('gemini-2.5')) {
+                  await new Promise(resolve => setTimeout(resolve, 5));
+                }
+                
                 handlers.onChunk(chunkText);
                 completeText += chunkText;
               }
             }
           } catch (error) {
             logger.error('Error parsing SSE chunk:', error);
+            // Don't throw errors here to keep the stream going
           }
         }
       }
+    }
+    
+    // Ensure we wait a moment before sending the completion to avoid race conditions
+    // This is especially important for the Gemini 2.5 model family
+    if (model.includes('gemini-2.5')) {
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
     
     // Estimate token usage

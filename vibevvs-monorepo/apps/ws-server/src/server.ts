@@ -70,20 +70,63 @@ export function setupServer(): http.Server {
 }
 
 /**
- * Set up the WebSocket server
+ * Set up the WebSocket server with optimized configuration for streaming
  */
 export function setupWebSocketServer(server: http.Server): WebSocketServer {
-  // Create WebSocket server
+  // Create WebSocket server with optimized settings for streaming
   const wss = new WebSocketServer({ 
     server,
-    path: config.wsPath 
+    path: config.wsPath,
+    // Increase max payload size
+    maxPayload: 100 * 1024 * 1024, // 100MB max payload
+    // Enable permessage-deflate for better streaming performance
+    perMessageDeflate: {
+      zlibDeflateOptions: {
+        chunkSize: 1024,
+        memLevel: 7,
+        level: 3
+      },
+      zlibInflateOptions: {
+        chunkSize: 10 * 1024
+      },
+      clientNoContextTakeover: true,
+      serverNoContextTakeover: true,
+      concurrencyLimit: 20, // Increased concurrency for better performance
+      threshold: 1024 // Only compress messages larger than 1KB
+    }
   });
   
   // Store global reference
   globalWss = wss;
+  
+  // Log server configuration
+  logger.info(`WebSocket server configured with optimized settings for streaming`);
+  logger.info(`WebSocket permessage-deflate compression enabled with threshold: 1024 bytes`);
+      
+  // Track WebSocket server stats
+  let totalConnections = 0;
+  let peakConcurrentConnections = 0;
+  const clientVersions = new Map<string, number>();
+  
+  // Server-wide connection monitoring
+  wss.on('connection', () => {
+    totalConnections++;
+    const concurrentConnections = wss.clients.size;
+    if (concurrentConnections > peakConcurrentConnections) {
+      peakConcurrentConnections = concurrentConnections;
+    }
+    
+    // Log connection stats periodically (every 10 connections)
+    if (totalConnections % 10 === 0) {
+      logger.info(
+        `WS SERVER STATS: Total connections: ${totalConnections}, ` +
+        `Current: ${concurrentConnections}, Peak: ${peakConcurrentConnections}`
+      );
+    }
+  });
       
   // Set up ping interval for connection keepalive
-  global.setInterval(() => {
+  const pingInterval = global.setInterval(() => {
     const now = Date.now();
     
     wss.clients.forEach((ws) => {
@@ -97,7 +140,7 @@ export function setupWebSocketServer(server: http.Server): WebSocketServer {
       
       // Use a longer timeout (3x ping interval) to avoid premature disconnections
       if (timeSinceLastPing > config.pingInterval * 3) {
-        logger.warn(`Connection ${wsWithData.connectionData.connectionId} timed out after ${timeSinceLastPing}ms, closing`);
+        logger.warn(`WS TIMEOUT [${wsWithData.connectionData.connectionId}] Connection timed out after ${timeSinceLastPing}ms, closing`);
         ws.terminate();
         connections.delete(wsWithData.connectionData.connectionId);
         return;
@@ -118,10 +161,25 @@ export function setupWebSocketServer(server: http.Server): WebSocketServer {
           });
         }
       } catch (error) {
-        logger.error('Error sending ping:', error);
+        logger.error(`WS ERROR [${wsWithData.connectionData.connectionId}] Error sending ping: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
   }, config.pingInterval);
+  
+  // Log server metrics every 5 minutes
+  const metricsInterval = global.setInterval(() => {
+    logger.info(
+      `WS SERVER METRICS: Active connections: ${wss.clients.size}, ` +
+      `Total historical: ${totalConnections}, Peak concurrent: ${peakConcurrentConnections}`
+    );
+  }, 5 * 60 * 1000);
+  
+  // Clean up intervals if the server is stopped
+  wss.on('close', () => {
+    logger.info('WebSocket server closing, cleaning up intervals');
+    clearInterval(pingInterval);
+    clearInterval(metricsInterval);
+  });
   
   // Handle connection events
   wss.on('connection', handleConnection);
@@ -138,6 +196,14 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
   let userId: string | undefined = undefined;
   let isAuthenticated = false;
   
+  // Log connection attempt with details
+  const ip = req.headers['x-forwarded-for'] || 
+             req.socket.remoteAddress || 
+             'unknown';
+             
+  const userAgent = req.headers['user-agent'] || 'unknown';
+  logger.info(`WS CONNECT [${connectionId}] New connection from ${ip}, UA: ${userAgent}`);
+  
   // Check authentication if enabled
   let token: string | undefined = undefined;
   
@@ -147,6 +213,7 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
     const protocol = req.headers['sec-websocket-protocol'];
     if (protocol) {
       token = protocol;
+      logger.debug(`WS AUTH [${connectionId}] Token provided in protocol header`);
     }
   }
   
@@ -163,7 +230,7 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
   connections.set(connectionId, wsWithData.connectionData);
   
   // Log connection
-  logger.info(`WebSocket connection opened: ${connectionId}`);
+  logger.info(`WS OPEN [${connectionId}] WebSocket connection established`);
   
   // Send welcome message
   sendToClient(wsWithData, {
@@ -188,23 +255,28 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
   }
   
   // Set up event handlers
-  ws.on('message', (data) => handleIncomingMessage(wsWithData, data.toString()));
+  ws.on('message', (data) => {
+    logger.debug(`WS RECEIVE [${connectionId}] Received message of ${data.toString().length} bytes`);
+    handleIncomingMessage(wsWithData, data.toString());
+  });
   
   ws.on('close', (code, reason) => {
     // Remove connection
-          connections.delete(connectionId);
+    connections.delete(connectionId);
     
-    // Log disconnection
-    logger.info(`WebSocket connection closed: ${connectionId} ${userId ? `(User: ${userId})` : ''} with code ${code}`);
+    // Log disconnection with code details
+    const reasonStr = reason ? reason.toString() : 'No reason provided';
+    logger.info(`WS CLOSE [${connectionId}] ${userId ? `(User: ${userId})` : ''} Code: ${code}, Reason: ${reasonStr}`);
   });
   
   ws.on('error', (error) => {
-    logger.error(`WebSocket error on connection ${connectionId}:`, error);
+    logger.error(`WS ERROR [${connectionId}] ${error.message}`, error);
   });
   
   // Update ping time on pong
   ws.on('pong', () => {
     wsWithData.connectionData.lastPingTime = Date.now();
+    logger.debug(`WS PONG [${connectionId}] Received pong response`);
   });
 }
 
@@ -224,6 +296,18 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
     
     // Get the message type as string for safer comparison
     const messageType = clientMessage.type as string;
+    const requestId = clientMessage.payload?.requestId || 'no-request-id';
+    
+    // Log based on message type
+    if (messageType === MessageType.PING) {
+      logger.debug(`WS MSG [${connectionId}] Ping received`);
+    } else if (messageType === MessageType.PROVIDER_REQUEST) {
+      const provider = clientMessage.payload?.provider || 'unknown';
+      const model = clientMessage.payload?.model || 'unknown';
+      logger.info(`WS MSG [${connectionId}][${requestId}] Provider request: ${provider}/${model}, streaming: ${!!clientMessage.payload?.stream}`);
+    } else {
+      logger.debug(`WS MSG [${connectionId}] Received message type: ${messageType}`);
+    }
     
     // Handle message by type
     if (messageType === MessageType.PING) {
@@ -247,6 +331,7 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
       await handleUserDataRequest(ws, clientMessage);
     } else if (messageType === MessageType.PROVIDER_REQUEST) {
       if (config.authEnabled && !isAuthenticated) {
+        logger.warn(`WS AUTH [${connectionId}] Unauthorized provider request rejected`);
         sendToClient(ws, { 
           type: MessageType.PROVIDER_ERROR, 
           payload: { 
@@ -258,7 +343,7 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
       }
       await handleProviderRequest(ws, clientMessage);
     } else {
-      logger.warn(`Unknown message type: ${messageType}`);
+      logger.warn(`WS MSG [${connectionId}] Unknown message type: ${messageType}`);
       sendToClient(ws, { 
         type: MessageType.ERROR, 
         payload: { 
@@ -268,7 +353,11 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
       });
     }
   } catch (error) {
-    logger.error(`Error handling message from ${connectionId}:`, error);
+    logger.error(`WS ERROR [${connectionId}] Error processing message: ${error instanceof Error ? error.message : String(error)}`, error);
+    // Log a preview of the problematic message
+    const messagePreview = message.length > 100 ? `${message.substring(0, 100)}...` : message;
+    logger.debug(`WS ERROR [${connectionId}] Problematic message preview: ${messagePreview}`);
+    
     sendToClient(ws, { 
       type: MessageType.ERROR, 
       payload: { 
@@ -280,7 +369,7 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
 }
 
 /**
- * Send a message to a WebSocket client
+ * Send message to client with optimizations for streaming
  */
 function sendToClient(ws: WebSocketWithData, message: ServerMessage): void {
   try {
@@ -289,14 +378,109 @@ function sendToClient(ws: WebSocketWithData, message: ServerMessage): void {
       timestamp: Date.now()
     });
     
+    // Debug logging for all messages
+    const { connectionId = 'unknown' } = ws.connectionData || {};
+    const messageType = message.type;
+    const requestId = (message.payload as any)?.requestId || 'no-request-id';
+    
+    // Log message being sent with different detail levels based on type
+    if (messageType === MessageType.PROVIDER_STREAM_CHUNK) {
+      const chunk = (message.payload as any)?.chunk || '';
+      const provider = (message.payload as any)?.provider || 'unknown';
+      const model = (message.payload as any)?.model || 'unknown';
+      // Log chunks with truncated content to avoid flooding logs
+      const chunkPreview = chunk.length > 50 ? `${chunk.substring(0, 50)}...` : chunk;
+      logger.debug(
+        `WS SEND [${connectionId}][${requestId}] Stream chunk for ${provider}/${model}, ` +
+        `length: ${chunk.length}, preview: "${chunkPreview}"`
+      );
+    } else if (messageType === MessageType.PROVIDER_STREAM_START) {
+      const provider = (message.payload as any)?.provider || 'unknown';
+      const model = (message.payload as any)?.model || 'unknown';
+      logger.info(
+        `WS SEND [${connectionId}][${requestId}] Stream start for ${provider}/${model}`
+      );
+    } else if (messageType === MessageType.PROVIDER_STREAM_END) {
+      const provider = (message.payload as any)?.provider || 'unknown';
+      const model = (message.payload as any)?.model || 'unknown';
+      const tokensUsed = (message.payload as any)?.tokensUsed || 0;
+      logger.info(
+        `WS SEND [${connectionId}][${requestId}] Stream end for ${provider}/${model}, ` +
+        `tokens: ${tokensUsed}, success: ${(message.payload as any)?.success}`
+      );
+    } else if (messageType === MessageType.PROVIDER_ERROR || messageType === MessageType.ERROR) {
+      // Log errors with full details
+      logger.warn(
+        `WS SEND [${connectionId}][${requestId}] Error message: ${JSON.stringify(message.payload)}`
+      );
+    } else {
+      // Basic logging for other message types
+      logger.debug(`WS SEND [${connectionId}] Message type: ${messageType}`);
+    }
+    
     // Send the message, checking for state
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(messageText);
+      // Log WebSocket state before sending
+      logger.debug(`WS STATE [${connectionId}] Before send: ${ws.readyState} (OPEN)`);
+      
+      // Special handling for Gemini stream chunks to prevent WebSocket overload
+      if (message.type === MessageType.PROVIDER_STREAM_CHUNK) {
+        // For Gemini models, add a small delay to avoid overwhelming the connection
+        // This helps with Gemini 2.5 models which can have premature stream closure issues
+        if ((message.payload as any)?.provider === 'gemini' || 
+            (message.payload as any)?.model?.includes('gemini')) {
+          setTimeout(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              try {
+                ws.send(messageText);
+                logger.debug(
+                  `WS SENT-DELAYED [${connectionId}][${requestId}] ` +
+                  `Gemini chunk sent after delay, length: ${messageText.length}`
+                );
+              } catch (err) {
+                logger.error(
+                  `WS ERROR [${connectionId}][${requestId}] ` +
+                  `Failed to send delayed chunk: ${err instanceof Error ? err.message : String(err)}`
+                );
+              }
+            } else {
+              logger.warn(
+                `WS DROPPED [${connectionId}][${requestId}] ` +
+                `Cannot send delayed chunk, socket state: ${ws.readyState}`
+              );
+            }
+          }, 5);
+        } else {
+          ws.send(messageText);
+          logger.debug(`WS SENT [${connectionId}][${requestId}] Non-Gemini chunk sent immediately`);
+        }
+      } else {
+        // For non-stream chunks, send immediately
+        ws.send(messageText);
+        logger.debug(`WS SENT [${connectionId}] ${messageType} sent, length: ${messageText.length}`);
+      }
     } else {
-      logger.warn(`WebSocket not in OPEN state, current state: ${ws.readyState}`);
+      // Log details when message can't be sent
+      const stateMap = {
+        0: 'CONNECTING',
+        1: 'OPEN',
+        2: 'CLOSING',
+        3: 'CLOSED'
+      };
+      const stateStr = stateMap[ws.readyState as keyof typeof stateMap] || ws.readyState;
+      
+      logger.warn(
+        `WS DROPPED [${connectionId}][${requestId}] ` +
+        `Cannot send ${messageType}, WebSocket state: ${stateStr}`
+      );
     }
   } catch (error) {
-    logger.error('Error sending message to client:', error);
+    // Enhanced error logging
+    const { connectionId = 'unknown' } = ws.connectionData || {};
+    logger.error(
+      `WS ERROR [${connectionId}] Send failed: ${error instanceof Error ? error.message : String(error)}`,
+      error
+    );
   }
 }
 
@@ -797,30 +981,6 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
   const { provider, model, prompt, temperature, maxTokens, stream = false } = message.payload;
   const userId = ws.connectionData.userId;
   
-  // Check if prompt is a JSON string and parse it if needed
-  let finalPrompt = prompt;
-  try {
-    // Check if the prompt is a JSON string (client sends stringified messages)
-    if (typeof prompt === 'string' && (prompt.startsWith('[') || prompt.startsWith('{'))) {
-      const parsedPrompt = JSON.parse(prompt);
-      // For Gemini, we'll convert the parsed message format back to a readable prompt
-      if (provider === 'gemini' && Array.isArray(parsedPrompt)) {
-        // Converting the message array to a proper conversation format that Gemini expects
-        finalPrompt = parsedPrompt.map((msg: any) => {
-          if (msg.role && msg.content) {
-            return `${msg.role}: ${msg.content}`;
-          }
-          return msg.content || '';
-        }).join('\n\n');
-        
-        logger.info(`Converted JSON message array to text prompt for Gemini API`);
-      }
-    }
-  } catch (err) {
-    // If parsing fails, use the original prompt
-    logger.warn(`Failed to parse prompt as JSON, using as plain text: ${err}`);
-  }
-  
   if (!userId && config.authEnabled) {
     logger.error('No user ID available for provider request');
     sendToClient(ws, {
@@ -877,7 +1037,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
     if (provider === 'gemini') {
       if (stream) {
         // Handle streaming response using the proper streaming API
-        logger.info(`Sending request to gemini using model ${model}`);
+        logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${message.payload.requestId}] Initiating request to model ${model}`);
         
         try {
           // First, notify client that streaming has started
@@ -890,44 +1050,83 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             }
           });
           
+          // Track streaming stats for this request
+          const streamStats = {
+            startTime: Date.now(),
+            chunkCount: 0,
+            totalCharsStreamed: 0,
+            lastChunkTime: Date.now()
+          };
+          
           // Use Gemini's streaming API with proper handlers
           await gemini.streamGeminiMessage({
             apiKey,
             model,
-            prompt: finalPrompt, // Use the processed prompt
+            prompt,
             temperature: temperature || 0.7,
             maxTokens: maxTokens || 1024,
             onStart: () => {
-              logger.info(`Gemini stream started for model ${model}`);
+              streamStats.startTime = Date.now();
+              logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${message.payload.requestId}] Stream started for model ${model}`);
             },
             onChunk: (chunk: string) => {
+              // Update stream stats
+              streamStats.chunkCount++;
+              streamStats.totalCharsStreamed += chunk.length;
+              streamStats.lastChunkTime = Date.now();
+              
+              // Log every 10th chunk to avoid log flooding
+              if (streamStats.chunkCount % 10 === 0) {
+                logger.debug(
+                  `WS GEMINI [${ws.connectionData.connectionId}][${message.payload.requestId}] ` +
+                  `Streaming progress: ${streamStats.chunkCount} chunks, ` +
+                  `${streamStats.totalCharsStreamed} chars, ` +
+                  `${Date.now() - streamStats.startTime}ms elapsed`
+                );
+              }
+              
               // Send each chunk to the client as it arrives
               sendToClient(ws, {
                 type: MessageType.PROVIDER_STREAM_CHUNK,
                 payload: {
                   chunk,
-                  requestId: message.payload.requestId
+                  requestId: message.payload.requestId,
+                  provider,
+                  model
                 }
               });
-              
-              // Log the first few characters of each chunk for debugging
-              if (chunk.length > 0) {
-                const previewText = chunk.length > 20 ? chunk.substring(0, 20) + '...' : chunk;
-                logger.debug(`Stream chunk sent for ${message.payload.requestId}, preview: "${previewText}"`);
-              }
             },
             onError: (error: Error) => {
-              logger.error(`Gemini streaming error: ${error.message}`);
+              logger.error(
+                `WS GEMINI [${ws.connectionData.connectionId}][${message.payload.requestId}] ` +
+                `Streaming error after ${streamStats.chunkCount} chunks: ${error.message}`
+              );
+              
               sendToClient(ws, {
                 type: MessageType.PROVIDER_ERROR,
                 payload: {
                   error: `Streaming error: ${error.message}`,
                   code: 'STREAMING_ERROR',
-                  requestId: message.payload.requestId
+                  requestId: message.payload.requestId,
+                  provider,
+                  model
                 }
               });
             },
             onComplete: (response: LLMResponse) => {
+              // Calculate streaming metrics
+              const elapsedMs = Date.now() - streamStats.startTime;
+              const charsPerSecond = streamStats.totalCharsStreamed / (elapsedMs / 1000);
+              
+              logger.info(
+                `WS GEMINI [${ws.connectionData.connectionId}][${message.payload.requestId}] ` +
+                `Stream complete: ${streamStats.chunkCount} chunks, ` +
+                `${streamStats.totalCharsStreamed} chars, ` +
+                `${elapsedMs}ms total time, ` +
+                `${charsPerSecond.toFixed(1)} chars/sec, ` + 
+                `${response.tokensUsed} tokens used`
+              );
+              
               // Finalize the stream
               sendToClient(ws, {
                 type: MessageType.PROVIDER_STREAM_END,
@@ -935,6 +1134,8 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   tokensUsed: response.tokensUsed,
                   success: response.success,
                   requestId: message.payload.requestId,
+                  provider,
+                  model,
                   ...(response.toolCall && { toolCall: response.toolCall }),
                   ...(response.waitingForToolCall && { waitingForToolCall: response.waitingForToolCall })
                 }
@@ -948,7 +1149,11 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             }
           });
         } catch (error) {
-          logger.error(`Error in Gemini streaming: ${error instanceof Error ? error.message : String(error)}`);
+          logger.error(
+            `WS GEMINI [${ws.connectionData.connectionId}][${message.payload.requestId}] ` +
+            `Error in streaming setup: ${error instanceof Error ? error.message : String(error)}`
+          );
+          
           sendToClient(ws, {
             type: MessageType.PROVIDER_ERROR,
             payload: {
@@ -959,11 +1164,11 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
           });
         }
       } else {
-        // Handle non-streaming response
+        // Handle non-streaming response with improved logging
         const response = await gemini.sendGeminiMessage({
           apiKey,
           model,
-          prompt: finalPrompt, // Use the processed prompt
+          prompt,
           temperature: temperature || 0.7,
           maxTokens: maxTokens || 1024
         });
