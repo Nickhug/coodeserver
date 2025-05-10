@@ -1,4 +1,3 @@
-import { GoogleGenerativeAI, GenerativeModel, GenerateContentStreamResult } from '@google/generative-ai';
 import logger from '@repo/logger';
 import { LLMResponse } from './index';
 
@@ -123,43 +122,6 @@ interface GeminiStreamHandler {
 }
 
 /**
- * Create a Gemini client for the API
- */
-export function createGeminiClient(apiKey: string): GoogleGenerativeAI {
-  return new GoogleGenerativeAI(apiKey);
-}
-
-/**
- * Get the appropriate Gemini model based on name
- * This handles the correct API version selection (v1 vs v1beta)
- */
-export function getGeminiModel(client: GoogleGenerativeAI, modelName: string): any {
-  // Use v1beta endpoint for preview models
-  const apiVersion = 'v1beta'; // Always use v1beta as requested
-  
-  logger.info(`Using API version ${apiVersion} for Gemini model: ${modelName}`);
-  
-  // For the Node.js client, we need to set the apiVersion before getting the model
-  const generationConfig: any = {
-    apiVersion,
-  };
-  
-  return client.getGenerativeModel({ model: modelName, generationConfig });
-}
-
-/**
- * Convert a text prompt to Gemini content format
- */
-function formatPrompt(prompt: string): any {
-  return [
-    {
-      role: 'user',
-      parts: [{ text: prompt }]
-    }
-  ];
-}
-
-/**
  * Send a request to the Gemini API
  */
 export async function sendRequest(params: GeminiRequestParams): Promise<LLMResponse> {
@@ -169,7 +131,7 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
     logger.info(`Sending request to Gemini API with model: ${model}`);
     
     // Format prompt for direct API call
-    const formattedPrompt = {
+    const requestBody = {
       contents: [
         {
           role: 'user',
@@ -182,8 +144,8 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
       }
     };
     
-    // Direct API call to v1beta endpoint
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+    // Direct API call to v1beta endpoint with API key in URL
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
     
     // Using node-fetch or native fetch depending on environment
     const fetch = globalThis.fetch;
@@ -191,9 +153,8 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
       },
-      body: JSON.stringify(formattedPrompt)
+      body: JSON.stringify(requestBody)
     });
     
     if (!response.ok) {
@@ -275,7 +236,7 @@ export async function sendStreamingRequest(
     }
     
     // Format prompt for direct API call
-    const formattedPrompt = {
+    const requestBody = {
       contents: [
         {
           role: 'user',
@@ -288,8 +249,8 @@ export async function sendStreamingRequest(
       }
     };
     
-    // Direct API call to v1beta endpoint
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`;
+    // Direct API call to v1beta endpoint with API key in URL
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
     
     // Using node-fetch or native fetch depending on environment
     const fetch = globalThis.fetch;
@@ -297,9 +258,8 @@ export async function sendStreamingRequest(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
       },
-      body: JSON.stringify(formattedPrompt)
+      body: JSON.stringify(requestBody)
     });
     
     if (!response.ok) {
