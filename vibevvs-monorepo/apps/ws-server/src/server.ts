@@ -43,11 +43,18 @@ export function setupServer(): http.Server {
   // Configure CORS
   app.use(cors({
     origin: config.corsOrigins,
-    credentials: true
+    credentials: true,
+    methods: ['GET', 'POST', 'OPTIONS']
   }));
   
   // Parse JSON bodies
   app.use(express.json());
+  
+  // Log all incoming requests
+  app.use((req, res, next) => {
+    logger.info(`HTTP Request: ${req.method} ${req.url}`);
+    next();
+  });
   
   // Health check endpoint
   app.get('/health', (req, res) => {
@@ -57,6 +64,7 @@ export function setupServer(): http.Server {
   // Create HTTP server
   const server = http.createServer(app);
   
+  logger.info(`Server setup complete. Server ready to handle HTTP requests and WebSockets.`);
   return server;
 }
 
@@ -278,6 +286,7 @@ function sendToClient(ws: WebSocketWithData, message: ServerMessage): void {
  * Set up HTTP routes
  */
 export function setupHttpRoutes(server: http.Server): void {
+  // Get the Express application from the server
   const app = server instanceof http.Server ? server.listeners('request')[0] as express.Application : undefined;
   
   if (!app) {
@@ -285,12 +294,37 @@ export function setupHttpRoutes(server: http.Server): void {
     return;
   }
   
+  // Add basic CORS middleware directly to this router to ensure it applies
+  app.use(cors({
+    origin: config.corsOrigins,
+    credentials: true,
+    methods: ['GET', 'POST', 'OPTIONS']
+  }));
+  
+  // Parse JSON body
+  app.use(express.json());
+  
+  // Log all incoming requests for debugging
+  app.use((req, res, next) => {
+    logger.info(`HTTP ${req.method} ${req.path}`);
+    next();
+  });
+  
+  // Debug endpoint to test API is up
+  app.get('/api/health', (req, res) => {
+    res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+  
   // Handle authentication from web app - this links web auth to WebSocket connections
   app.post('/api/auth', async (req, res) => {
+    logger.info('Received auth request to /api/auth');
     try {
       const { connectionId, token, userData } = req.body;
       
+      logger.info(`Auth request for connection: ${connectionId}`);
+      
       if (!connectionId || !token) {
+        logger.warn('Missing required params: connectionId or token');
         return res.status(400).json({ 
           success: false, 
           message: 'Missing required parameters' 
@@ -301,6 +335,10 @@ export function setupHttpRoutes(server: http.Server): void {
       const connectionData = connections.get(connectionId);
       if (!connectionData) {
         logger.warn(`Auth API: Connection ${connectionId} not found`);
+        // List all active connections for debugging
+        const activeConnections = Array.from(connections.keys());
+        logger.info(`Active connections: ${activeConnections.join(', ') || 'none'}`);
+        
         return res.status(404).json({ 
           success: false, 
           message: 'Connection not found' 
@@ -352,6 +390,14 @@ export function setupHttpRoutes(server: http.Server): void {
       });
     }
   });
+  
+  // Global 404 handler
+  app.use((req, res) => {
+    logger.warn(`404 Not Found: ${req.method} ${req.path}`);
+    res.status(404).send({ success: false, message: 'Not Found' });
+  });
+  
+  logger.info('HTTP routes configured');
 }
 
 /**

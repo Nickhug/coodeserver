@@ -127,24 +127,68 @@ export async function POST(req: NextRequest) {
       
       // Log the URL we're going to call for debugging
       logger.info(`Sending auth data to WebSocket server at: ${authUrl}`);
+      logger.info(`Using connection ID: ${connectionId}`);
       
-      const response = await axios.post(authUrl, {
-        connectionId,
-        token,
-        userData
-      });
+      // Add timeout and retry logic
+      const MAX_RETRIES = 2;
+      let retries = 0;
+      let success = false;
+      let lastError;
+      
+      while (retries <= MAX_RETRIES && !success) {
+        try {
+          if (retries > 0) {
+            logger.info(`Retry attempt #${retries} for connection ${connectionId}`);
+            // Wait a bit between retries
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+          
+          const response = await axios.post(authUrl, 
+            {
+              connectionId,
+              token,
+              userData
+            },
+            {
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              timeout: 5000 // 5 second timeout
+            }
+          );
 
-      if (response.status !== 200) {
-        throw new Error(`WebSocket server responded with status ${response.status}`);
+          if (response.status === 200) {
+            logger.info(`Successfully sent auth data to WebSocket for connection ${connectionId}`);
+            success = true;
+          } else {
+            throw new Error(`WebSocket server responded with status ${response.status}`);
+          }
+        } catch (err) {
+          lastError = err;
+          retries++;
+          logger.warn(`Error on attempt #${retries}: ${err}`);
+        }
+      }
+      
+      if (!success) {
+        throw lastError || new Error('Failed to send auth data to WebSocket server after retries');
       }
 
       logger.info(`Found user UUID ${dbUser.id} for clerk_id ${userId}`);
       return NextResponse.json({ success: true });
     } catch (wsError) {
       logger.error("Error sending auth to WebSocket server:", wsError);
+      
+      // Extract more detailed error info for debugging
+      let details = '';
+      if (axios.isAxiosError(wsError) && wsError.response) {
+        details = ` - ${wsError.response.status} ${wsError.response.statusText}`;
+        logger.error(`Response data:`, wsError.response.data);
+      }
+      
       return NextResponse.json({
         success: false,
-        message: "Failed to send auth data to WebSocket server"
+        message: `Failed to send auth data to WebSocket server${details}`
       }, { status: 500 });
     }
   } catch (error) {

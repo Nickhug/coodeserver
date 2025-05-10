@@ -34,6 +34,9 @@ export default function LoginPage() {
     setMessage("Authenticating with Void editor...");
 
     try {
+      // Log the connection ID for debugging
+      console.log(`Using connection ID: ${connectionId}`);
+      
       // Send auth data to the WebSocket connection
       const response = await fetch('/api/auth/send-auth', {
         method: 'POST',
@@ -42,7 +45,8 @@ export default function LoginPage() {
       });
 
       if (!response.ok) {
-        throw new Error(`Failed to send auth: ${response.status}`);
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(`Failed to send auth: ${response.status}${errorData.message ? ` - ${errorData.message}` : ''}`);
       }
 
       const data = await response.json();
@@ -50,7 +54,7 @@ export default function LoginPage() {
       if (data.success) {
         setMessage("Authentication successful! You can now close this window and return to Void.");
       } else {
-        setMessage("Failed to authenticate with Void. Please try again.");
+        setMessage(`Authentication failed: ${data.message || 'Unknown error'}`);
       }
     } catch (error) {
       console.error('Error during WebSocket auth:', error);
