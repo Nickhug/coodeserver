@@ -225,8 +225,10 @@ export async function POST(req: NextRequest) {
             } else {
               errorDetails = ` - ${lastError.message}`;
             }
+          } else if (lastError instanceof Error) {
+            errorDetails = ` - ${lastError.message}`;
           } else {
-            errorDetails = ` - ${lastError.message || 'Unknown error'}`;
+            errorDetails = ` - Unknown error object: ${JSON.stringify(lastError)}`;
           }
         }
         
