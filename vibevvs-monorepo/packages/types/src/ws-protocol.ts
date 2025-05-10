@@ -86,6 +86,7 @@ export interface ProviderRequestPayload {
   maxTokens?: number;
   stream?: boolean;
   systemMessage?: string;
+  requestId?: string;
   tools?: Array<{
     name: string;
     description: string;
@@ -108,6 +109,13 @@ export interface ProviderResponsePayload {
   tokensUsed: number;
   success: boolean;
   error?: string;
+  requestId?: string;
+  toolCall?: {
+    name: string;
+    parameters: Record<string, unknown>;
+    id: string;
+  };
+  waitingForToolCall?: boolean;
 }
 
 /**
@@ -116,6 +124,7 @@ export interface ProviderResponsePayload {
 export interface ProviderStreamStartPayload {
   provider: string;
   model: string;
+  requestId?: string;
 }
 
 /**
@@ -123,6 +132,7 @@ export interface ProviderStreamStartPayload {
  */
 export interface ProviderStreamChunkPayload {
   chunk: string;
+  requestId?: string;
   toolCallUpdate?: {
     name: string;
     parameters: Record<string, unknown>;
@@ -137,6 +147,13 @@ export interface ProviderStreamEndPayload {
   tokensUsed: number;
   success: boolean;
   error?: string;
+  requestId?: string;
+  toolCall?: {
+    name: string;
+    parameters: Record<string, unknown>;
+    id: string;
+  };
+  waitingForToolCall?: boolean;
 }
 
 /**

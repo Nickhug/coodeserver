@@ -9,6 +9,7 @@ import { verifyToken, getDbUserByClerkId } from '@repo/auth';
 import { MessageType, ClientMessage, ServerMessage } from '@repo/types';
 import * as gemini from '@repo/ai-providers';
 import { logUsage, verifyAndConsumeAuthToken, getUserByClerkId } from '@repo/db';
+import { LLMResponse } from '@repo/ai-providers';
 
 /**
  * WebSocket connection data
@@ -617,31 +618,31 @@ async function handleProviderModels(ws: WebSocketWithData, message: ClientMessag
           available = true;
           models = [
             {
-              id: 'gemini-1.5-flash',
-              name: 'Gemini 1.5 Flash',
+              id: 'gemini-2.5-flash-preview-04-17',
+              name: 'Gemini 2.5 Flash Preview',
+              provider: 'gemini',
+              available: true,
+              contextWindow: 1048576,
+              maxOutputTokens: 65536,
+              features: ['streaming', 'toolCalls', 'thinking', 'multimodal']
+            },
+            {
+              id: 'gemini-2.5-pro-preview-05-06',
+              name: 'Gemini 2.5 Pro Preview',
+              provider: 'gemini',
+              available: true,
+              contextWindow: 2097152,
+              maxOutputTokens: 65536,
+              features: ['streaming', 'toolCalls', 'thinking', 'multimodal']
+            },
+            {
+              id: 'gemini-2.0-flash',
+              name: 'Gemini 2.0 Flash',
               provider: 'gemini',
               available: true,
               contextWindow: 128000,
               maxOutputTokens: 8192,
-              features: ['streaming', 'toolCalls']
-            },
-            {
-              id: 'gemini-1.5-pro',
-              name: 'Gemini 1.5 Pro',
-              provider: 'gemini',
-              available: true,
-              contextWindow: 1000000,
-              maxOutputTokens: 32768,
-              features: ['streaming', 'toolCalls']
-            },
-            {
-              id: 'gemini-pro',
-              name: 'Gemini Pro',
-              provider: 'gemini',
-              available: true,
-              contextWindow: 32768,
-              maxOutputTokens: 8192,
-              features: ['streaming', 'toolCalls']
+              features: ['streaming', 'toolCalls', 'multimodal']
             }
           ];
         }
@@ -846,56 +847,95 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
         }
       });
       return;
-}
+    }
 
     // Process based on provider
     if (provider === 'gemini') {
       if (stream) {
-        // Handle streaming response
-        await gemini.sendLLMRequest({
-          provider: 'gemini',
-          model,
-          prompt,
-          temperature: temperature || 0.7,
-          maxTokens: maxTokens || 1024,
-          apiKey,
-          userId
-        });
-
-        // Since we're not using streaming with the current provider,
-        // we'll implement a simplified response
-        sendToClient(ws, {
-          type: MessageType.PROVIDER_STREAM_START,
-          payload: {
-            provider,
-            model
-          }
-        });
-
-        sendToClient(ws, {
-          type: MessageType.PROVIDER_STREAM_CHUNK,
-          payload: {
-            chunk: "Sorry, streaming is currently not fully implemented yet."
-          }
-        });
-
-        sendToClient(ws, {
-          type: MessageType.PROVIDER_STREAM_END,
-          payload: {
-            tokensUsed: 0,
-            success: true
-          }
-        });
+        // Handle streaming response using the proper streaming API
+        logger.info(`Sending request to gemini using model ${model}`);
+        
+        try {
+          // First, notify client that streaming has started
+          sendToClient(ws, {
+            type: MessageType.PROVIDER_STREAM_START,
+            payload: {
+              provider,
+              model,
+              requestId: message.payload.requestId
+            }
+          });
+          
+          // Use Gemini's streaming API with proper handlers
+          await gemini.streamGeminiMessage({
+            apiKey,
+            model,
+            prompt,
+            temperature: temperature || 0.7,
+            maxTokens: maxTokens || 1024,
+            onStart: () => {
+              logger.info(`Gemini stream started for model ${model}`);
+            },
+            onChunk: (chunk: string) => {
+              // Send each chunk to the client as it arrives
+              sendToClient(ws, {
+                type: MessageType.PROVIDER_STREAM_CHUNK,
+                payload: {
+                  chunk,
+                  requestId: message.payload.requestId
+                }
+              });
+            },
+            onError: (error: Error) => {
+              logger.error(`Gemini streaming error: ${error.message}`);
+              sendToClient(ws, {
+                type: MessageType.PROVIDER_ERROR,
+                payload: {
+                  error: `Streaming error: ${error.message}`,
+                  code: 'STREAMING_ERROR',
+                  requestId: message.payload.requestId
+                }
+              });
+            },
+            onComplete: (response: LLMResponse) => {
+              // Finalize the stream
+              sendToClient(ws, {
+                type: MessageType.PROVIDER_STREAM_END,
+                payload: {
+                  tokensUsed: response.tokensUsed,
+                  success: response.success,
+                  requestId: message.payload.requestId,
+                  ...(response.toolCall && { toolCall: response.toolCall }),
+                  ...(response.waitingForToolCall && { waitingForToolCall: response.waitingForToolCall })
+                }
+              });
+              
+              // Log usage if available
+              if (userId && response.tokensUsed) {
+                const creditsUsed = response.creditsUsed || (response.tokensUsed / 1000);
+                logUsage(userId, provider, model, response.tokensUsed);
+              }
+            }
+          });
+        } catch (error) {
+          logger.error(`Error in Gemini streaming: ${error instanceof Error ? error.message : String(error)}`);
+          sendToClient(ws, {
+            type: MessageType.PROVIDER_ERROR,
+            payload: {
+              error: `Streaming error: ${error instanceof Error ? error.message : String(error)}`,
+              code: 'STREAMING_ERROR',
+              requestId: message.payload.requestId
+            }
+          });
+        }
       } else {
         // Handle non-streaming response
-        const response = await gemini.sendLLMRequest({
-          provider: 'gemini',
+        const response = await gemini.sendGeminiMessage({
+          apiKey,
           model,
           prompt,
           temperature: temperature || 0.7,
-          maxTokens: maxTokens || 1024,
-          apiKey,
-          userId
+          maxTokens: maxTokens || 1024
         });
         
         sendToClient(ws, {
@@ -904,7 +944,10 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             text: response.text,
             tokensUsed: response.tokensUsed,
             success: response.success,
-            ...(response.error && { error: response.error })
+            requestId: message.payload.requestId,
+            ...(response.error && { error: response.error }),
+            ...(response.toolCall && { toolCall: response.toolCall }),
+            ...(response.waitingForToolCall && { waitingForToolCall: response.waitingForToolCall })
           }
         });
         

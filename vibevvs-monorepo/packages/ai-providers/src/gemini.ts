@@ -4,12 +4,12 @@ import { LLMResponse } from './index';
 
 // Types for Gemini
 export type GeminiModelName =
+  | 'gemini-2.5-flash-preview-04-17'
+  | 'gemini-2.5-pro-preview-05-06'
+  | 'gemini-2.0-flash'
   | 'gemini-1.5-flash'
   | 'gemini-1.5-pro'
   | 'gemini-1.5-flash-8b'
-  | 'gemini-2.5-flash-preview-04-17'
-  | 'gemini-2.5-pro-exp-03-25'
-  | 'gemini-2.5-pro-preview-03-25'
   | 'gemini-pro'
   | 'gemini-pro-vision';
 
@@ -44,61 +44,58 @@ export interface SendGeminiRequestParams {
   onStream?: ((text: string, toolCallUpdate?: { name: string; parameters: Record<string, unknown>; id?: string }) => void) | null;
 }
 
-// Define the available Gemini models
-export const GEMINI_MODELS: Record<GeminiModelName, GeminiModelConfig> = {
-  'gemini-1.5-flash': {
-    contextWindow: 1_048_576,
-    maxOutputTokens: 8_192,
-    tokenMultiplier: 0.3, // 1 token = 0.3 credits
-  },
-  'gemini-1.5-pro': {
-    contextWindow: 2_097_152,
-    maxOutputTokens: 8_192,
-    tokenMultiplier: 5.0, // 1 token = 5.0 credits
-  },
-  'gemini-1.5-flash-8b': {
-    contextWindow: 1_048_576,
-    maxOutputTokens: 8_192,
-    tokenMultiplier: 0.15, // 1 token = 0.15 credits
-  },
-  'gemini-2.5-flash-preview-04-17': {
-    contextWindow: 1_048_576,
-    maxOutputTokens: 8_192,
-    tokenMultiplier: 0.6, // 1 token = 0.6 credits
-  },
-  'gemini-2.5-pro-exp-03-25': {
-    contextWindow: 1_048_576,
-    maxOutputTokens: 8_192,
-    tokenMultiplier: 0.0, // Free preview model
-  },
-  'gemini-2.5-pro-preview-03-25': {
-    contextWindow: 2_097_152,
-    maxOutputTokens: 8_192,
-    tokenMultiplier: 0.0, // Free preview model
-  },
-  'gemini-pro': {
-    contextWindow: 32_768,
-    maxOutputTokens: 2_048,
-    tokenMultiplier: 0.5, // 1 token = 0.5 credits
-  },
-  'gemini-pro-vision': {
-    contextWindow: 16_384,
-    maxOutputTokens: 2_048,
-    tokenMultiplier: 1.0, // 1 token = 1.0 credits
-  }
-};
-
 /**
- * Get the configuration for a Gemini model
+ * Get model config for Gemini models.
  */
 export function getModelConfig(model: string): GeminiModelConfig {
-  return (
-    GEMINI_MODELS[model as GeminiModelName] || {
-      contextWindow: 1_048_576,
-      maxOutputTokens: 8_192,
-      tokenMultiplier: 1.0,
+  const modelConfigMap: Record<GeminiModelName, GeminiModelConfig> = {
+    'gemini-2.5-flash-preview-04-17': {
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      tokenMultiplier: 1.0
+    },
+    'gemini-2.5-pro-preview-05-06': {
+      contextWindow: 2097152,
+      maxOutputTokens: 65536,
+      tokenMultiplier: 1.0
+    },
+    'gemini-2.0-flash': {
+      contextWindow: 128000,
+      maxOutputTokens: 8192,
+      tokenMultiplier: 1.0
+    },
+    'gemini-1.5-flash': {
+      contextWindow: 128000, 
+      maxOutputTokens: 8192,
+      tokenMultiplier: 1.0
+    },
+    'gemini-1.5-pro': {
+      contextWindow: 1000000,
+      maxOutputTokens: 32768,
+      tokenMultiplier: 1.0
+    },
+    'gemini-1.5-flash-8b': {
+      contextWindow: 32000,
+      maxOutputTokens: 4096,
+      tokenMultiplier: 1.0
+    },
+    'gemini-pro': {
+      contextWindow: 32768,
+      maxOutputTokens: 8192,
+      tokenMultiplier: 1.0
+    },
+    'gemini-pro-vision': {
+      contextWindow: 16385,
+      maxOutputTokens: 2048,
+      tokenMultiplier: 1.0
     }
-  );
+  };
+
+  return modelConfigMap[model as GeminiModelName] || {
+    contextWindow: 32768,
+    maxOutputTokens: 8192,
+    tokenMultiplier: 1.0
+  };
 }
 
 /**
@@ -183,6 +180,27 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
     // Extract the response text
     const response = result.response;
     const text = response.text();
+
+    // Check for function calls in the response
+    let toolCall: { name: string; parameters: Record<string, unknown>; id: string } | undefined;
+    
+    if (response.candidates && response.candidates.length > 0) {
+      const candidate = response.candidates[0];
+      if (candidate.content && candidate.content.parts && candidate.content.parts.length > 0) {
+        for (const part of candidate.content.parts) {
+          // Check if this part contains a function call
+          const anyPart = part as any;
+          if (anyPart.functionCall) {
+            toolCall = {
+              name: anyPart.functionCall.name,
+              parameters: anyPart.functionCall.args || {},
+              id: (candidate as any).contentId || 'unknown'
+            };
+            logger.info(`Detected tool call in response: ${toolCall.name}`);
+          }
+        }
+      }
+    }
     
     // Estimate token usage (Google doesn't provide token counts directly)
     // This is a very rough estimate - characters / 4 is a common approximation
@@ -198,6 +216,8 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
       creditsUsed: totalTokens / 1000, // Assuming 1000 tokens = 1 credit
       success: true,
       generatedText: text,
+      toolCall,
+      waitingForToolCall: toolCall !== undefined,
     };
   } catch (error) {
     logger.error('Error in Gemini request:', error);
@@ -250,9 +270,30 @@ export async function sendStreamingRequest(
     
     let completeText = '';
     let startTime = Date.now();
+    let toolCall: { name: string; parameters: Record<string, unknown>; id: string } | undefined;
     
     // Process the stream
     for await (const chunk of streamResult.stream) {
+      // Check for function calls in the response
+      if (chunk.candidates && chunk.candidates.length > 0) {
+        const candidate = chunk.candidates[0];
+        if (candidate.content && candidate.content.parts && candidate.content.parts.length > 0) {
+          for (const part of candidate.content.parts) {
+            // Check if this part contains a function call
+            // Use type assertion since the Google GenAI types might not be up to date
+            const anyPart = part as any;
+            if (anyPart.functionCall) {
+              toolCall = {
+                name: anyPart.functionCall.name,
+                parameters: anyPart.functionCall.args || {},
+                id: (candidate as any).contentId || 'unknown'
+              };
+              logger.info(`Detected tool call in stream: ${toolCall.name}`);
+            }
+          }
+        }
+      }
+      
       const chunkText = chunk.text();
       completeText += chunkText;
       
@@ -266,17 +307,19 @@ export async function sendStreamingRequest(
     // Estimate token usage
     const inputTokens = Math.ceil(prompt.length / 4);
     const outputTokens = Math.ceil(completeText.length / 4);
-      const totalTokens = inputTokens + outputTokens;
+    const totalTokens = inputTokens + outputTokens;
     
     logger.info(`Gemini stream completed in ${duration}ms, estimated tokens: ${totalTokens}`);
     
     // Call onComplete handler
     handlers.onComplete({
       text: completeText,
-        tokensUsed: totalTokens,
+      tokensUsed: totalTokens,
       creditsUsed: totalTokens / 1000, // Assuming 1000 tokens = 1 credit
-        success: true,
+      success: true,
       generatedText: completeText,
+      toolCall,
+      waitingForToolCall: toolCall !== undefined,
     });
   } catch (error) {
     logger.error('Error in Gemini stream:', error);
@@ -292,8 +335,9 @@ export async function listModels(apiKey: string): Promise<Array<{ id: string; na
     // Google doesn't provide a direct API for listing models
     // Return a static list of commonly used models
     return [
-      { id: 'gemini-pro', name: 'Gemini Pro' },
-      { id: 'gemini-pro-vision', name: 'Gemini Pro Vision' },
+      { id: 'gemini-2.5-flash-preview-04-17', name: 'Gemini 2.5 Flash Preview' },
+      { id: 'gemini-2.5-pro-preview-05-06', name: 'Gemini 2.5 Pro Preview' },
+      { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
       { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro' },
       { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
     ];
