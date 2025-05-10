@@ -12,6 +12,7 @@ logger.info('┋🚀 Coode WebSocket Server Starting┋');
 logger.info('┋==================================┋');
 logger.info(`Environment: ${config.environment}`);
 logger.info(`WebSocket Path: ${config.wsPath}`);
+logger.info(`Auth HTTP Path: /api/auth`);
 logger.info(`Port: ${config.port}`);
 logger.info(`Host: ${config.host}`);
 logger.info(`Auth Enabled: ${config.authEnabled}`);

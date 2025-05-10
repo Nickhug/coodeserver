@@ -94,7 +94,8 @@ export async function POST(req: NextRequest) {
 
     // Prepare user data to be sent
     const userData = {
-      id: dbUser.id,
+      id: userId, // Use clerk_id as the ID for consistency
+      uuid: dbUser.id, // Include the database UUID as a separate field
       email: dbUser.email,
       credits: dbUser.credits_remaining,
       subscription: dbUser.subscription_tier
@@ -104,23 +105,30 @@ export async function POST(req: NextRequest) {
     const token = generateToken();
 
     // Store the token in the database with a 5-minute expiry
-    logger.info(`Storing auth token for user ${dbUser.clerk_id}`);
+    logger.info(`Storing token for Clerk user ${userId}, expires at ${new Date(Date.now() + 5 * 60 * 1000).toISOString()}`);
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes from now
-    const storedToken = await storeAuthToken(token, dbUser.clerk_id, expiresAt);
+    const storedToken = await storeAuthToken(token, userId, expiresAt);
 
     if (!storedToken) {
-      logger.error(`Failed to store auth token for user ${dbUser.clerk_id}`);
+      logger.error(`Failed to store auth token for user ${userId}`);
       return NextResponse.json({
         success: false,
         message: "Failed to store authentication token"
       }, { status: 500 });
     }
 
-    logger.info(`Successfully stored auth token for user ${dbUser.clerk_id}`);
+    logger.info(`Successfully stored auth token for user ${userId}`);
 
     // Send auth data to the WebSocket server via its HTTP API
     try {
-      const response = await axios.post(`${WS_BASE_URL}/api/auth`, {
+      // Ensure the URL ends with /api/auth but doesn't duplicate it
+      const baseUrl = WS_BASE_URL.endsWith('/') ? WS_BASE_URL.slice(0, -1) : WS_BASE_URL;
+      const authUrl = `${baseUrl}/api/auth`;
+      
+      // Log the URL we're going to call for debugging
+      logger.info(`Sending auth data to WebSocket server at: ${authUrl}`);
+      
+      const response = await axios.post(authUrl, {
         connectionId,
         token,
         userData
@@ -130,6 +138,7 @@ export async function POST(req: NextRequest) {
         throw new Error(`WebSocket server responded with status ${response.status}`);
       }
 
+      logger.info(`Found user UUID ${dbUser.id} for clerk_id ${userId}`);
       return NextResponse.json({ success: true });
     } catch (wsError) {
       logger.error("Error sending auth to WebSocket server:", wsError);

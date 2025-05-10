@@ -30,6 +30,9 @@ interface WebSocketWithData extends WebSocket {
 // Store active connections
 const connections = new Map<string, WebSocketConnectionData>();
 
+// Store WebSocket server reference for API routes
+let globalWss: WebSocketServer;
+
 /**
  * Set up the HTTP server and WebSocket server
  */
@@ -43,11 +46,14 @@ export function setupServer(): http.Server {
     credentials: true
   }));
   
+  // Parse JSON bodies
+  app.use(express.json());
+  
   // Health check endpoint
   app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
   });
-  
+
   // Create HTTP server
   const server = http.createServer(app);
   
@@ -63,6 +69,9 @@ export function setupWebSocketServer(server: http.Server): WebSocketServer {
     server,
     path: config.wsPath 
   });
+  
+  // Store global reference
+  globalWss = wss;
       
   // Set up ping interval for connection keepalive
   global.setInterval(() => {
@@ -266,15 +275,101 @@ function sendToClient(ws: WebSocketWithData, message: ServerMessage): void {
 }
 
 /**
+ * Set up HTTP routes
+ */
+export function setupHttpRoutes(server: http.Server): void {
+  const app = server instanceof http.Server ? server.listeners('request')[0] as express.Application : undefined;
+  
+  if (!app) {
+    logger.error('Cannot set up HTTP routes: Server not properly configured');
+    return;
+  }
+  
+  // Handle authentication from web app - this links web auth to WebSocket connections
+  app.post('/api/auth', async (req, res) => {
+    try {
+      const { connectionId, token, userData } = req.body;
+      
+      if (!connectionId || !token) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Missing required parameters' 
+        });
+      }
+
+      // Find WebSocket connection by ID
+      const connectionData = connections.get(connectionId);
+      if (!connectionData) {
+        logger.warn(`Auth API: Connection ${connectionId} not found`);
+        return res.status(404).json({ 
+          success: false, 
+          message: 'Connection not found' 
+        });
+      }
+
+      // Find WebSocket instance
+      let wsInstance: WebSocketWithData | undefined;
+      for (const client of Array.from(globalWss.clients)) {
+        const wsWithData = client as WebSocketWithData;
+        if (wsWithData.connectionData?.connectionId === connectionId) {
+          wsInstance = wsWithData;
+          break;
+        }
+      }
+
+      if (!wsInstance) {
+        logger.warn(`Auth API: WebSocket instance for connection ${connectionId} not found`);
+        return res.status(404).json({ 
+          success: false, 
+          message: 'WebSocket instance not found' 
+        });
+      }
+
+      // Send auth success message that includes the token
+      logger.info(`Auth API: Setting authentication for connection ${connectionId}`);
+      sendToClient(wsInstance, {
+        type: MessageType.AUTH_SUCCESS,
+        payload: {
+          userId: userData.id,
+          connectionId,
+          user: userData,
+          token: token, // Include the token in the response
+          serverTime: new Date().toISOString()
+        }
+      });
+      
+      // Update connection data
+      wsInstance.connectionData.userId = userData.id;
+      wsInstance.connectionData.isAuthenticated = true;
+      connections.set(connectionId, wsInstance.connectionData);
+
+      return res.status(200).json({ success: true });
+    } catch (error) {
+      logger.error('Auth API error:', error);
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Server error processing authentication' 
+      });
+    }
+  });
+}
+
+/**
  * Start the WebSocket server
  */
 export function startWebSocketServer(): http.Server {
+  // Set up the HTTP server
   const server = setupServer();
-  const wss = setupWebSocketServer(server);
   
-  // Start listening
-  server.listen(config.port, () => {
-    logger.info(`WebSocket server listening on ${config.host}:${config.port}${config.wsPath}`);
+  // Set up HTTP routes
+  setupHttpRoutes(server);
+  
+  // Set up the WebSocket server
+  setupWebSocketServer(server);
+  
+  // Start the server
+  server.listen(config.port, config.host, () => {
+    logger.info(`WebSocket server listening on ${config.host}:${config.port}`);
   });
   
   return server;
@@ -351,6 +446,7 @@ async function handleAuthentication(ws: WebSocketWithData, message: ClientMessag
         userId,
         connectionId,
         user: userData,
+        token: token, // Include the token in the response
         serverTime: new Date().toISOString()
       }
     });
