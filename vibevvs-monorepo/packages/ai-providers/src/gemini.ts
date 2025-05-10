@@ -135,8 +135,7 @@ export function createGeminiClient(apiKey: string): GoogleGenerativeAI {
  */
 export function getGeminiModel(client: GoogleGenerativeAI, modelName: string): any {
   // Use v1beta endpoint for preview models
-  const isPreviewOrExpModel = modelName.includes('preview') || modelName.includes('exp');
-  const apiVersion = isPreviewOrExpModel ? 'v1beta' : 'v1';
+  const apiVersion = 'v1beta'; // Always use v1beta as requested
   
   logger.info(`Using API version ${apiVersion} for Gemini model: ${modelName}`);
   
