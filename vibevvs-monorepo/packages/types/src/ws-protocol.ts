@@ -35,6 +35,10 @@ export enum MessageType {
   PROVIDER_STREAM_CHUNK = 'provider_stream_chunk',
   PROVIDER_STREAM_END = 'provider_stream_end',
   
+  // User data messages
+  USER_DATA_REQUEST = 'user_data_request',
+  USER_DATA_RESPONSE = 'user_data_response',
+  
   // General error
   ERROR = 'error'
 }
@@ -200,4 +204,34 @@ export type ProviderRequestMessage = ClientMessage & { payload: ProviderRequestP
 export type ProviderListMessage = ServerMessage & { payload: ProviderListPayload };
 export type ProviderResponseMessage = ServerMessage & { payload: ProviderResponsePayload };
 export type ConnectSuccessMessage = ServerMessage & { payload: ConnectSuccessPayload };
-export type ErrorMessage = ServerMessage & { payload: ErrorPayload }; 
+export type ErrorMessage = ServerMessage & { payload: ErrorPayload };
+
+/**
+ * User data request payload
+ */
+export interface UserDataRequestPayload {
+  userId: string;
+}
+
+/**
+ * User data response payload
+ */
+export interface UserDataResponsePayload {
+  user?: {
+    id: string;
+    email: string;
+    credits: number;
+    subscription: string;
+  };
+  error?: string;
+}
+
+/**
+ * User data request message
+ */
+export type UserDataRequestMessage = ClientMessage & { payload: UserDataRequestPayload };
+
+/**
+ * User data response message
+ */
+export type UserDataResponseMessage = ServerMessage & { payload: UserDataResponsePayload }; 

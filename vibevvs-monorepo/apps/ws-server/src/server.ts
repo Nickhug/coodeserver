@@ -221,56 +221,50 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
     ws.connectionData.lastPingTime = Date.now();
     connections.set(connectionId, ws.connectionData);
     
+    // Get the message type as string for safer comparison
+    const messageType = clientMessage.type as string;
+    
     // Handle message by type
-    switch (clientMessage.type) {
-      case MessageType.PING:
-        // Immediately respond with PONG to keep connection alive
-        // This is critical for client heartbeat mechanism
+    if (messageType === MessageType.PING) {
+      // Immediately respond with PONG to keep connection alive
+      // This is critical for client heartbeat mechanism
+      sendToClient(ws, { 
+        type: MessageType.PONG, 
+        payload: { 
+          timestamp: Date.now(),
+          serverTime: new Date().toISOString(),
+          connectionId: connectionId // Echo back the connection ID for verification
+        } 
+      });
+    } else if (messageType === MessageType.AUTHENTICATE) {
+      await handleAuthentication(ws, clientMessage);
+    } else if (messageType === MessageType.PROVIDER_LIST) {
+      await handleProviderList(ws);
+    } else if (messageType === MessageType.PROVIDER_MODELS) {
+      await handleProviderModels(ws, clientMessage);
+    } else if (messageType === 'user_data_request') {
+      await handleUserDataRequest(ws, clientMessage);
+    } else if (messageType === MessageType.PROVIDER_REQUEST) {
+      if (config.authEnabled && !isAuthenticated) {
         sendToClient(ws, { 
-          type: MessageType.PONG, 
+          type: MessageType.PROVIDER_ERROR, 
           payload: { 
-            timestamp: Date.now(),
-            serverTime: new Date().toISOString(),
-            connectionId: connectionId // Echo back the connection ID for verification
+            error: 'Authentication required', 
+            code: 'UNAUTHORIZED' 
           } 
         });
-        break;
-        
-      case MessageType.AUTHENTICATE:
-        await handleAuthentication(ws, clientMessage);
-        break;
-        
-      case MessageType.PROVIDER_LIST:
-        await handleProviderList(ws);
-        break;
-        
-      case MessageType.PROVIDER_MODELS:
-        await handleProviderModels(ws, clientMessage);
-        break;
-        
-      case MessageType.PROVIDER_REQUEST:
-        if (config.authEnabled && !isAuthenticated) {
-          sendToClient(ws, { 
-            type: MessageType.PROVIDER_ERROR, 
-            payload: { 
-              error: 'Authentication required', 
-              code: 'UNAUTHORIZED' 
-            } 
-          });
-          return;
-        }
-        await handleProviderRequest(ws, clientMessage);
-        break;
-        
-      default:
-        logger.warn(`Unknown message type: ${clientMessage.type}`);
-        sendToClient(ws, { 
-          type: MessageType.ERROR, 
-          payload: { 
-            error: `Unknown message type: ${clientMessage.type}`, 
-            code: 'UNKNOWN_MESSAGE_TYPE' 
-          } 
-        });
+        return;
+      }
+      await handleProviderRequest(ws, clientMessage);
+    } else {
+      logger.warn(`Unknown message type: ${messageType}`);
+      sendToClient(ws, { 
+        type: MessageType.ERROR, 
+        payload: { 
+          error: `Unknown message type: ${messageType}`, 
+          code: 'UNKNOWN_MESSAGE_TYPE' 
+        } 
+      });
     }
   } catch (error) {
     logger.error(`Error handling message from ${connectionId}:`, error);
@@ -940,6 +934,67 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
       payload: {
         error: `Failed to process request for provider ${provider}`,
         code: 'PROVIDER_REQUEST_ERROR'
+      }
+    });
+  }
+}
+
+/**
+ * Handle user data request from client
+ */
+async function handleUserDataRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
+  // Skip type checking since we already checked in the switch statement
+  try {
+    const { userId } = message.payload;
+    
+    // Ensure the requested user ID matches the authenticated user ID (security measure)
+    if (userId !== ws.connectionData.userId) {
+      logger.warn(`User data request from ${ws.connectionData.userId} for another user ${userId}`);
+      sendToClient(ws, {
+        type: 'user_data_response' as any,
+        payload: {
+          error: 'Unauthorized to access this user data'
+        }
+      });
+      return;
+    }
+    
+    // Get user data from database
+    const user = await getUserByClerkId(userId);
+    
+    if (!user) {
+      logger.warn(`User with ID ${userId} not found in database`);
+      sendToClient(ws, {
+        type: 'user_data_response' as any,
+        payload: {
+          error: 'User not found'
+        }
+      });
+      return;
+    }
+    
+    // Format the user data to match expected interface
+    const userData = {
+      id: userId,
+      email: user.email,
+      credits: user.credits_remaining,
+      subscription: user.subscription_tier
+    };
+    
+    // Send user data back to client
+    logger.info(`Sending user data for ${userId}`);
+    sendToClient(ws, {
+      type: 'user_data_response' as any,
+      payload: {
+        user: userData
+      }
+    });
+  } catch (error) {
+    logger.error('Error handling user data request:', error);
+    sendToClient(ws, {
+      type: 'user_data_response' as any,
+      payload: {
+        error: 'Error fetching user data'
       }
     });
   }
