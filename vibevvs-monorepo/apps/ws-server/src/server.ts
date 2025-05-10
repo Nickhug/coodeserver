@@ -624,16 +624,16 @@ async function handleProviderModels(ws: WebSocketWithData, message: ClientMessag
               available: true,
               contextWindow: 1048576,
               maxOutputTokens: 65536,
-              features: ['streaming', 'toolCalls', 'thinking', 'multimodal']
+              features: ['chat', 'tools', 'structured-output', 'caching', 'code-execution', 'search-grounding', 'thinking']
             },
             {
-              id: 'gemini-2.5-pro-preview-05-06',
+              id: 'gemini-2.5-pro-preview-05-06', 
               name: 'Gemini 2.5 Pro Preview',
               provider: 'gemini',
               available: true,
               contextWindow: 2097152,
               maxOutputTokens: 65536,
-              features: ['streaming', 'toolCalls', 'thinking', 'multimodal']
+              features: ['chat', 'tools', 'structured-output', 'caching', 'code-execution', 'search-grounding', 'thinking']
             },
             {
               id: 'gemini-2.0-flash',
@@ -642,7 +642,7 @@ async function handleProviderModels(ws: WebSocketWithData, message: ClientMessag
               available: true,
               contextWindow: 128000,
               maxOutputTokens: 8192,
-              features: ['streaming', 'toolCalls', 'multimodal']
+              features: ['chat', 'tools', 'thinking']
             }
           ];
         }

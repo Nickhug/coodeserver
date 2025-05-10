@@ -71,17 +71,17 @@ export function getModelConfig(model: string): GeminiModelConfig {
     },
     'gemini-1.5-pro': {
       contextWindow: 1000000,
-      maxOutputTokens: 32768,
+      maxOutputTokens: 8192,
       tokenMultiplier: 1.0
     },
     'gemini-1.5-flash-8b': {
-      contextWindow: 32000,
-      maxOutputTokens: 4096,
+      contextWindow: 128000,
+      maxOutputTokens: 8192,
       tokenMultiplier: 1.0
     },
     'gemini-pro': {
-      contextWindow: 32768,
-      maxOutputTokens: 8192,
+      contextWindow: 30720,
+      maxOutputTokens: 2048,
       tokenMultiplier: 1.0
     },
     'gemini-pro-vision': {
@@ -92,8 +92,8 @@ export function getModelConfig(model: string): GeminiModelConfig {
   };
 
   return modelConfigMap[model as GeminiModelName] || {
-    contextWindow: 32768,
-    maxOutputTokens: 8192,
+    contextWindow: 30720,
+    maxOutputTokens: 2048,
     tokenMultiplier: 1.0
   };
 }
@@ -123,17 +123,29 @@ interface GeminiStreamHandler {
 }
 
 /**
- * Create a Google Generative AI client
+ * Create a Gemini client for the API
  */
-function createGeminiClient(apiKey: string): GoogleGenerativeAI {
+export function createGeminiClient(apiKey: string): GoogleGenerativeAI {
   return new GoogleGenerativeAI(apiKey);
 }
 
 /**
- * Get the appropriate Gemini model based on model name
+ * Get the appropriate Gemini model based on name
+ * This handles the correct API version selection (v1 vs v1beta)
  */
-function getGeminiModel(client: GoogleGenerativeAI, modelName: string): GenerativeModel {
-  return client.getGenerativeModel({ model: modelName });
+export function getGeminiModel(client: GoogleGenerativeAI, modelName: string): any {
+  // Use v1beta endpoint for preview models
+  const isPreviewOrExpModel = modelName.includes('preview') || modelName.includes('exp');
+  const apiVersion = isPreviewOrExpModel ? 'v1beta' : 'v1';
+  
+  logger.info(`Using API version ${apiVersion} for Gemini model: ${modelName}`);
+  
+  // For the Node.js client, we need to set the apiVersion before getting the model
+  const generationConfig: any = {
+    apiVersion,
+  };
+  
+  return client.getGenerativeModel({ model: modelName, generationConfig });
 }
 
 /**
@@ -160,8 +172,9 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
     const client = createGeminiClient(apiKey);
     const geminiModel = getGeminiModel(client, model);
     
+    // Create generation config without apiVersion (already set in getGeminiModel)
     const generationConfig: any = {
-        temperature,
+      temperature,
     };
     
     if (maxTokens) {
@@ -246,8 +259,9 @@ export async function sendStreamingRequest(
     const client = createGeminiClient(apiKey);
     const geminiModel = getGeminiModel(client, model);
     
+    // Create generation config without apiVersion (already set in getGeminiModel)
     const generationConfig: any = {
-        temperature,
+      temperature,
     };
     
     if (maxTokens) {
@@ -257,12 +271,14 @@ export async function sendStreamingRequest(
     // Format the prompt for Gemini
     const formattedPrompt = formatPrompt(prompt);
     
-    // Call onStart handler if provided
+    // Call onStart handler
     if (handlers.onStart) {
       handlers.onStart();
     }
     
-    // Send the streaming request
+    let toolCall: { name: string; parameters: Record<string, unknown>; id: string } | undefined;
+    
+    // Process the stream
     const streamResult: GenerateContentStreamResult = await geminiModel.generateContentStream({
       contents: formattedPrompt,
       generationConfig,
@@ -270,7 +286,6 @@ export async function sendStreamingRequest(
     
     let completeText = '';
     let startTime = Date.now();
-    let toolCall: { name: string; parameters: Record<string, unknown>; id: string } | undefined;
     
     // Process the stream
     for await (const chunk of streamResult.stream) {
