@@ -112,6 +112,8 @@ interface GeminiRequestParams {
   prompt: string;
   temperature?: number;
   maxTokens?: number;
+  systemMessage?: string;
+  tools?: any[];
 }
 
 interface GeminiStreamHandler {
@@ -126,12 +128,12 @@ interface GeminiStreamHandler {
  */
 export async function sendRequest(params: GeminiRequestParams): Promise<LLMResponse> {
   try {
-    const { apiKey, model, prompt, temperature = 0.7, maxTokens } = params;
-
-    logger.info(`Sending request to Gemini API with model: ${model}`);
+    const { apiKey, model, prompt, temperature = 0.7, maxTokens, systemMessage, tools } = params;
     
-    // Format prompt for direct API call
-    const requestBody = {
+    logger.info(`Starting Gemini request with model: ${model}`);
+    
+    // Format request body
+    let requestBody: any = {
       contents: [
         {
           role: 'user',
@@ -143,6 +145,29 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
         ...(maxTokens && { maxOutputTokens: maxTokens })
       }
     };
+    
+    // Add system message if present
+    if (systemMessage) {
+      // For Gemini API, we prefix system messages to user messages
+      requestBody.contents[0].parts[0].text = `${systemMessage}\n\n${prompt}`;
+      logger.info(`Added system message to request, total prompt length: ${requestBody.contents[0].parts[0].text.length}`);
+    }
+    
+    // Add tools if present
+    if (tools && Array.isArray(tools) && tools.length > 0) {
+      requestBody.tools = tools.map(tool => ({
+        functionDeclarations: [{
+          name: tool.name,
+          description: tool.description,
+          parameters: {
+            type: 'OBJECT',
+            properties: tool.parameters || {}
+          }
+        }]
+      }));
+      
+      logger.info(`Added ${tools.length} tools to request: ${tools.map(t => t.name).join(', ')}`);
+    }
     
     // Direct API call to v1beta endpoint with API key in URL
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -226,7 +251,7 @@ export async function sendStreamingRequest(
   handlers: GeminiStreamHandler
 ): Promise<void> {
   try {
-    const { apiKey, model, prompt, temperature = 0.7, maxTokens } = params;
+    const { apiKey, model, prompt, temperature = 0.7, maxTokens, systemMessage, tools } = params;
     
     logger.info(`Starting Gemini stream with model: ${model}`);
     
@@ -236,7 +261,7 @@ export async function sendStreamingRequest(
     }
     
     // Format prompt for direct API call
-    const requestBody = {
+    let requestBody: any = {
       contents: [
         {
           role: 'user',
@@ -248,6 +273,29 @@ export async function sendStreamingRequest(
         ...(maxTokens && { maxOutputTokens: maxTokens })
       }
     };
+    
+    // Add system message if present
+    if (systemMessage) {
+      // For Gemini API, we prefix system messages to user messages
+      requestBody.contents[0].parts[0].text = `${systemMessage}\n\n${prompt}`;
+      logger.info(`Added system message to stream request, total prompt length: ${requestBody.contents[0].parts[0].text.length}`);
+    }
+    
+    // Add tools if present
+    if (tools && Array.isArray(tools) && tools.length > 0) {
+      requestBody.tools = tools.map(tool => ({
+        functionDeclarations: [{
+          name: tool.name,
+          description: tool.description,
+          parameters: {
+            type: 'OBJECT',
+            properties: tool.parameters || {}
+          }
+        }]
+      }));
+      
+      logger.info(`Added ${tools.length} tools to stream request: ${tools.map(t => t.name).join(', ')}`);
+    }
     
     // Direct API call to v1beta endpoint with API key in URL
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
@@ -394,12 +442,23 @@ export async function streamGeminiMessage(params: {
   prompt: string;
   temperature?: number;
   maxTokens?: number;
+  systemMessage?: string;
+  tools?: any[];
   onStart?: () => void;
   onChunk: (chunk: string) => void;
   onError: (error: Error) => void;
   onComplete: (response: LLMResponse) => void;
 }): Promise<void> {
-  const { apiKey, model, prompt, temperature, maxTokens, onStart, onChunk, onError, onComplete } = params;
+  const { apiKey, model, prompt, temperature, maxTokens, systemMessage, tools, onStart, onChunk, onError, onComplete } = params;
+  
+  // Log if tools and system message are present
+  if (systemMessage) {
+    logger.info(`Gemini API request includes system message, length: ${systemMessage.length}`);
+  }
+  
+  if (tools && Array.isArray(tools) && tools.length > 0) {
+    logger.info(`Gemini API request includes ${tools.length} tools: ${tools.map(t => t.name).join(', ')}`);
+  }
   
   await sendStreamingRequest(
     {
@@ -407,7 +466,9 @@ export async function streamGeminiMessage(params: {
       model,
       prompt,
       temperature,
-      maxTokens
+      maxTokens,
+      systemMessage,
+      tools
     },
     {
       onStart,
@@ -428,15 +489,28 @@ export async function sendGeminiMessage(params: {
   prompt: string;
   temperature?: number;
   maxTokens?: number;
+  systemMessage?: string;
+  tools?: any[];
 }): Promise<LLMResponse> {
-  const { apiKey, model, prompt, temperature, maxTokens } = params;
+  const { apiKey, model, prompt, temperature, maxTokens, systemMessage, tools } = params;
+  
+  // Log if tools and system message are present
+  if (systemMessage) {
+    logger.info(`Gemini API request includes system message, length: ${systemMessage.length}`);
+  }
+  
+  if (tools && Array.isArray(tools) && tools.length > 0) {
+    logger.info(`Gemini API request includes ${tools.length} tools: ${tools.map(t => t.name).join(', ')}`);
+  }
   
   return await sendRequest({
     apiKey,
     model,
     prompt,
     temperature,
-    maxTokens
+    maxTokens,
+    systemMessage,
+    tools
   });
 }
 

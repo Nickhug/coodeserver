@@ -978,7 +978,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
     return;
   }
 
-  const { provider, model, prompt, temperature, maxTokens, stream = false, requestId } = message.payload;
+  const { provider, model, prompt, temperature, maxTokens, stream = false, requestId, systemMessage, tools } = message.payload;
   
   // Ensure requestId is always available, generate one if needed
   const safeRequestId = requestId || `gen-${uuidv4().substring(0, 8)}`;
@@ -996,6 +996,15 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
       }
     });
     return;
+  }
+  
+  // Log if system message and tools are present
+  if (systemMessage) {
+    logger.info(`Request ${safeRequestId} includes system message, length: ${systemMessage.length}`);
+  }
+  
+  if (tools && Array.isArray(tools) && tools.length > 0) {
+    logger.info(`Request ${safeRequestId} includes ${tools.length} tools: ${tools.map(t => t.name).join(', ')}`);
   }
   
   logger.info(`Processing ${provider} request for model ${model} from user ${userId || 'anonymous'}`);
@@ -1072,6 +1081,8 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             prompt,
             temperature: temperature || 0.7,
             maxTokens: maxTokens || 1024,
+            systemMessage,
+            tools,
             onStart: () => {
               streamStats.startTime = Date.now();
               logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Stream started for model ${model}`);
@@ -1177,7 +1188,9 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
           model,
           prompt,
           temperature: temperature || 0.7,
-          maxTokens: maxTokens || 1024
+          maxTokens: maxTokens || 1024,
+          systemMessage,
+          tools
         });
         
         sendToClient(ws, {
