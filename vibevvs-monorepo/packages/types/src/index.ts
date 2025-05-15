@@ -26,6 +26,9 @@ export enum MessageType {
   PROVIDER_STREAM_CHUNK = 'provider_stream_chunk',
   PROVIDER_STREAM_END = 'provider_stream_end',
   
+  // Tool messages
+  TOOL_EXECUTION_RESULT = 'tool_execution_result',
+  
   // Generic messages
   ERROR = 'error'
 }
@@ -212,6 +215,19 @@ export interface ProviderErrorMessage extends ServerMessage {
   };
 }
 
+// Tool execution result message
+export interface ToolExecutionResultMessage extends ClientMessage {
+  type: MessageType.TOOL_EXECUTION_RESULT;
+  payload: {
+    requestId: string;
+    toolCallId: string;
+    toolName: string;
+    result: any;
+    isError: boolean;
+    errorDetails?: string;
+  };
+}
+
 // User data structure
 export interface UserData {
   id: string;
@@ -227,7 +243,8 @@ export interface UserData {
 export type ClientToServerMessage =
   | AuthenticateMessage
   | ClientPingMessage
-  | ProviderRequestMessage;
+  | ProviderRequestMessage
+  | ToolExecutionResultMessage;
 
 // Combine server message types
 export type ServerToClientMessage =

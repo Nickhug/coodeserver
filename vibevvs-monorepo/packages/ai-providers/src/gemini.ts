@@ -446,29 +446,56 @@ export async function sendStreamingRequest(
     if (rawResponse && 
         rawResponse.candidates && 
         rawResponse.candidates[0]?.content?.parts) {
-      // Look for function call in the raw response
+      
+      // Log the entire response structure for debugging
+      logger.info(`RAW RESPONSE STRUCTURE: ${JSON.stringify({
+        hasContent: !!rawResponse.candidates[0].content,
+        contentParts: rawResponse.candidates[0].content?.parts?.length,
+        hasToolCall: rawResponse.candidates[0].content?.parts?.some((p: any) => p.functionCall)
+      }, null, 2)}`);
+      
+      // Check each part for a function call
       for (const part of rawResponse.candidates[0].content.parts) {
         if (part.functionCall) {
+          logger.info(`Found functionCall in part: ${JSON.stringify(part.functionCall, null, 2)}`);
+          
           responseObj.toolCall = {
             name: part.functionCall.name,
             parameters: part.functionCall.args || {},
             id: rawResponse.candidates[0].contentId || 'unknown'
           };
+          // Explicitly ensure waitingForToolCall is true
           responseObj.waitingForToolCall = true;
+          
+          logger.info(`Set toolCall in response: ${JSON.stringify(responseObj.toolCall, null, 2)}`);
+          logger.info(`waitingForToolCall set to: ${responseObj.waitingForToolCall}`);
           break;
         }
       }
       
       // Check candidate-level function call
-      if (rawResponse.candidates[0].functionCall) {
+      if (!responseObj.toolCall && rawResponse.candidates[0].functionCall) {
+        logger.info(`Found candidate-level functionCall: ${JSON.stringify(rawResponse.candidates[0].functionCall, null, 2)}`);
+        
         responseObj.toolCall = {
           name: rawResponse.candidates[0].functionCall.name,
           parameters: rawResponse.candidates[0].functionCall.args || {},
           id: rawResponse.candidates[0].contentId || 'unknown'
         };
+        // Explicitly ensure waitingForToolCall is true
         responseObj.waitingForToolCall = true;
+        
+        logger.info(`Set candidate-level toolCall in response: ${JSON.stringify(responseObj.toolCall, null, 2)}`);
+        logger.info(`waitingForToolCall set to: ${responseObj.waitingForToolCall}`);
       }
     }
+
+    // Log the final response object
+    logger.info(`FINAL RESPONSE OBJECT: ${JSON.stringify({
+      hasToolCall: !!responseObj.toolCall,
+      isWaitingForToolCall: responseObj.waitingForToolCall,
+      toolCallName: responseObj.toolCall?.name
+    }, null, 2)}`);
 
     // Call onComplete handler
     handlers.onComplete(responseObj as LLMResponse);

@@ -28,11 +28,51 @@ interface WebSocketWithData extends WebSocket {
   connectionData: WebSocketConnectionData;
 }
 
+/**
+ * Conversation context for multi-turn tool usage
+ */
+interface TurnContext {
+  provider: string;
+  model: string; 
+  apiKey: string;
+  temperature?: number;
+  maxTokens?: number;
+  systemMessage?: string;
+  tools?: any[];
+  stream: boolean;
+  lastPrompt: string;
+  messages: any[]; // Store conversation history
+  createdAt: number; // Timestamp for cleanup
+}
+
 // Store active connections
 const connections = new Map<string, WebSocketConnectionData>();
 
 // Store WebSocket server reference for API routes
 let globalWss: WebSocketServer;
+
+// Store active conversation contexts for multi-turn tool usage
+const activeTurnContexts = new Map<string, TurnContext>();
+
+// Set up a cleanup interval for stale turn contexts (30 minutes timeout)
+const TURN_CONTEXT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
+// Clean up stale turn contexts every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  let expiredCount = 0;
+  
+  for (const [requestId, context] of activeTurnContexts.entries()) {
+    if (now - context.createdAt > TURN_CONTEXT_TIMEOUT_MS) {
+      activeTurnContexts.delete(requestId);
+      expiredCount++;
+    }
+  }
+  
+  if (expiredCount > 0) {
+    logger.info(`Cleaned up ${expiredCount} stale turn contexts, ${activeTurnContexts.size} remaining active.`);
+  }
+}, 5 * 60 * 1000); // Run every 5 minutes
 
 /**
  * Set up the HTTP server and WebSocket server
@@ -305,6 +345,10 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
       const provider = clientMessage.payload?.provider || 'unknown';
       const model = clientMessage.payload?.model || 'unknown';
       logger.info(`WS MSG [${connectionId}][${requestId}] Provider request: ${provider}/${model}, streaming: ${!!clientMessage.payload?.stream}`);
+    } else if (messageType === MessageType.TOOL_EXECUTION_RESULT) {
+      const toolName = clientMessage.payload?.toolName || 'unknown';
+      const toolId = clientMessage.payload?.toolCallId || 'unknown';
+      logger.info(`WS MSG [${connectionId}][${requestId}] Tool execution result: ${toolName}, id: ${toolId}, error: ${!!clientMessage.payload?.isError}`);
     } else {
       logger.debug(`WS MSG [${connectionId}] Received message type: ${messageType}`);
     }
@@ -342,6 +386,20 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
         return;
       }
       await handleProviderRequest(ws, clientMessage);
+    } else if (messageType === MessageType.TOOL_EXECUTION_RESULT) {
+      if (config.authEnabled && !isAuthenticated) {
+        logger.warn(`WS AUTH [${connectionId}] Unauthorized tool execution result rejected`);
+        sendToClient(ws, { 
+          type: MessageType.PROVIDER_ERROR, 
+          payload: { 
+            error: 'Authentication required', 
+            code: 'UNAUTHORIZED',
+            requestId: clientMessage.payload?.requestId
+          } 
+        });
+        return;
+      }
+      await handleToolExecutionResult(ws, clientMessage);
     } else {
       logger.warn(`WS MSG [${connectionId}] Unknown message type: ${messageType}`);
       sendToClient(ws, { 
@@ -382,6 +440,20 @@ function sendToClient(ws: WebSocketWithData, message: ServerMessage): void {
     const { connectionId = 'unknown' } = ws.connectionData || {};
     const messageType = message.type;
     const requestId = (message.payload as any)?.requestId || 'no-request-id';
+    
+    // For PROVIDER_STREAM_END, add extra logging of toolCall if present
+    if (messageType === MessageType.PROVIDER_STREAM_END && (message.payload as any)?.toolCall) {
+      const toolCall = (message.payload as any).toolCall;
+      const waitingForToolCall = (message.payload as any).waitingForToolCall;
+      
+      logger.info(
+        `WS SEND TOOL CALL [${connectionId}][${requestId}] ` +
+        `Tool call in payload: name=${toolCall.name}, ` +
+        `parameters=${JSON.stringify(toolCall.parameters)}, ` +
+        `id=${toolCall.id}, ` +
+        `waitingForToolCall=${waitingForToolCall}`
+      );
+    }
     
     // Log message being sent with different detail levels based on type
     if (messageType === MessageType.PROVIDER_STREAM_CHUNK) {
@@ -1163,7 +1235,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                 }
               });
             },
-            onComplete: (response: LLMResponse) => {
+            onComplete: async (response: LLMResponse) => {
               // Calculate streaming metrics
               const elapsedMs = Date.now() - streamStats.startTime;
               const charsPerSecond = streamStats.totalCharsStreamed / (elapsedMs / 1000);
@@ -1194,6 +1266,49 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   `parameters: ${JSON.stringify(response.toolCall.parameters)}`
                 );
                 
+                // Store conversation context if waiting for tool call
+                if (response.waitingForToolCall) {
+                  // Parse the original prompt as messages if it's a JSON string
+                  let initialMessages = [];
+                  try {
+                    initialMessages = JSON.parse(prompt);
+                  } catch (e) {
+                    // If not JSON, create a simple user message
+                    initialMessages = [{ role: 'user', content: prompt }];
+                  }
+                  
+                  // Add model's response with tool call to messages
+                  initialMessages.push({
+                    role: 'model',
+                    content: response.text || '',
+                    toolCalls: [{
+                      id: response.toolCall.id || `tool-${Date.now()}`,
+                      name: response.toolCall.name,
+                      parameters: response.toolCall.parameters
+                    }]
+                  });
+                  
+                  // Store the conversation context
+                  activeTurnContexts.set(safeRequestId, {
+                    provider,
+                    model,
+                    apiKey,
+                    temperature,
+                    maxTokens,
+                    systemMessage,
+                    tools,
+                    stream: true,
+                    lastPrompt: prompt,
+                    messages: initialMessages,
+                    createdAt: Date.now()
+                  });
+                  
+                  logger.info(
+                    `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                    `Stored conversation context for future tool call results, messages count: ${initialMessages.length}`
+                  );
+                }
+                
                 // Finalize the stream, directly forwarding the toolCall object
                 sendToClient(ws, {
                   type: MessageType.PROVIDER_STREAM_END,
@@ -1203,7 +1318,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                     requestId: safeRequestId,
                     provider,
                     model,
-                    toolCall: response.toolCall, // Pass through without transformation
+                    toolCall: response.toolCall, // Pasts through without transformation
                     waitingForToolCall: response.waitingForToolCall
                   }
                 });
@@ -1267,6 +1382,49 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             `Tool call detected in non-streaming response: ${response.toolCall.name}, ` +
             `parameters: ${JSON.stringify(response.toolCall.parameters)}`
           );
+          
+          // Store conversation context if waiting for tool call
+          if (response.waitingForToolCall) {
+            // Parse the original prompt as messages if it's a JSON string
+            let initialMessages = [];
+            try {
+              initialMessages = JSON.parse(prompt);
+            } catch (e) {
+              // If not JSON, create a simple user message
+              initialMessages = [{ role: 'user', content: prompt }];
+            }
+            
+            // Add model's response with tool call to messages
+            initialMessages.push({
+              role: 'model',
+              content: response.text || '',
+              toolCalls: [{
+                id: response.toolCall.id || `tool-${Date.now()}`,
+                name: response.toolCall.name,
+                parameters: response.toolCall.parameters
+              }]
+            });
+            
+            // Store the conversation context
+            activeTurnContexts.set(safeRequestId, {
+              provider,
+              model,
+              apiKey,
+              temperature,
+              maxTokens,
+              systemMessage,
+              tools,
+              stream: false,
+              lastPrompt: prompt,
+              messages: initialMessages,
+              createdAt: Date.now()
+            });
+            
+            logger.info(
+              `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+              `Stored conversation context for future tool call results, messages count: ${initialMessages.length}`
+            );
+          }
           
           sendToClient(ws, {
             type: MessageType.PROVIDER_RESPONSE,
@@ -1385,6 +1543,368 @@ async function handleUserDataRequest(ws: WebSocketWithData, message: ClientMessa
         error: 'Error fetching user data'
       }
     });
+  }
+}
+
+/**
+ * Handle tool execution result from client
+ */
+async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
+  if (message.type !== MessageType.TOOL_EXECUTION_RESULT) {
+    logger.error('Invalid message type passed to handleToolExecutionResult');
+    return;
+  }
+
+  const { requestId, toolCallId, toolName, result, isError, errorDetails } = message.payload;
+  
+  // Ensure we have a valid requestId
+  const safeRequestId = requestId || `tool-exec-${uuidv4().substring(0, 8)}`;
+  
+  const userId = ws.connectionData.userId;
+  
+  // Log the full request details for debugging
+  logger.info(`FULL TOOL EXECUTION RESULT [${safeRequestId}]: ${JSON.stringify({
+    toolName,
+    toolCallId,
+    isError,
+    resultPreview: typeof result === 'string' ? 
+      (result.length > 100 ? `${result.substring(0, 100)}...` : result) : 
+      'Non-string result'
+  }, null, 2)}`);
+  
+  if (!userId && config.authEnabled) {
+    logger.error(`WS AUTH [${ws.connectionData.connectionId}][${safeRequestId}] No user ID available for tool execution result`);
+    sendToClient(ws, {
+      type: MessageType.PROVIDER_ERROR,
+      payload: {
+        error: 'User ID not available',
+        code: 'NO_USER_ID',
+        requestId: safeRequestId
+      }
+    });
+    return;
+  }
+  
+  logger.info(`Processing tool execution result for ${toolName} from user ${userId || 'anonymous'}, requestId: ${safeRequestId}`);
+  
+  try {
+    // Look up the pending conversation context from our request store
+    const conversationContext = activeTurnContexts.get(safeRequestId);
+    
+    if (!conversationContext) {
+      logger.error(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] No active conversation found for tool execution result`);
+      sendToClient(ws, {
+        type: MessageType.PROVIDER_ERROR,
+        payload: {
+          error: 'No active conversation found for this tool call',
+          code: 'NO_ACTIVE_CONVERSATION',
+          requestId: safeRequestId
+        }
+      });
+      return;
+    }
+    
+    const { provider, model, apiKey, temperature, maxTokens, systemMessage, tools, stream, lastPrompt, messages } = conversationContext;
+    
+    // Add tool result to messages
+    const toolResponseContent = isError ? 
+      { error: errorDetails || 'Unknown error during tool execution' } : 
+      result;
+    
+    messages.push({
+      role: 'tool',
+      toolCallId: toolCallId,
+      content: JSON.stringify(toolResponseContent)
+    });
+    
+    // Now send the updated conversation back to Gemini
+    logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Continuing conversation with tool result for ${toolName}`);
+    
+    // Process based on whether this is a streaming request
+    if (stream) {
+      // Send notification that we're continuing the conversation
+      sendToClient(ws, {
+        type: MessageType.PROVIDER_STREAM_CHUNK,
+        payload: {
+          chunk: `\n\nProcessing result from ${toolName}...\n\n`,
+          requestId: safeRequestId,
+          provider,
+          model
+        }
+      });
+      
+      try {
+        // Setup for streaming
+        const streamStats = {
+          startTime: Date.now(),
+          chunkCount: 0,
+          totalCharsStreamed: 0,
+          lastChunkTime: Date.now()
+        };
+        
+        // Continue conversation with Gemini
+        await gemini.streamGeminiMessage({
+          apiKey,
+          model,
+          prompt: JSON.stringify(messages),
+          temperature: temperature || 0.7,
+          maxTokens: maxTokens || 1024,
+          systemMessage,
+          tools,
+          onStart: () => {
+            streamStats.startTime = Date.now();
+            logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Continued stream started for model ${model}`);
+          },
+          onChunk: (chunk: string) => {
+            // Update stream stats
+            streamStats.chunkCount++;
+            streamStats.totalCharsStreamed += chunk.length;
+            streamStats.lastChunkTime = Date.now();
+            
+            // Log every 10th chunk to avoid log flooding
+            if (streamStats.chunkCount % 10 === 0) {
+              logger.debug(
+                `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                `Streaming progress: ${streamStats.chunkCount} chunks, ` +
+                `${streamStats.totalCharsStreamed} chars, ` +
+                `${Date.now() - streamStats.startTime}ms elapsed`
+              );
+            }
+            
+            // Send each chunk to the client as it arrives
+            sendToClient(ws, {
+              type: MessageType.PROVIDER_STREAM_CHUNK,
+              payload: {
+                chunk,
+                requestId: safeRequestId,
+                provider,
+                model
+              }
+            });
+          },
+          onError: (error: Error) => {
+            logger.error(
+              `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+              `Streaming error after ${streamStats.chunkCount} chunks: ${error.message}`
+            );
+            
+            sendToClient(ws, {
+              type: MessageType.PROVIDER_ERROR,
+              payload: {
+                error: `Streaming error: ${error.message}`,
+                code: 'STREAMING_ERROR',
+                requestId: safeRequestId,
+                provider,
+                model
+              }
+            });
+            
+            // Clean up the context
+            activeTurnContexts.delete(safeRequestId);
+          },
+          onComplete: (response: LLMResponse) => {
+            // Calculate streaming metrics
+            const elapsedMs = Date.now() - streamStats.startTime;
+            const charsPerSecond = streamStats.totalCharsStreamed / (elapsedMs / 1000);
+            
+            logger.info(
+              `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+              `Stream complete: ${streamStats.chunkCount} chunks, ` +
+              `${streamStats.totalCharsStreamed} chars, ` +
+              `${elapsedMs}ms total time, ` +
+              `${charsPerSecond.toFixed(1)} chars/sec, ` + 
+              `${response.tokensUsed} tokens used`
+            );
+            
+            // If this is a tool call, update the conversation context and keep it active
+            if (response.toolCall) {
+              logger.info(
+                `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                `Another tool call detected in response: ${response.toolCall.name}, ` +
+                `parameters: ${JSON.stringify(response.toolCall.parameters)}`
+              );
+              
+              // Add model's response to messages
+              messages.push({
+                role: 'model',
+                content: response.text || '',
+                toolCalls: [{
+                  id: response.toolCall.id || `tool-${Date.now()}`,
+                  name: response.toolCall.name,
+                  parameters: response.toolCall.parameters
+                }]
+              });
+              
+              // Update the conversation context with the latest messages
+              conversationContext.messages = messages;
+              activeTurnContexts.set(safeRequestId, conversationContext);
+              
+              // Send stream end with tool call
+              sendToClient(ws, {
+                type: MessageType.PROVIDER_STREAM_END,
+                payload: {
+                  tokensUsed: response.tokensUsed,
+                  success: response.success,
+                  requestId: safeRequestId,
+                  provider,
+                  model,
+                  toolCall: response.toolCall,
+                  waitingForToolCall: true
+                }
+              });
+            } else {
+              // No more tool calls, finalize the conversation
+              logger.info(
+                `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                `No further tool calls detected, finishing conversation`
+              );
+              
+              // Finalize the stream without tool call
+              sendToClient(ws, {
+                type: MessageType.PROVIDER_STREAM_END,
+                payload: {
+                  tokensUsed: response.tokensUsed,
+                  success: response.success,
+                  requestId: safeRequestId,
+                  provider,
+                  model
+                }
+              });
+              
+              // Clean up the context since we're done
+              activeTurnContexts.delete(safeRequestId);
+            }
+            
+            // Log usage if available
+            if (userId && response.tokensUsed) {
+              const creditsUsed = response.creditsUsed || (response.tokensUsed / 1000);
+              logUsage(userId, provider, model, response.tokensUsed);
+            }
+          }
+        });
+      } catch (error) {
+        logger.error(
+          `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+          `Error in continued streaming: ${error instanceof Error ? error.message : String(error)}`
+        );
+        
+        sendToClient(ws, {
+          type: MessageType.PROVIDER_ERROR,
+          payload: {
+            error: `Streaming error: ${error instanceof Error ? error.message : String(error)}`,
+            code: 'STREAMING_ERROR',
+            requestId: safeRequestId
+          }
+        });
+        
+        // Clean up the context due to error
+        activeTurnContexts.delete(safeRequestId);
+      }
+    } else {
+      // Handle non-streaming response with improved logging
+      try {
+        const response = await gemini.sendGeminiMessage({
+          apiKey,
+          model,
+          prompt: JSON.stringify(messages),
+          temperature: temperature || 0.7,
+          maxTokens: maxTokens || 1024,
+          systemMessage,
+          tools
+        });
+        
+        // If this is a tool call, update the conversation context and keep it active
+        if (response.toolCall) {
+          logger.info(
+            `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+            `Another tool call detected in non-streaming response: ${response.toolCall.name}, ` +
+            `parameters: ${JSON.stringify(response.toolCall.parameters)}`
+          );
+          
+          // Add model's response to messages
+          messages.push({
+            role: 'model',
+            content: response.text || '',
+            toolCalls: [{
+              id: response.toolCall.id || `tool-${Date.now()}`,
+              name: response.toolCall.name,
+              parameters: response.toolCall.parameters
+            }]
+          });
+          
+          // Update the conversation context with the latest messages
+          conversationContext.messages = messages;
+          activeTurnContexts.set(safeRequestId, conversationContext);
+          
+          sendToClient(ws, {
+            type: MessageType.PROVIDER_RESPONSE,
+            payload: {
+              text: response.text,
+              tokensUsed: response.tokensUsed,
+              success: response.success,
+              requestId: safeRequestId,
+              toolCall: response.toolCall,
+              waitingForToolCall: true
+            }
+          });
+        } else {
+          // No more tool calls, finalize the conversation
+          logger.info(
+            `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+            `No further tool calls detected, finishing non-streaming conversation`
+          );
+          
+          sendToClient(ws, {
+            type: MessageType.PROVIDER_RESPONSE,
+            payload: {
+              text: response.text,
+              tokensUsed: response.tokensUsed,
+              success: response.success,
+              requestId: safeRequestId
+            }
+          });
+          
+          // Clean up the context since we're done
+          activeTurnContexts.delete(safeRequestId);
+        }
+        
+        // Log usage
+        if (userId && response.tokensUsed) {
+          const creditsUsed = response.creditsUsed || (response.tokensUsed / 1000);
+          logUsage(userId, provider, model, response.tokensUsed);
+        }
+      } catch (error) {
+        logger.error(
+          `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+          `Error in continued non-streaming request: ${error instanceof Error ? error.message : String(error)}`
+        );
+        
+        sendToClient(ws, {
+          type: MessageType.PROVIDER_ERROR,
+          payload: {
+            error: `Request error: ${error instanceof Error ? error.message : String(error)}`,
+            code: 'PROVIDER_REQUEST_ERROR',
+            requestId: safeRequestId
+          }
+        });
+        
+        // Clean up the context due to error
+        activeTurnContexts.delete(safeRequestId);
+      }
+    }
+  } catch (error) {
+    logger.error(`Error processing tool execution result for ${toolName}:`, error);
+    sendToClient(ws, {
+      type: MessageType.PROVIDER_ERROR,
+      payload: {
+        error: `Failed to process tool execution result for ${toolName}`,
+        code: 'TOOL_EXECUTION_RESULT_ERROR',
+        requestId: safeRequestId
+      }
+    });
+    
+    // Clean up any context due to error
+    activeTurnContexts.delete(safeRequestId);
   }
 }
 
