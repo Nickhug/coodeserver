@@ -237,6 +237,57 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
           };
           logger.info(`Detected legacy tool call in response: ${toolCall.name}`);
         }
+        
+        // 4. Last resort: check for function call patterns in text content
+        if (!toolCall && text) {
+          // Look for structured function call patterns in the text
+          const functionCallPatterns = [
+            // antml:function_calls pattern
+            /<function_calls>[\s\S]*?<invoke name="([^"]+)">/,
+            // General function call pattern with JSON
+            /\{\s*"functionCall"\s*:\s*\{[\s\S]*?"name"\s*:\s*"([^"]+)"/,
+            // Plain text function call pattern
+            /```\s*\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"args"\s*:/
+          ];
+          
+          for (const pattern of functionCallPatterns) {
+            const match = text.match(pattern);
+            if (match) {
+              logger.info(`Found function call pattern in text: ${match[1]}`);
+              
+              // Extract function call info
+              try {
+                // Attempt to extract the function name
+                const functionName = match[1];
+                let parameters = {};
+                
+                // Try to extract parameters as well
+                const paramMatch = text.match(/"parameters":\s*(\{[\s\S]*?\})/);
+                if (paramMatch) {
+                  try {
+                    parameters = JSON.parse(paramMatch[1]);
+                  } catch (e) {
+                    logger.error(`Failed to parse parameters from text: ${e}`);
+                  }
+                }
+                
+                toolCall = {
+                  name: functionName,
+                  parameters: parameters,
+                  id: `extracted-${Date.now()}`
+                };
+                
+                logger.info(`Extracted toolCall from text: ${JSON.stringify(toolCall, null, 2)}`);
+                
+                // Remove the function call text from the response
+                text = text.replace(/<function_calls>[\s\S]*?<\/antml:function_calls>/, '');
+                break;
+              } catch (e) {
+                logger.error(`Failed to extract function call from text: ${e}`);
+              }
+            }
+          }
+        }
       }
     }
     
@@ -470,6 +521,61 @@ export async function sendStreamingRequest(
           logger.info(`Set toolCall in response: ${JSON.stringify(responseObj.toolCall, null, 2)}`);
           logger.info(`waitingForToolCall set to: ${responseObj.waitingForToolCall}`);
           break;
+        }
+      }
+      
+      // Also check for any potential function call patterns in the text itself
+      // This is a fallback mechanism for when the model includes function call syntax in text
+      if (!responseObj.toolCall && completeText) {
+        // Look for structured function call patterns in the text
+        const functionCallPatterns = [
+          // antml:function_calls pattern
+          /<function_calls>[\s\S]*?<invoke name="([^"]+)">/,
+          // General function call pattern with JSON
+          /\{\s*"functionCall"\s*:\s*\{[\s\S]*?"name"\s*:\s*"([^"]+)"/,
+          // Plain text function call pattern
+          /```\s*\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"args"\s*:/
+        ];
+        
+        for (const pattern of functionCallPatterns) {
+          const match = completeText.match(pattern);
+          if (match) {
+            logger.info(`Found function call pattern in text: ${match[1]}`);
+            
+            // Don't send the function call as text to the client
+            // Extract it as a toolCall instead
+            try {
+              // Attempt to extract the function name
+              const functionName = match[1];
+              let parameters = {};
+              
+              // Try to extract parameters as well
+              const paramMatch = completeText.match(/"parameters":\s*(\{[\s\S]*?\})/);
+              if (paramMatch) {
+                try {
+                  parameters = JSON.parse(paramMatch[1]);
+                } catch (e) {
+                  logger.error(`Failed to parse parameters from text: ${e}`);
+                }
+              }
+              
+              responseObj.toolCall = {
+                name: functionName,
+                parameters: parameters,
+                id: `extracted-${Date.now()}`
+              };
+              responseObj.waitingForToolCall = true;
+              
+              logger.info(`Extracted toolCall from text: ${JSON.stringify(responseObj.toolCall, null, 2)}`);
+              
+              // Remove the function call text from the response
+              responseObj.text = completeText.replace(/<function_calls>[\s\S]*?<\/antml:function_calls>/, '');
+              
+              break;
+            } catch (e) {
+              logger.error(`Failed to extract function call from text: ${e}`);
+            }
+          }
         }
       }
       
