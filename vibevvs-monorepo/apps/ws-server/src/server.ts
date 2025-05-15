@@ -985,6 +985,19 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
   
   const userId = ws.connectionData.userId;
   
+  // Log the full request details for debugging
+  logger.info(`FULL REQUEST [${safeRequestId}]: ${JSON.stringify({
+    provider,
+    model,
+    promptLength: prompt?.length,
+    temperature,
+    maxTokens,
+    systemMessageLength: systemMessage?.length,
+    tools: tools?.map((t: any) => t.name || 'unnamed tool'),
+    stream,
+    userId: userId || 'anonymous'
+  }, null, 2)}`);
+  
   if (!userId && config.authEnabled) {
     logger.error(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] No user ID available for provider request`);
     sendToClient(ws, {
@@ -1005,6 +1018,8 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
   
   if (tools && Array.isArray(tools) && tools.length > 0) {
     logger.info(`Request ${safeRequestId} includes ${tools.length} tools: ${tools.map(t => t.name).join(', ')}`);
+    // Log full tool definitions for debugging
+    logger.info(`FULL TOOLS [${safeRequestId}]: ${JSON.stringify(tools, null, 2)}`);
   }
   
   logger.info(`Processing ${provider} request for model ${model} from user ${userId || 'anonymous'}`);
@@ -1145,6 +1160,29 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                 `${response.tokensUsed} tokens used`
               );
               
+              // Log full response details for debugging
+              logger.info(`FULL RESPONSE [${safeRequestId}]: ${JSON.stringify({
+                success: response.success,
+                tokensUsed: response.tokensUsed,
+                textLength: response.text?.length,
+                toolCall: response.toolCall,
+                waitingForToolCall: response.waitingForToolCall
+              }, null, 2)}`);
+              
+              // Log tool call information if present
+              if (response.toolCall) {
+                logger.info(
+                  `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                  `Tool call detected in response: ${response.toolCall.name}, ` +
+                  `parameters: ${JSON.stringify(response.toolCall.parameters)}`
+                );
+              } else {
+                logger.info(
+                  `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                  `No tool call detected in response`
+                );
+              }
+              
               // Finalize the stream
               sendToClient(ws, {
                 type: MessageType.PROVIDER_STREAM_END,
@@ -1192,6 +1230,20 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
           systemMessage,
           tools
         });
+        
+        // Log tool call information if present
+        if (response.toolCall) {
+          logger.info(
+            `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+            `Tool call detected in non-streaming response: ${response.toolCall.name}, ` +
+            `parameters: ${JSON.stringify(response.toolCall.parameters)}`
+          );
+        } else {
+          logger.info(
+            `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+            `No tool call detected in non-streaming response`
+          );
+        }
         
         sendToClient(ws, {
           type: MessageType.PROVIDER_RESPONSE,

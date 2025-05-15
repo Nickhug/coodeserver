@@ -189,6 +189,9 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
     
     const data = await response.json();
     
+    // Log the full raw response for debugging tool calls
+    logger.info(`GEMINI RAW RESPONSE: ${JSON.stringify(data, null, 2)}`);
+    
     // Extract the response text
     let text = '';
     let toolCall: { name: string; parameters: Record<string, unknown>; id: string } | undefined;
@@ -202,15 +205,37 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
             text += part.text;
           }
           
-          // Check if this part contains a function call
+          // Check for function call formats
+          // 1. Check direct functionCall format
           if (part.functionCall) {
             toolCall = {
               name: part.functionCall.name,
               parameters: part.functionCall.args || {},
               id: candidate.contentId || 'unknown'
             };
-            logger.info(`Detected tool call in response: ${toolCall.name}`);
+            logger.info(`Detected direct tool call in response: ${toolCall.name}`);
           }
+        }
+        
+        // 2. Check for candidateFunctionCall at candidate level (some Gemini models use this format)
+        if (candidate.functionCall) {
+          toolCall = {
+            name: candidate.functionCall.name,
+            parameters: candidate.functionCall.args || {},
+            id: candidate.contentId || 'unknown'
+          };
+          logger.info(`Detected candidate-level tool call in response: ${toolCall.name}`);
+        }
+        
+        // 3. Check for legacy function calling format
+        if (candidate.content.functionCall) {
+          toolCall = {
+            name: candidate.content.functionCall.name,
+            parameters: candidate.content.functionCall.arguments ? 
+                       JSON.parse(candidate.content.functionCall.arguments) : {},
+            id: candidate.contentId || 'unknown'
+          };
+          logger.info(`Detected legacy tool call in response: ${toolCall.name}`);
         }
       }
     }
@@ -340,6 +365,9 @@ export async function sendStreamingRequest(
             const jsonText = line.slice(6); // Remove "data: " prefix
             const data = JSON.parse(jsonText);
             
+            // Log the full raw chunk data for debugging tool calls
+            logger.info(`GEMINI RAW STREAM CHUNK: ${JSON.stringify(data, null, 2)}`);
+            
             // Extract text content
             let chunkText = '';
             if (data.candidates && 
@@ -352,15 +380,37 @@ export async function sendStreamingRequest(
                   chunkText += part.text;
                 }
                 
-                // Check for function calls (tool calls)
+                // Check for function calls (tool calls) in different formats
+                // 1. Check direct functionCall format
                 if (part.functionCall) {
                   toolCall = {
                     name: part.functionCall.name,
                     parameters: part.functionCall.args || {},
                     id: data.candidates[0].contentId || 'unknown'
                   };
-                  logger.info(`Detected tool call in stream: ${toolCall.name}`);
+                  logger.info(`Detected direct tool call in stream: ${toolCall.name}`);
                 }
+              }
+              
+              // 2. Check for candidateFunctionCall at candidate level (some Gemini models use this format)
+              if (data.candidates[0].functionCall) {
+                toolCall = {
+                  name: data.candidates[0].functionCall.name,
+                  parameters: data.candidates[0].functionCall.args || {},
+                  id: data.candidates[0].contentId || 'unknown'
+                };
+                logger.info(`Detected candidate-level tool call in stream: ${toolCall.name}`);
+              }
+              
+              // 3. Check for legacy function calling format
+              if (data.candidates[0].content.functionCall) {
+                toolCall = {
+                  name: data.candidates[0].content.functionCall.name,
+                  parameters: data.candidates[0].content.functionCall.arguments ? 
+                             JSON.parse(data.candidates[0].content.functionCall.arguments) : {},
+                  id: data.candidates[0].contentId || 'unknown'
+                };
+                logger.info(`Detected legacy tool call in stream: ${toolCall.name}`);
               }
               
               // Call onChunk handler with small delay
