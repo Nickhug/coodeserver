@@ -347,12 +347,15 @@ export async function sendStreamingRequest(
     // Process the SSE stream
     const reader = response.body.getReader();
     let completeText = '';
-    let toolCall: { name: string; parameters: Record<string, unknown>; id: string } | undefined;
+    let rawResponse = null; // Store the raw response
     const decoder = new TextDecoder();
     
     let chunk;
     while (!(chunk = await reader.read()).done) {
       const rawText = decoder.decode(chunk.value, { stream: true });
+      
+      // Log raw SSE data for debugging
+      logger.debug(`Raw SSE chunk received (${rawText.length} bytes)`);
       
       // Parse SSE format (data: {json})
       const lines = rawText.split('\n').filter(line => line.trim() !== '');
@@ -365,8 +368,11 @@ export async function sendStreamingRequest(
             const jsonText = line.slice(6); // Remove "data: " prefix
             const data = JSON.parse(jsonText);
             
-            // Log the full raw chunk data for debugging tool calls
+            // Log the full raw chunk data for debugging
             logger.info(`GEMINI RAW STREAM CHUNK: ${JSON.stringify(data, null, 2)}`);
+            
+            // Store the raw response data (will use the last chunk)
+            rawResponse = data;
             
             // Extract text content
             let chunkText = '';
@@ -374,47 +380,14 @@ export async function sendStreamingRequest(
                 data.candidates[0]?.content?.parts && 
                 data.candidates[0].content.parts.length > 0) {
               
-              // Check for function calls
+              // Extract text content only
               for (const part of data.candidates[0].content.parts) {
                 if (part.text) {
                   chunkText += part.text;
                 }
-                
-                // Check for function calls (tool calls) in different formats
-                // 1. Check direct functionCall format
-                if (part.functionCall) {
-                  toolCall = {
-                    name: part.functionCall.name,
-                    parameters: part.functionCall.args || {},
-                    id: data.candidates[0].contentId || 'unknown'
-                  };
-                  logger.info(`Detected direct tool call in stream: ${toolCall.name}`);
-                }
-              }
-              
-              // 2. Check for candidateFunctionCall at candidate level (some Gemini models use this format)
-              if (data.candidates[0].functionCall) {
-                toolCall = {
-                  name: data.candidates[0].functionCall.name,
-                  parameters: data.candidates[0].functionCall.args || {},
-                  id: data.candidates[0].contentId || 'unknown'
-                };
-                logger.info(`Detected candidate-level tool call in stream: ${toolCall.name}`);
-              }
-              
-              // 3. Check for legacy function calling format
-              if (data.candidates[0].content.functionCall) {
-                toolCall = {
-                  name: data.candidates[0].content.functionCall.name,
-                  parameters: data.candidates[0].content.functionCall.arguments ? 
-                             JSON.parse(data.candidates[0].content.functionCall.arguments) : {},
-                  id: data.candidates[0].contentId || 'unknown'
-                };
-                logger.info(`Detected legacy tool call in stream: ${toolCall.name}`);
               }
               
               // Call onChunk handler with small delay
-              // This is critical for Gemini 2.5 models which can experience premature stream closure
               if (chunkText) {
                 // Add small delay when streaming from Gemini 2.5 models
                 if (model.includes('gemini-2.5')) {
@@ -434,7 +407,6 @@ export async function sendStreamingRequest(
     }
     
     // Ensure we wait a moment before sending the completion to avoid race conditions
-    // This is especially important for the Gemini 2.5 model family
     if (model.includes('gemini-2.5')) {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
@@ -446,16 +418,60 @@ export async function sendStreamingRequest(
     
     logger.info(`Gemini stream completed, estimated tokens: ${totalTokens}`);
     
-    // Call onComplete handler
-    handlers.onComplete({
+    // Pass the raw response to the completion handler
+    // The client side will handle parsing tool calls
+    const responseObj: {
+      text: string;
+      tokensUsed: number;
+      creditsUsed: number;
+      success: boolean;
+      generatedText: string;
+      rawResponse: any;
+      toolCall?: {
+        name: string;
+        parameters: Record<string, unknown>;
+        id: string;
+      };
+      waitingForToolCall?: boolean;
+    } = {
       text: completeText,
       tokensUsed: totalTokens,
       creditsUsed: totalTokens / 1000, // Assuming 1000 tokens = 1 credit
       success: true,
       generatedText: completeText,
-      toolCall,
-      waitingForToolCall: toolCall !== undefined,
-    });
+      rawResponse: rawResponse // Include the raw response
+    };
+
+    // Check for toolCall but don't transform it
+    if (rawResponse && 
+        rawResponse.candidates && 
+        rawResponse.candidates[0]?.content?.parts) {
+      // Look for function call in the raw response
+      for (const part of rawResponse.candidates[0].content.parts) {
+        if (part.functionCall) {
+          responseObj.toolCall = {
+            name: part.functionCall.name,
+            parameters: part.functionCall.args || {},
+            id: rawResponse.candidates[0].contentId || 'unknown'
+          };
+          responseObj.waitingForToolCall = true;
+          break;
+        }
+      }
+      
+      // Check candidate-level function call
+      if (rawResponse.candidates[0].functionCall) {
+        responseObj.toolCall = {
+          name: rawResponse.candidates[0].functionCall.name,
+          parameters: rawResponse.candidates[0].functionCall.args || {},
+          id: rawResponse.candidates[0].contentId || 'unknown'
+        };
+        responseObj.waitingForToolCall = true;
+      }
+    }
+
+    // Call onComplete handler
+    handlers.onComplete(responseObj as LLMResponse);
   } catch (error) {
     logger.error('Error in Gemini stream:', error);
     handlers.onError(error instanceof Error ? error : new Error(String(error)));

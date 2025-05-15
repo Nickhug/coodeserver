@@ -1176,26 +1176,38 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   `Tool call detected in response: ${response.toolCall.name}, ` +
                   `parameters: ${JSON.stringify(response.toolCall.parameters)}`
                 );
+                
+                // Finalize the stream, directly forwarding the toolCall object
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_STREAM_END,
+                  payload: {
+                    tokensUsed: response.tokensUsed,
+                    success: response.success,
+                    requestId: safeRequestId,
+                    provider,
+                    model,
+                    toolCall: response.toolCall, // Pass through without transformation
+                    waitingForToolCall: response.waitingForToolCall
+                  }
+                });
               } else {
                 logger.info(
                   `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
                   `No tool call detected in response`
                 );
+                
+                // Finalize the stream without tool call
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_STREAM_END,
+                  payload: {
+                    tokensUsed: response.tokensUsed,
+                    success: response.success,
+                    requestId: safeRequestId,
+                    provider,
+                    model
+                  }
+                });
               }
-              
-              // Finalize the stream
-              sendToClient(ws, {
-                type: MessageType.PROVIDER_STREAM_END,
-                payload: {
-                  tokensUsed: response.tokensUsed,
-                  success: response.success,
-                  requestId: safeRequestId, // Use the consistent requestId
-                  provider,
-                  model,
-                  ...(response.toolCall && { toolCall: response.toolCall }),
-                  ...(response.waitingForToolCall && { waitingForToolCall: response.waitingForToolCall })
-                }
-              });
               
               // Log usage if available
               if (userId && response.tokensUsed) {
@@ -1238,25 +1250,34 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             `Tool call detected in non-streaming response: ${response.toolCall.name}, ` +
             `parameters: ${JSON.stringify(response.toolCall.parameters)}`
           );
+          
+          sendToClient(ws, {
+            type: MessageType.PROVIDER_RESPONSE,
+            payload: {
+              text: response.text,
+              tokensUsed: response.tokensUsed,
+              success: response.success,
+              requestId: safeRequestId,
+              toolCall: response.toolCall, // Pass through without transformation
+              waitingForToolCall: response.waitingForToolCall
+            }
+          });
         } else {
           logger.info(
             `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
             `No tool call detected in non-streaming response`
           );
+          
+          sendToClient(ws, {
+            type: MessageType.PROVIDER_RESPONSE,
+            payload: {
+              text: response.text,
+              tokensUsed: response.tokensUsed,
+              success: response.success,
+              requestId: safeRequestId
+            }
+          });
         }
-        
-        sendToClient(ws, {
-          type: MessageType.PROVIDER_RESPONSE,
-          payload: {
-            text: response.text,
-            tokensUsed: response.tokensUsed,
-            success: response.success,
-            requestId: safeRequestId,
-            ...(response.error && { error: response.error }),
-            ...(response.toolCall && { toolCall: response.toolCall }),
-            ...(response.waitingForToolCall && { waitingForToolCall: response.waitingForToolCall })
-          }
-        });
         
         // Log usage
         if (userId && response.tokensUsed) {
