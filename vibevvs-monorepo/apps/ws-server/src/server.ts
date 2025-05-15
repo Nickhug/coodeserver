@@ -1020,6 +1020,23 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
     logger.info(`Request ${safeRequestId} includes ${tools.length} tools: ${tools.map(t => t.name).join(', ')}`);
     // Log full tool definitions for debugging
     logger.info(`FULL TOOLS [${safeRequestId}]: ${JSON.stringify(tools, null, 2)}`);
+
+    // For Gemini, ensure all tool parameters have a 'type' defined, default to 'STRING'
+    if (provider === 'gemini') {
+      tools.forEach(tool => {
+        if (tool.parameters) {
+          Object.keys(tool.parameters).forEach(paramName => {
+            // @ts-ignore
+            if (!tool.parameters[paramName].type) {
+              // @ts-ignore
+              tool.parameters[paramName].type = 'STRING'; // Default to STRING
+            }
+          });
+        }
+      });
+      logger.info(`Processed tools for Gemini, ensuring parameter types for request ${safeRequestId}`);
+      logger.info(`TOOLS AFTER PROCESSING [${safeRequestId}]: ${JSON.stringify(tools, null, 2)}`);
+    }
   }
   
   logger.info(`Processing ${provider} request for model ${model} from user ${userId || 'anonymous'}`);
