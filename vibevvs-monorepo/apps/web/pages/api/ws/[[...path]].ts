@@ -10,45 +10,75 @@ export const config = {
   },
 };
 
-// The internal WebSocket server URL - this should be the Railway internal service name
-const INTERNAL_WS_SERVER = 'happy-cooperation.railway.internal';
+// The WebSocket server connection details - must match your Railway service exactly
+const WS_INTERNAL_HOST = 'happy-cooperation.railway.internal'; // Railway internal service name
+const WS_INTERNAL_PORT = 3001; // Must match the WS_PORT env var on the ws-server service
+const WS_INTERNAL_PATH = '/ws'; // Must match the WS_PATH env var on the ws-server service
 
 // This handler will proxy both regular HTTP requests and WebSocket upgrade requests
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
-  // Log the attempt to connect
-  logger.info(`WebSocket proxy request received: ${req.url} to ${INTERNAL_WS_SERVER}`);
+  // Log every connection attempt with better details
+  logger.info(`[WS_PROXY] Received request: ${req.url}`, {
+    headers: req.headers,
+    method: req.method,
+    url: req.url,
+  });
   
-  // Create proxy for each request
-  const proxy = createProxyMiddleware({
-    target: `http://${INTERNAL_WS_SERVER}`,
+  // IMPORTANT: Creating full target URL with explicit protocol/host/port
+  const proxyOptions = {
+    target: {
+      protocol: 'http:',
+      host: WS_INTERNAL_HOST,
+      port: WS_INTERNAL_PORT,
+    },
     ws: true, // Enable WebSocket proxying
     changeOrigin: true,
-    secure: false, // Don't verify SSL certificates for internal Railway services
+    secure: false, // Don't verify SSL for internal services
     pathRewrite: {
-      '^/api/ws': '/ws', // Rewrite to the correct path on the internal service
+      '^/api/ws': WS_INTERNAL_PATH,
     },
-  });
+    // Add connection timeout (5 seconds)
+    timeout: 5000,
+    // Log proxy activity for debugging
+    onProxyReq: (proxyReq: any, req: any) => {
+      logger.info(`[WS_PROXY] Proxying request to: ${WS_INTERNAL_HOST}:${WS_INTERNAL_PORT}${WS_INTERNAL_PATH}`, {
+        method: req.method,
+        url: req.url,
+        target: `${WS_INTERNAL_HOST}:${WS_INTERNAL_PORT}${WS_INTERNAL_PATH}`,
+      });
+    },
+  };
+
+  // Create proxy middleware with verbose options
+  const proxy = createProxyMiddleware(proxyOptions);
   
   return new Promise<void>((resolve, reject) => {
     try {
       // @ts-ignore - Type mismatch between Next.js and http-proxy-middleware
       proxy(req, res, (result: unknown) => {
         if (result instanceof Error) {
-          logger.error(`WebSocket proxy error: ${result.message}`);
+          logger.error(`[WS_PROXY] Proxy error: ${result.message}`, {
+            error: result,
+            url: req.url,
+          });
           
-          // Only send error response if headers haven't been sent yet
           if (!res.headersSent) {
             res.status(500).json({ error: `WebSocket proxy error: ${result.message}` });
           }
           
           return reject(result);
         }
+        
+        logger.info('[WS_PROXY] Proxy completed successfully');
         resolve();
       });
     } catch (error) {
-      logger.error(`WebSocket proxy exception: ${error instanceof Error ? error.message : String(error)}`);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error(`[WS_PROXY] Exception: ${errorMessage}`, {
+        error,
+        url: req.url,
+      });
       
-      // Only send error response if headers haven't been sent yet
       if (!res.headersSent) {
         res.status(500).json({ error: 'WebSocket proxy exception' });
       }
