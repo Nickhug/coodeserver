@@ -1,6 +1,8 @@
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import { NextApiRequest, NextApiResponse } from 'next';
 import logger from '@repo/logger';
+import http from 'http';
+import net from 'net';
 
 // We need to disable the default body parser for raw WebSocket connections
 export const config = {
@@ -9,6 +11,11 @@ export const config = {
     externalResolver: true,
   },
 };
+
+// Define an extended error interface that includes a code property
+interface NetworkError extends Error {
+  code?: string;
+}
 
 // The WebSocket server connection details - must match your Railway service exactly
 const WS_INTERNAL_HOST = process.env.INTERNAL_WS_HOST || 'ws-server.railway.internal'; // Railway internal service name
@@ -22,7 +29,42 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     headers: req.headers,
     method: req.method,
     url: req.url,
+    host: WS_INTERNAL_HOST,
+    port: WS_INTERNAL_PORT,
+    path: WS_INTERNAL_PATH,
+    env: process.env.NODE_ENV,
   });
+
+  // Check if this is a WebSocket upgrade request
+  const isUpgradeRequest = req.headers.upgrade?.toLowerCase() === 'websocket';
+  logger.info(`[WS_PROXY] Is WebSocket upgrade request: ${isUpgradeRequest}`, {
+    upgrade: req.headers.upgrade,
+  });
+
+  // Test connectivity to the internal WebSocket host
+  // This can help determine if the issue is with network connectivity
+  const testSocket = new net.Socket();
+  const tcpConnectTimeout = setTimeout(() => {
+    logger.error(`[WS_PROXY] TCP connection timeout to ${WS_INTERNAL_HOST}:${WS_INTERNAL_PORT}`);
+    testSocket.destroy();
+  }, 3000);
+
+  testSocket.on('connect', () => {
+    logger.info(`[WS_PROXY] TCP connection successful to ${WS_INTERNAL_HOST}:${WS_INTERNAL_PORT}`);
+    clearTimeout(tcpConnectTimeout);
+    testSocket.destroy();
+  });
+
+  testSocket.on('error', (err: NetworkError) => {
+    logger.error(`[WS_PROXY] TCP connection error to ${WS_INTERNAL_HOST}:${WS_INTERNAL_PORT}:`, {
+      error: err.message,
+      code: err.code,
+    });
+    clearTimeout(tcpConnectTimeout);
+  });
+
+  // Test TCP connection to target
+  testSocket.connect(WS_INTERNAL_PORT, WS_INTERNAL_HOST);
   
   // IMPORTANT: Creating full target URL with explicit protocol/host/port
   const proxyOptions = {
@@ -45,23 +87,42 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
         method: req.method,
         url: req.url,
         target: `${WS_INTERNAL_HOST}:${WS_INTERNAL_PORT}${WS_INTERNAL_PATH}`,
+        headers: proxyReq.getHeaders(),
       });
     },
-    onError: (err: Error, req: NextApiRequest, res: NextApiResponse) => {
+    onError: (err: NetworkError, req: NextApiRequest, res: NextApiResponse) => {
       logger.error(`[WS_PROXY] Proxy error: ${err.message}`, {
-        error: err,
+        error: err.message,
+        stack: err.stack,
         url: req.url,
+        code: err.code,
       });
       
       if (!res.headersSent) {
-        res.status(502).json({ error: `WebSocket proxy error: ${err.message}` });
+        res.status(502).json({ 
+          error: `WebSocket proxy error: ${err.message}`,
+          code: err.code,
+          host: WS_INTERNAL_HOST,
+          port: WS_INTERNAL_PORT,
+        });
       }
     },
     onProxyReqWs: (proxyReq: any, req: any, socket: any) => {
-      logger.info(`[WS_PROXY] WebSocket upgrade request proxied to: ${WS_INTERNAL_HOST}:${WS_INTERNAL_PORT}${WS_INTERNAL_PATH}`);
+      logger.info(`[WS_PROXY] WebSocket upgrade request proxied to: ${WS_INTERNAL_HOST}:${WS_INTERNAL_PORT}${WS_INTERNAL_PATH}`, {
+        headers: proxyReq.getHeaders(),
+      });
     },
     onOpen: (proxySocket: any) => {
       logger.info('[WS_PROXY] WebSocket connection opened successfully');
+      
+      // Monitor socket events for better debugging
+      proxySocket.on('data', (data: Buffer) => {
+        logger.debug(`[WS_PROXY] WebSocket data received (${data.length} bytes)`);
+      });
+      
+      proxySocket.on('error', (err: Error) => {
+        logger.error(`[WS_PROXY] WebSocket socket error: ${err.message}`);
+      });
     },
     onClose: (res: any, socket: any, head: any) => {
       logger.info('[WS_PROXY] WebSocket connection closed');
@@ -76,13 +137,21 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       // @ts-ignore - Type mismatch between Next.js and http-proxy-middleware
       proxy(req, res, (result: unknown) => {
         if (result instanceof Error) {
-          logger.error(`[WS_PROXY] Proxy error: ${result.message}`, {
-            error: result,
+          const networkError = result as NetworkError;
+          logger.error(`[WS_PROXY] Proxy error in callback: ${networkError.message}`, {
+            error: networkError.message,
+            stack: networkError.stack,
             url: req.url,
+            code: networkError.code,
           });
           
           if (!res.headersSent) {
-            res.status(500).json({ error: `WebSocket proxy error: ${result.message}` });
+            res.status(502).json({ 
+              error: `WebSocket proxy error: ${networkError.message}`,
+              code: networkError.code,
+              host: WS_INTERNAL_HOST,
+              port: WS_INTERNAL_PORT,
+            });
           }
           
           return reject(result);
@@ -93,13 +162,24 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      const errorCode = (error as NetworkError).code;
+      
       logger.error(`[WS_PROXY] Exception: ${errorMessage}`, {
         error,
+        stack: errorStack,
+        code: errorCode,
         url: req.url,
       });
       
       if (!res.headersSent) {
-        res.status(500).json({ error: 'WebSocket proxy exception' });
+        res.status(500).json({ 
+          error: 'WebSocket proxy exception',
+          message: errorMessage,
+          code: errorCode,
+          host: WS_INTERNAL_HOST,
+          port: WS_INTERNAL_PORT,
+        });
       }
       
       reject(error);
