@@ -13,7 +13,7 @@ export default function LoginPage() {
   const [isProcessing, setIsProcessing] = useState(false);
 
   // Extract connection_id from URL if present (for WebSocket auth flow)
-  const connectionId = searchParams.get('connection_id');
+  const connectionId = searchParams?.get('connection_id') ?? null;
 
   // Effect to handle authentication flow
   useEffect(() => {
