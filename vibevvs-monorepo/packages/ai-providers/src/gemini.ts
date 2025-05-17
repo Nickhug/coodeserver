@@ -341,6 +341,9 @@ export async function sendStreamingRequest(
   params: GeminiRequestParams,
   handlers: GeminiStreamHandler
 ): Promise<void> {
+  // Declare completeText at the function scope so it's available in the catch block
+  let completeText = '';
+  
   try {
     const { apiKey, model, prompt, temperature = 0.7, maxTokens, systemMessage, tools, chatMode } = params;
     const { onStart, onChunk, onError, onComplete } = handlers;
@@ -426,69 +429,179 @@ export async function sendStreamingRequest(
     
     // Process the SSE stream
     const reader = response.body.getReader();
-    let completeText = '';
     let rawResponse = null; // Store the raw response
     const decoder = new TextDecoder();
+    let partialLine = ''; // Store partial line if chunk is split mid-JSON
+    let partialLineTimeout: NodeJS.Timeout | null = null;
+    const MAX_PARTIAL_LINE_WAIT = 5000; // Max time to wait for a partial line completion (ms)
+    
+    // Helper function to handle partial line timeouts
+    const setupPartialLineTimeout = () => {
+      // Clear any existing timeout
+      if (partialLineTimeout) {
+        clearTimeout(partialLineTimeout);
+      }
+      
+      // Set new timeout
+      partialLineTimeout = setTimeout(() => {
+        if (partialLine) {
+          logger.warn(`Partial line timed out after ${MAX_PARTIAL_LINE_WAIT}ms, discarding: ${partialLine.substring(0, 50)}...`);
+          partialLine = ''; // Discard the partial line if timeout
+        }
+      }, MAX_PARTIAL_LINE_WAIT);
+    };
     
     let chunk;
     while (!(chunk = await reader.read()).done) {
-      const rawText = decoder.decode(chunk.value, { stream: true });
-      
-      // Log raw SSE data for debugging
-      logger.debug(`Raw SSE chunk received (${rawText.length} bytes)`);
-      
-      // Parse SSE format (data: {json})
-      const lines = rawText.split('\n').filter(line => line.trim() !== '');
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            // Skip "[DONE]" message at the end
-            if (line === 'data: [DONE]') continue;
-            
-            const jsonText = line.slice(6); // Remove "data: " prefix
-            const data = JSON.parse(jsonText);
-            
-            // Log the full raw chunk data for debugging
-            logger.info(`GEMINI RAW STREAM CHUNK: ${JSON.stringify(data, null, 2)}`);
-            
-            // Store the raw response data (will use the last chunk)
-            rawResponse = data;
-            
-            // Extract text content
-            let chunkText = '';
-            if (data.candidates && 
-                data.candidates[0]?.content?.parts && 
-                data.candidates[0].content.parts.length > 0) {
-              
-              // Extract text content only
-              for (const part of data.candidates[0].content.parts) {
-                if (part.text) {
-                  chunkText += part.text;
-                }
+      try {
+        const rawText = decoder.decode(chunk.value, { stream: true });
+        
+        // Log raw SSE data for debugging
+        logger.debug(`Raw SSE chunk received (${rawText.length} bytes)`);
+        
+        // Combine with any previous partial line
+        const textToParse = partialLine + rawText;
+        partialLine = ''; // Reset for this iteration
+        
+        // Clear timeout since we're processing the partial line
+        if (partialLineTimeout) {
+          clearTimeout(partialLineTimeout);
+          partialLineTimeout = null;
+        }
+        
+        // Parse SSE format (data: {json})
+        const lines = textToParse.split('\n');
+        let lineIdx = 0;
+        
+        while (lineIdx < lines.length) {
+          const line = lines[lineIdx].trim();
+          lineIdx++;
+          
+          if (line === '') continue;
+          
+          if (line.startsWith('data: ')) {
+            try {
+              // Skip "[DONE]" message at the end
+              if (line === 'data: [DONE]') {
+                logger.info('Received [DONE] message from SSE stream');
+                continue;
               }
               
-              // Call onChunk handler with small delay
-              if (chunkText) {
-                // Add small delay when streaming from Gemini 2.5 models
-                if (model.includes('gemini-2.5')) {
-                  await new Promise(resolve => setTimeout(resolve, 5));
-                }
+              const jsonText = line.slice(6); // Remove "data: " prefix
+              
+              // Try to parse the JSON
+              try {
+                const data = JSON.parse(jsonText);
                 
-                handlers.onChunk(chunkText);
-                completeText += chunkText;
+                // Log the full raw chunk data for debugging
+                logger.info(`GEMINI RAW STREAM CHUNK: ${JSON.stringify(data, null, 2)}`);
+                
+                // Store the raw response data (will use the last chunk)
+                rawResponse = data;
+                
+                // Extract text content
+                let chunkText = '';
+                if (data.candidates && 
+                    data.candidates[0]?.content?.parts && 
+                    data.candidates[0].content.parts.length > 0) {
+                  
+                  // Extract text content only
+                  for (const part of data.candidates[0].content.parts) {
+                    if (part.text) {
+                      chunkText += part.text;
+                    }
+                  }
+                  
+                  // Call onChunk handler with small delay
+                  if (chunkText) {
+                    // Add small delay when streaming from Gemini 2.5 models
+                    if (model.includes('gemini-2.5')) {
+                      await new Promise(resolve => setTimeout(resolve, 5));
+                    }
+                    
+                    handlers.onChunk(chunkText);
+                    completeText += chunkText;
+                  }
+                }
+              } catch (jsonError: any) {
+                // This could be an incomplete JSON chunk
+                // Store it and try to combine with the next chunk
+                logger.warn(`Incomplete JSON chunk detected: ${jsonText.substring(0, 50)}...`);
+                partialLine = line;
+                
+                // Set up timeout to prevent hanging if we don't get the rest of the JSON
+                setupPartialLineTimeout();
+                
+                // Don't break the stream for JSON parse errors
+                if (jsonError.message === 'Unexpected end of JSON input') {
+                  logger.warn('JSON parsing error due to incomplete chunk, will attempt to recover in next chunk');
+                } else {
+                  logger.error(`Error parsing JSON in SSE chunk: ${jsonError}`);
+                }
               }
+            } catch (error) {
+              logger.error(`Error processing SSE data line: ${error}`);
+              // Don't throw errors here to keep the stream going
             }
-          } catch (error) {
-            logger.error('Error parsing SSE chunk:', error);
-            // Don't throw errors here to keep the stream going
+          } else if (line.startsWith('event:')) {
+            // Handle SSE events according to spec (https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)
+            logger.info(`Received SSE event: ${line.slice(6).trim()}`);
+          } else if (line.startsWith('id:')) {
+            // Handle SSE event ID
+            logger.info(`Received SSE ID: ${line.slice(3).trim()}`);
+          } else if (line.startsWith(':')) {
+            // This is a comment, typically used as a keep-alive
+            logger.debug(`Received SSE comment: ${line.slice(1).trim()}`);
+          } else {
+            // This might be a continuation of a previous line that was split
+            // Add it to partialLine if it looks like it could be part of JSON
+            if (line.includes('{') || line.includes('}') || line.includes('"')) {
+              partialLine += line;
+              // Set up timeout when we detect a partial line
+              setupPartialLineTimeout();
+            }
           }
         }
+      } catch (streamError) {
+        // Catch any errors in the outer stream processing
+        logger.error(`Error processing stream chunk: ${streamError}`);
+        // Continue processing to maintain stream resilience, but don't break the flow
+      }
+    }
+    
+    // Clean up any remaining timeout
+    if (partialLineTimeout) {
+      clearTimeout(partialLineTimeout);
+      partialLineTimeout = null;
+    }
+    
+    // If we still have a partial line at the end, try to use it
+    if (partialLine) {
+      logger.warn(`Stream ended with remaining partial line: ${partialLine.substring(0, 50)}...`);
+      try {
+        // Try to extract any useful text from the partial line
+        const textMatch = partialLine.match(/"text":\s*"([^"]*)"/);
+        if (textMatch && textMatch[1]) {
+          const extractedText = textMatch[1];
+          logger.info(`Extracted text from partial line: ${extractedText}`);
+          handlers.onChunk(extractedText);
+          completeText += extractedText;
+        }
+      } catch (e) {
+        logger.error(`Failed to extract text from partial line: ${e}`);
       }
     }
     
     // Ensure we wait a moment before sending the completion to avoid race conditions
     if (model.includes('gemini-2.5')) {
       await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    
+    // Remove the synthetic response generation and just log if no response was received
+    if (!rawResponse && completeText) {
+      // Instead of creating a synthetic response, just log the issue
+      logger.warn(`Stream completed without a valid raw response despite receiving text content. Length: ${completeText.length} chars`);
+      // We will continue with whatever partial responses we received
     }
     
     // Estimate token usage
@@ -519,7 +632,7 @@ export async function sendStreamingRequest(
       creditsUsed: totalTokens / 1000, // Assuming 1000 tokens = 1 credit
       success: true,
       generatedText: completeText,
-      rawResponse: rawResponse // Include the raw response
+      rawResponse: rawResponse // Include the raw response as received, without modification
     };
 
     // Check for toolCall but don't transform it
@@ -635,8 +748,25 @@ export async function sendStreamingRequest(
     // Call onComplete handler
     handlers.onComplete(responseObj as LLMResponse);
   } catch (error) {
-    logger.error('Error in Gemini stream:', error);
-    handlers.onError(error instanceof Error ? error : new Error(String(error)));
+    logger.error(`Error in Gemini stream: ${error instanceof Error ? error.message : String(error)}`);
+    
+    // Even when there's an error in the stream overall, we may have received some content
+    // If we have any content, we should still deliver it to the client
+    if (completeText) {
+      logger.info(`Despite stream error, returning collected text of length ${completeText.length}`);
+      // Create a minimal response with the text we did receive
+      const errorResponse: LLMResponse = {
+        text: completeText,
+        tokensUsed: Math.ceil(completeText.length / 4), // Rough estimate
+        success: false, // Mark as not fully successful
+        error: error instanceof Error ? error.message : String(error),
+        generatedText: completeText
+      };
+      handlers.onComplete(errorResponse);
+    } else {
+      // If we have no content at all, pass the error to the error handler
+      handlers.onError(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 }
 
