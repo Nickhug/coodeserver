@@ -40,6 +40,7 @@ export interface SendGeminiRequestParams {
   maxTokens?: number;
   files?: { mimeType: string; data: string }[];
   tools?: { name: string; description: string; parameters: Record<string, { description: string }> }[] | null;
+  chatMode?: 'normal' | 'gather' | 'agent';
   onStream?: ((text: string, toolCallUpdate?: { name: string; parameters: Record<string, unknown>; id?: string }) => void) | null;
 }
 
@@ -114,6 +115,7 @@ interface GeminiRequestParams {
   maxTokens?: number;
   systemMessage?: string;
   tools?: any[];
+  chatMode?: 'normal' | 'gather' | 'agent';
 }
 
 interface GeminiStreamHandler {
@@ -128,7 +130,7 @@ interface GeminiStreamHandler {
  */
 export async function sendRequest(params: GeminiRequestParams): Promise<LLMResponse> {
   try {
-    const { apiKey, model, prompt, temperature = 0.7, maxTokens, systemMessage, tools } = params;
+    const { apiKey, model, prompt, temperature = 0.7, maxTokens, systemMessage, tools, chatMode } = params;
     
     logger.info(`Starting Gemini request with model: ${model}`);
     
@@ -149,7 +151,15 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
     // Add system message if present
     if (systemMessage) {
       // For Gemini API, we prefix system messages to user messages
-      requestBody.contents[0].parts[0].text = `${systemMessage}\n\n${prompt}`;
+      let enhancedSystemMessage = systemMessage;
+      
+      // If we have tools and a chatMode, explicitly tell the model what mode it's in
+      if (tools && tools.length > 0 && chatMode) {
+        logger.info(`Adding chatMode (${chatMode}) context to system message`);
+        enhancedSystemMessage = `${systemMessage}\n\nIMPORTANT: You are currently in ${chatMode} mode and have access to the tools provided. In agent mode, you SHOULD use all available tools including file creation and editing tools.`;
+      }
+      
+      requestBody.contents[0].parts[0].text = `${enhancedSystemMessage}\n\n${prompt}`;
       logger.info(`Added system message to request, total prompt length: ${requestBody.contents[0].parts[0].text.length}`);
     }
     
@@ -167,6 +177,11 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
       }));
       
       logger.info(`Added ${tools.length} tools to request: ${tools.map(t => t.name).join(', ')}`);
+      
+      // If we have a chatMode, log it
+      if (chatMode) {
+        logger.info(`Request includes chatMode: ${chatMode}`);
+      }
     }
     
     // Direct API call to v1beta endpoint with API key in URL
@@ -327,16 +342,17 @@ export async function sendStreamingRequest(
   handlers: GeminiStreamHandler
 ): Promise<void> {
   try {
-    const { apiKey, model, prompt, temperature = 0.7, maxTokens, systemMessage, tools } = params;
+    const { apiKey, model, prompt, temperature = 0.7, maxTokens, systemMessage, tools, chatMode } = params;
+    const { onStart, onChunk, onError, onComplete } = handlers;
     
-    logger.info(`Starting Gemini stream with model: ${model}`);
+    logger.info(`Starting streaming Gemini request with model: ${model}`);
     
     // Call onStart handler
-    if (handlers.onStart) {
-      handlers.onStart();
+    if (onStart) {
+      onStart();
     }
     
-    // Format prompt for direct API call
+    // Format request body
     let requestBody: any = {
       contents: [
         {
@@ -353,8 +369,16 @@ export async function sendStreamingRequest(
     // Add system message if present
     if (systemMessage) {
       // For Gemini API, we prefix system messages to user messages
-      requestBody.contents[0].parts[0].text = `${systemMessage}\n\n${prompt}`;
-      logger.info(`Added system message to stream request, total prompt length: ${requestBody.contents[0].parts[0].text.length}`);
+      let enhancedSystemMessage = systemMessage;
+      
+      // If we have tools and a chatMode, explicitly tell the model what mode it's in
+      if (tools && tools.length > 0 && chatMode) {
+        logger.info(`Adding chatMode (${chatMode}) context to streaming system message`);
+        enhancedSystemMessage = `${systemMessage}\n\nIMPORTANT: You are currently in ${chatMode} mode and have access to the tools provided. In agent mode, you SHOULD use all available tools including file creation and editing tools.`;
+      }
+      
+      requestBody.contents[0].parts[0].text = `${enhancedSystemMessage}\n\n${prompt}`;
+      logger.info(`Added system message to streaming request, total prompt length: ${requestBody.contents[0].parts[0].text.length}`);
     }
     
     // Add tools if present
@@ -370,7 +394,12 @@ export async function sendStreamingRequest(
         }]
       }));
       
-      logger.info(`Added ${tools.length} tools to stream request: ${tools.map(t => t.name).join(', ')}`);
+      logger.info(`Added ${tools.length} tools to streaming request: ${tools.map(t => t.name).join(', ')}`);
+      
+      // If we have a chatMode, log it
+      if (chatMode) {
+        logger.info(`Streaming request includes chatMode: ${chatMode}`);
+      }
     }
     
     // Direct API call to v1beta endpoint with API key in URL
@@ -643,12 +672,13 @@ export async function streamGeminiMessage(params: {
   maxTokens?: number;
   systemMessage?: string;
   tools?: any[];
+  chatMode?: 'normal' | 'gather' | 'agent';
   onStart?: () => void;
   onChunk: (chunk: string) => void;
   onError: (error: Error) => void;
   onComplete: (response: LLMResponse) => void;
 }): Promise<void> {
-  const { apiKey, model, prompt, temperature, maxTokens, systemMessage, tools, onStart, onChunk, onError, onComplete } = params;
+  const { apiKey, model, prompt, temperature, maxTokens, systemMessage, tools, chatMode, onStart, onChunk, onError, onComplete } = params;
   
   // Log if tools and system message are present
   if (systemMessage) {
@@ -667,7 +697,8 @@ export async function streamGeminiMessage(params: {
       temperature,
       maxTokens,
       systemMessage,
-      tools
+      tools,
+      chatMode
     },
     {
       onStart,
@@ -690,8 +721,9 @@ export async function sendGeminiMessage(params: {
   maxTokens?: number;
   systemMessage?: string;
   tools?: any[];
+  chatMode?: 'normal' | 'gather' | 'agent';
 }): Promise<LLMResponse> {
-  const { apiKey, model, prompt, temperature, maxTokens, systemMessage, tools } = params;
+  const { apiKey, model, prompt, temperature, maxTokens, systemMessage, tools, chatMode } = params;
   
   // Log if tools and system message are present
   if (systemMessage) {
@@ -709,7 +741,8 @@ export async function sendGeminiMessage(params: {
     temperature,
     maxTokens,
     systemMessage,
-    tools
+    tools,
+    chatMode
   });
 }
 

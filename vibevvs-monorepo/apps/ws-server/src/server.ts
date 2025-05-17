@@ -524,7 +524,7 @@ function sendToClient(ws: WebSocketWithData, message: ServerMessage): void {
           }, 5);
         } else {
           ws.send(messageText);
-          logger.debug(`WS SENT [${connectionId}][${requestId}] Non-Gemini chunk sent immediately`);
+          logger.debug(`WS SENT [${connectionId}] ${messageType} sent, length: ${messageText.length}`);
         }
       } else {
         // For non-stream chunks, send immediately
@@ -1187,6 +1187,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             maxTokens: maxTokens || 1024,
             systemMessage,
             tools,
+            chatMode: message.payload.chatMode,
             onStart: () => {
               streamStats.startTime = Date.now();
               logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Stream started for model ${model}`);
@@ -1395,7 +1396,8 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
           temperature: temperature || 0.7,
           maxTokens: maxTokens || 1024,
           systemMessage,
-          tools
+          tools,
+          chatMode: message.payload.chatMode,
         });
         
         // Log tool call information if present
@@ -1657,6 +1659,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           maxTokens: maxTokens || 1024,
           systemMessage,
           tools,
+          chatMode: message.payload.chatMode,
           onStart: () => {
             streamStats.startTime = Date.now();
             logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Continued stream started for model ${model}`);
@@ -1872,7 +1875,8 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           temperature: temperature || 0.7,
           maxTokens: maxTokens || 1024,
           systemMessage,
-          tools
+          tools,
+          chatMode: message.payload.chatMode,
         });
         
         // If this is a tool call, update the conversation context and keep it active
