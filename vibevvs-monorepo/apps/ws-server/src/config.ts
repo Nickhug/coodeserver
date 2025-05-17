@@ -49,6 +49,11 @@ export function validateConfig(): { isValid: boolean; errors: string[] } {
   if (!config.host) {
     errors.push('Host cannot be empty');
   }
+  
+  // Add a warning if the host is set to IPv4 only (0.0.0.0) which won't work with Railway private networking
+  if (config.host === '0.0.0.0') {
+    errors.push('WARNING: Host set to 0.0.0.0 (IPv4 only). For Railway private networking to work, host should be "::" (dual stack IPv4/IPv6)');
+  }
 
   if (!config.wsPath) {
     errors.push('WebSocket path cannot be empty');

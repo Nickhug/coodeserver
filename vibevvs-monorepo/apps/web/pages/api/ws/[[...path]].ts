@@ -35,11 +35,6 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     env: process.env.NODE_ENV,
   });
 
-  // The key fix: DON'T check for upgrade header yet - Railway may be handling this differently
-  // Instead, always try to proxy the request and let http-proxy-middleware handle the upgrade
-  // This is important because the upgrade header might be added by Railway's infrastructure
-  // or might be managed by the WebSocket client in a way we don't expect
-  
   // Test connectivity to the internal WebSocket host
   // This is for diagnostic purposes only
   const testSocket = new net.Socket();
@@ -82,13 +77,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     timeout: 10000,
     // Log proxy activity for debugging
     onProxyReq: (proxyReq: any, req: any) => {
-      // If original request is missing upgrade header but we know this is a WebSocket endpoint,
-      // we can forcibly add it to ensure proper WebSocket upgrade
-      if (!req.headers['upgrade'] && req.url.startsWith('/api/ws')) {
-        logger.info(`[WS_PROXY] Adding missing upgrade header for WebSocket request`);
-        proxyReq.setHeader('Upgrade', 'websocket');
-        proxyReq.setHeader('Connection', 'Upgrade');
-      }
+      // Always add WebSocket upgrade headers regardless of original request
+      // This is critical for Railway private network proxying to work correctly
+      proxyReq.setHeader('Upgrade', 'websocket');
+      proxyReq.setHeader('Connection', 'Upgrade');
       
       logger.info(`[WS_PROXY] Proxying request to: ${WS_INTERNAL_HOST}:${WS_INTERNAL_PORT}${WS_INTERNAL_PATH}`, {
         method: req.method,
@@ -115,6 +107,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       }
     },
     onProxyReqWs: (proxyReq: any, req: any, socket: any) => {
+      // Ensure WebSocket upgrade headers are present for the upgrade request
+      proxyReq.setHeader('Upgrade', 'websocket');
+      proxyReq.setHeader('Connection', 'Upgrade');
+      
       logger.info(`[WS_PROXY] WebSocket upgrade request proxied to: ${WS_INTERNAL_HOST}:${WS_INTERNAL_PORT}${WS_INTERNAL_PATH}`, {
         headers: proxyReq.getHeaders(),
       });
