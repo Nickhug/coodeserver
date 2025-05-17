@@ -1178,6 +1178,12 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             lastChunkTime: Date.now()
           };
           
+          // Properly initialize chatMode as a valid string value
+          const userChatMode = message.payload.chatMode;
+          const chatMode: 'normal' | 'gather' | 'agent' = 
+            userChatMode === 'gather' ? 'gather' :
+            userChatMode === 'agent' ? 'agent' : 'normal';
+          
           // Use Gemini's streaming API with proper handlers
           await gemini.streamGeminiMessage({
             apiKey,
@@ -1187,7 +1193,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             maxTokens: maxTokens || 1024,
             systemMessage,
             tools,
-            chatMode: message.payload.chatMode,
+            chatMode,
             onStart: () => {
               streamStats.startTime = Date.now();
               logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Stream started for model ${model}`);
@@ -1224,21 +1230,40 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   `Length: ${chunk.length}, preview: "${chunk.substring(0, 50)}..."`
                 );
                 
-                // Store the chunk for processing at completion, but don't send it to the client
-                // We'll let the onComplete handler deal with the function call properly
-                return;
-              }
-              
-              // Send regular text chunks to the client as they arrive
-              sendToClient(ws, {
-                type: MessageType.PROVIDER_STREAM_CHUNK,
-                payload: {
-                  chunk,
-                  requestId: safeRequestId,
-                  provider,
-                  model
+                // Instead of skipping this chunk entirely, let's still send the text content
+                // but mark that a tool call was detected in the stream
+                const cleanedChunk = chunk
+                  .replace(/<function_calls>[\s\S]*?<\/antml:function_calls>/g, '')
+                  .replace(/```(json)?\s*\{\s*"name"\s*:[\s\S]*?\}\s*```/g, '')
+                  .replace(/\{\s*"functionCall"\s*:[\s\S]*?\}/g, '');
+                
+                if (cleanedChunk.trim()) {
+                  // If there's still content after removing function call syntax, send it
+                  sendToClient(ws, {
+                    type: MessageType.PROVIDER_STREAM_CHUNK,
+                    payload: {
+                      chunk: cleanedChunk,
+                      requestId: safeRequestId,
+                      provider,
+                      model
+                    }
+                  });
                 }
-              });
+                
+                // Don't return early - continue processing stream
+                // The function call will be properly extracted in onComplete
+              } else {
+                // Send regular text chunks to the client as they arrive
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_STREAM_CHUNK,
+                  payload: {
+                    chunk,
+                    requestId: safeRequestId,
+                    provider,
+                    model
+                  }
+                });
+              }
             },
             onError: (error: Error) => {
               logger.error(
@@ -1302,6 +1327,9 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   `parameters: ${JSON.stringify(response.toolCall.parameters)}`
                 );
                 
+                // Always ensure waitingForToolCall is true when a tool call is detected
+                response.waitingForToolCall = true;
+                
                 // Store the conversation context
                 activeTurnContexts.set(safeRequestId, {
                   provider,
@@ -1312,10 +1340,10 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   systemMessage,
                   tools,
                   stream: true,
-                  lastPrompt: prompt,
+                  lastPrompt: String(prompt),
                   messages: [{
                     role: 'user',
-                    content: prompt
+                    content: String(prompt)
                   }, {
                     role: 'model',
                     content: response.text || '',
@@ -1342,8 +1370,8 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                     requestId: safeRequestId,
                     provider,
                     model,
-                    toolCall: response.toolCall, // Pasts through without transformation
-                    waitingForToolCall: response.waitingForToolCall
+                    toolCall: response.toolCall, // Pass through without transformation
+                    waitingForToolCall: true // Always set to true when tool call is present
                   }
                 });
               } else {
@@ -1418,10 +1446,10 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             systemMessage,
             tools,
             stream: false,
-            lastPrompt: prompt,
+            lastPrompt: String(prompt),
             messages: [{
               role: 'user',
-              content: prompt
+              content: String(prompt)
             }, {
               role: 'model',
               content: response.text || '',
@@ -1441,7 +1469,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               tokensUsed: response.tokensUsed,
               success: response.success,
               requestId: safeRequestId,
-              toolCall: response.toolCall, // Pass through without transformation
+              toolCall: response.toolCall,
               waitingForToolCall: response.waitingForToolCall
             }
           });
@@ -1460,14 +1488,14 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               requestId: safeRequestId
             }
           });
+          
+          // Clean up the context since we're done
+          activeTurnContexts.delete(safeRequestId);
         }
         
         // Log usage
         if (userId && response.tokensUsed) {
-          // Calculate credits used based on token usage
           const creditsUsed = response.creditsUsed || (response.tokensUsed / 1000);
-          
-          // Log the usage
           logUsage(userId, provider, model, response.tokensUsed);
         }
       }
@@ -1619,14 +1647,25 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
       { error: errorDetails || 'Unknown error during tool execution' } : 
       result;
     
+    // Create a proper string representation of the result for the messages array
+    const toolResponseString = typeof toolResponseContent === 'string' ? 
+      toolResponseContent : 
+      JSON.stringify(toolResponseContent);
+    
     messages.push({
       role: 'tool',
       toolCallId: toolCallId,
-      content: JSON.stringify(toolResponseContent)
+      content: toolResponseString
     });
     
     // Now send the updated conversation back to Gemini
     logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Continuing conversation with tool result for ${toolName}`);
+    
+    // Properly initialize chatMode as a valid string value
+    const userChatMode = message.payload.chatMode;
+    const requestChatMode: 'normal' | 'gather' | 'agent' = 
+      userChatMode === 'gather' ? 'gather' :
+      userChatMode === 'agent' ? 'agent' : 'normal';
     
     // Process based on whether this is a streaming request
     if (stream) {
@@ -1659,7 +1698,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           maxTokens: maxTokens || 1024,
           systemMessage,
           tools,
-          chatMode: message.payload.chatMode,
+          chatMode: requestChatMode,
           onStart: () => {
             streamStats.startTime = Date.now();
             logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Continued stream started for model ${model}`);
@@ -1696,21 +1735,40 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
                 `Length: ${chunk.length}, preview: "${chunk.substring(0, 50)}..."`
               );
               
-              // Store the chunk for processing at completion, but don't send it to the client
-              // We'll let the onComplete handler deal with the function call properly
-              return;
-            }
-            
-            // Send regular text chunks to the client as they arrive
-            sendToClient(ws, {
-              type: MessageType.PROVIDER_STREAM_CHUNK,
-              payload: {
-                chunk,
-                requestId: safeRequestId,
-                provider,
-                model
+              // Instead of skipping this chunk entirely, let's still send the text content
+              // but mark that a tool call was detected in the stream
+              const cleanedChunk = chunk
+                .replace(/<function_calls>[\s\S]*?<\/antml:function_calls>/g, '')
+                .replace(/```(json)?\s*\{\s*"name"\s*:[\s\S]*?\}\s*```/g, '')
+                .replace(/\{\s*"functionCall"\s*:[\s\S]*?\}/g, '');
+              
+              if (cleanedChunk.trim()) {
+                // If there's still content after removing function call syntax, send it
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_STREAM_CHUNK,
+                  payload: {
+                    chunk: cleanedChunk,
+                    requestId: safeRequestId,
+                    provider,
+                    model
+                  }
+                });
               }
-            });
+              
+              // Don't return early - continue processing stream
+              // The function call will be properly extracted in onComplete
+            } else {
+              // Send regular text chunks to the client as they arrive
+              sendToClient(ws, {
+                type: MessageType.PROVIDER_STREAM_CHUNK,
+                payload: {
+                  chunk,
+                  requestId: safeRequestId,
+                  provider,
+                  model
+                }
+              });
+            }
           },
           onError: (error: Error) => {
             logger.error(
@@ -1777,19 +1835,24 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
                 `parameters: ${JSON.stringify(response.toolCall.parameters)}`
               );
               
-              // Store conversation context if waiting for tool call
-              if (response.waitingForToolCall) {
-                // Parse the original prompt as messages if it's a JSON string
-                let initialMessages = [];
-                try {
-                  initialMessages = JSON.parse(lastPrompt);
-                } catch (e) {
-                  // If not JSON, create a simple user message
-                  initialMessages = [{ role: 'user', content: lastPrompt }];
-                }
-                
-                // Add model's response with tool call to messages
-                initialMessages.push({
+              // Always ensure waitingForToolCall is true when a tool call is detected
+              response.waitingForToolCall = true;
+              
+              // Store the conversation context
+              activeTurnContexts.set(safeRequestId, {
+                provider,
+                model,
+                apiKey,
+                temperature,
+                maxTokens,
+                systemMessage,
+                tools,
+                stream: true,
+                lastPrompt: String(prompt),
+                messages: [{
+                  role: 'user',
+                  content: String(prompt)
+                }, {
                   role: 'model',
                   content: response.text || '',
                   toolCalls: [{
@@ -1797,53 +1860,45 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
                     name: response.toolCall.name,
                     parameters: response.toolCall.parameters
                   }]
-                });
-                
-                // Store the conversation context
-                conversationContext.messages = initialMessages;
-                activeTurnContexts.set(safeRequestId, conversationContext);
-                
-                // Send stream end with tool call
-                sendToClient(ws, {
-                  type: MessageType.PROVIDER_STREAM_END,
-                  payload: {
-                    tokensUsed: response.tokensUsed,
-                    success: response.success,
-                    requestId: safeRequestId,
-                    provider,
-                    model,
-                    toolCall: response.toolCall,
-                    waitingForToolCall: true
-                  }
-                });
-              } else {
-                // No more tool calls, finalize the conversation
-                logger.info(
-                  `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-                  `No further tool calls detected, finishing conversation`
-                );
-                
-                // Finalize the stream without tool call
-                sendToClient(ws, {
-                  type: MessageType.PROVIDER_STREAM_END,
-                  payload: {
-                    tokensUsed: response.tokensUsed,
-                    success: response.success,
-                    requestId: safeRequestId,
-                    provider,
-                    model
-                  }
-                });
-                
-                // Clean up the context since we're done
-                activeTurnContexts.delete(safeRequestId);
-              }
+                }],
+                createdAt: Date.now()
+              });
               
-              // Log usage if available
-              if (userId && response.tokensUsed) {
-                const creditsUsed = response.creditsUsed || (response.tokensUsed / 1000);
-                logUsage(userId, provider, model, response.tokensUsed);
-              }
+              logger.info(
+                `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                `Stored conversation context for future tool call results`
+              );
+              
+              // Finalize the stream, directly forwarding the toolCall object
+              sendToClient(ws, {
+                type: MessageType.PROVIDER_STREAM_END,
+                payload: {
+                  tokensUsed: response.tokensUsed,
+                  success: response.success,
+                  requestId: safeRequestId,
+                  provider,
+                  model,
+                  toolCall: response.toolCall, // Pass through without transformation
+                  waitingForToolCall: true // Always set to true when tool call is present
+                }
+              });
+            } else {
+              logger.info(
+                `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                `No tool call detected in response`
+              );
+              
+              // Finalize the stream without tool call
+              sendToClient(ws, {
+                type: MessageType.PROVIDER_STREAM_END,
+                payload: {
+                  tokensUsed: response.tokensUsed,
+                  success: response.success,
+                  requestId: safeRequestId,
+                  provider,
+                  model
+                }
+              });
             }
           }
         });
@@ -1876,7 +1931,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           maxTokens: maxTokens || 1024,
           systemMessage,
           tools,
-          chatMode: message.payload.chatMode,
+          chatMode: requestChatMode,
         });
         
         // If this is a tool call, update the conversation context and keep it active
@@ -1886,6 +1941,9 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
             `Another tool call detected in non-streaming response: ${response.toolCall.name}, ` +
             `parameters: ${JSON.stringify(response.toolCall.parameters)}`
           );
+          
+          // Always ensure waitingForToolCall is true when a tool call is detected
+          response.waitingForToolCall = true;
           
           // Add model's response to messages
           messages.push({
