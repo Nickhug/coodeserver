@@ -35,14 +35,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     env: process.env.NODE_ENV,
   });
 
-  // Check if this is a WebSocket upgrade request
-  const isUpgradeRequest = req.headers.upgrade?.toLowerCase() === 'websocket';
-  logger.info(`[WS_PROXY] Is WebSocket upgrade request: ${isUpgradeRequest}`, {
-    upgrade: req.headers.upgrade,
-  });
-
+  // The key fix: DON'T check for upgrade header yet - Railway may be handling this differently
+  // Instead, always try to proxy the request and let http-proxy-middleware handle the upgrade
+  // This is important because the upgrade header might be added by Railway's infrastructure
+  // or might be managed by the WebSocket client in a way we don't expect
+  
   // Test connectivity to the internal WebSocket host
-  // This can help determine if the issue is with network connectivity
+  // This is for diagnostic purposes only
   const testSocket = new net.Socket();
   const tcpConnectTimeout = setTimeout(() => {
     logger.error(`[WS_PROXY] TCP connection timeout to ${WS_INTERNAL_HOST}:${WS_INTERNAL_PORT}`);
@@ -79,10 +78,18 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     pathRewrite: {
       '^/api/ws': WS_INTERNAL_PATH,
     },
-    // Add connection timeout (5 seconds)
-    timeout: 5000,
+    // Add connection timeout (10 seconds - increased from 5)
+    timeout: 10000,
     // Log proxy activity for debugging
     onProxyReq: (proxyReq: any, req: any) => {
+      // If original request is missing upgrade header but we know this is a WebSocket endpoint,
+      // we can forcibly add it to ensure proper WebSocket upgrade
+      if (!req.headers['upgrade'] && req.url.startsWith('/api/ws')) {
+        logger.info(`[WS_PROXY] Adding missing upgrade header for WebSocket request`);
+        proxyReq.setHeader('Upgrade', 'websocket');
+        proxyReq.setHeader('Connection', 'Upgrade');
+      }
+      
       logger.info(`[WS_PROXY] Proxying request to: ${WS_INTERNAL_HOST}:${WS_INTERNAL_PORT}${WS_INTERNAL_PATH}`, {
         method: req.method,
         url: req.url,
