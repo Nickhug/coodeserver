@@ -10,25 +10,29 @@ export const config = {
   },
 };
 
-// Setting up the proxy middleware
-const wsProxy = createProxyMiddleware({
-  target: process.env.NEXT_PUBLIC_WS_SERVER_URL || 'wss://coodeai.com/api/ws',
-  ws: true, // Enable WebSocket proxying
-  changeOrigin: true,
-  pathRewrite: {
-    '^/api/ws': '', // No need to append /ws as it's already in the target URL
-  },
-});
+// The internal WebSocket server URL - this should be the Railway internal service name
+const INTERNAL_WS_SERVER = 'happy-cooperation.railway.internal';
 
 // This handler will proxy both regular HTTP requests and WebSocket upgrade requests
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   // Log the attempt to connect
-  logger.info(`WebSocket proxy request received: ${req.url}`);
+  logger.info(`WebSocket proxy request received: ${req.url} to ${INTERNAL_WS_SERVER}`);
+  
+  // Create proxy for each request
+  const proxy = createProxyMiddleware({
+    target: `http://${INTERNAL_WS_SERVER}`,
+    ws: true, // Enable WebSocket proxying
+    changeOrigin: true,
+    secure: false, // Don't verify SSL certificates for internal Railway services
+    pathRewrite: {
+      '^/api/ws': '/ws', // Rewrite to the correct path on the internal service
+    },
+  });
   
   return new Promise<void>((resolve, reject) => {
     try {
-      // Forward the request to the proxy middleware
-      wsProxy(req, res, (result: unknown) => {
+      // @ts-ignore - Type mismatch between Next.js and http-proxy-middleware
+      proxy(req, res, (result: unknown) => {
         if (result instanceof Error) {
           logger.error(`WebSocket proxy error: ${result.message}`);
           
