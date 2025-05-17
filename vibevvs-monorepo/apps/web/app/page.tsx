@@ -6,8 +6,8 @@ import { useSearchParams } from "next/navigation";
 
 export default function Home() {
   const searchParams = useSearchParams();
-  const authToken = searchParams.get('auth_token');
-  const authSuccess = searchParams.get('auth') === 'success';
+  const authToken = searchParams?.get('auth_token') ?? null;
+  const authSuccess = searchParams?.get('auth') === 'success';
   const [tokenProcessed, setTokenProcessed] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -26,7 +26,7 @@ export default function Home() {
   }, [authToken, authSuccess, tokenProcessed]);
 
   // Get error message from URL if present
-  const errorParam = searchParams.get('error');
+  const errorParam = searchParams?.get('error') ?? null;
   const errorMessage = errorParam ? 
     errorParam === 'auth_failed' ? 'Authentication failed. Please try again.' :
     errorParam === 'no_email' ? 'No email address found. Please ensure your account has an email.' : 
