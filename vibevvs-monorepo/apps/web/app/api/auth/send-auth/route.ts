@@ -8,7 +8,7 @@ import { generateToken } from "@repo/auth";
 import logger from "@repo/logger";
 
 // Get the WebSocket server base URL from environment variables or use a default
-const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_SERVER_URL || 'https://coode-ws-server.up.railway.app';
+const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_SERVER_URL || 'wss://coodeai.com/api/ws';
 
 /**
  * API route to send authentication data to a WebSocket connection

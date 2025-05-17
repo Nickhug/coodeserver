@@ -29,7 +29,7 @@ services:
         GEMINI_API_KEY: ${GEMINI_API_KEY}
         XAI_API_KEY: ${XAI_API_KEY}
         NEXT_PUBLIC_WEBSOCKET_URL: ${NEXT_PUBLIC_WEBSOCKET_URL}
-        NEXT_PUBLIC_WS_SERVER_URL: http://ws-server:8080 # Internal Docker network URL
+        NEXT_PUBLIC_WS_SERVER_URL: wss://coodeai.com/api/ws # Public WebSocket URL
     ports:
       - "${PORT:-3000}:3000"
     depends_on:

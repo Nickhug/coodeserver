@@ -1058,17 +1058,10 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
   const userId = ws.connectionData.userId;
   
   // Log the full request details for debugging
-  logger.info(`FULL REQUEST [${safeRequestId}]: ${JSON.stringify({
-    provider,
-    model,
-    promptLength: prompt?.length,
-    temperature,
-    maxTokens,
-    systemMessageLength: systemMessage?.length,
-    tools: tools?.map((t: any) => t.name || 'unnamed tool'),
-    stream,
-    userId: userId || 'anonymous'
-  }, null, 2)}`);
+  logger.info(`Provider Request [${safeRequestId}]: ` +
+    `Provider: ${provider}, Model: ${model}, User: ${userId || 'anonymous'}, Stream: ${stream}, ` +
+    `Prompt Length: ${prompt?.length || 0}, SysMsg Length: ${systemMessage?.length || 0}, ` +
+    `Tools: ${tools ? tools.length : 0} (${tools?.map((t: any) => t.name || 'unnamed').join(', ') || 'none'})`);
   
   if (!userId && config.authEnabled) {
     logger.error(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] No user ID available for provider request`);
@@ -1085,13 +1078,15 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
   
   // Log if system message and tools are present
   if (systemMessage) {
-    logger.info(`Request ${safeRequestId} includes system message, length: ${systemMessage.length}`);
+    // No need for redundant logging of systemMessage.length, already in the main request log
+    // logger.info(`Request ${safeRequestId} includes system message, length: ${systemMessage.length}`);
   }
   
   if (tools && Array.isArray(tools) && tools.length > 0) {
-    logger.info(`Request ${safeRequestId} includes ${tools.length} tools: ${tools.map(t => t.name).join(', ')}`);
-    // Log full tool definitions for debugging
-    logger.info(`FULL TOOLS [${safeRequestId}]: ${JSON.stringify(tools, null, 2)}`);
+    // No need for redundant logging of tool count and names, already in the main request log
+    // logger.info(`Request ${safeRequestId} includes ${tools.length} tools: ${tools.map(t => t.name).join(', ')}`);
+    // Remove full tool definitions log
+    // logger.info(`FULL TOOLS [${safeRequestId}]: ${JSON.stringify(tools, null, 2)}`);
 
     // For Gemini, ensure all tool parameters have a 'type' defined, default to 'STRING'
     if (provider === 'gemini') {
@@ -1106,8 +1101,9 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
           });
         }
       });
-      logger.info(`Processed tools for Gemini, ensuring parameter types for request ${safeRequestId}`);
-      logger.info(`TOOLS AFTER PROCESSING [${safeRequestId}]: ${JSON.stringify(tools, null, 2)}`);
+      // Remove TOOLS AFTER PROCESSING log, or make it debug level if necessary
+      // logger.info(`Processed tools for Gemini, ensuring parameter types for request ${safeRequestId}`);
+      logger.debug(`TOOLS AFTER PROCESSING for Gemini [${safeRequestId}]: ${JSON.stringify(tools, null, 2)}`); // Changed to debug
     }
   }
   
@@ -1297,13 +1293,9 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               );
               
               // Log full response details for debugging
-              logger.info(`FULL RESPONSE [${safeRequestId}]: ${JSON.stringify({
-                success: response.success,
-                tokensUsed: response.tokensUsed,
-                textLength: response.text?.length,
-                toolCall: response.toolCall,
-                waitingForToolCall: response.waitingForToolCall
-              }, null, 2)}`);
+              logger.info(`Provider Response (Stream) [${safeRequestId}]: ` +
+                `Success: ${response.success}, Tokens Used: ${response.tokensUsed}, Text Length: ${response.text?.length || 0}, ` +
+                `ToolCall: ${response.toolCall ? response.toolCall.name : 'none'}, WaitingForToolCall: ${!!response.waitingForToolCall}`);
               
               // Process response to extract and handle any function calls that might be in the text
               // Strip out any remaining function call text from the response
@@ -1329,6 +1321,26 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                 
                 // Always ensure waitingForToolCall is true when a tool call is detected
                 response.waitingForToolCall = true;
+                
+                // Special handling for edit_file tool to ensure searchReplaceBlocks always exists
+                if (response.toolCall.name === 'edit_file') {
+                  // Ensure that searchReplaceBlocks parameter exists and is a string
+                  if (!response.toolCall.parameters.searchReplaceBlocks) {
+                    logger.warn(
+                      `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                      `edit_file tool missing searchReplaceBlocks parameter, adding empty default`
+                    );
+                    // If editing an empty file, add an empty searchReplaceBlocks parameter
+                    response.toolCall.parameters.searchReplaceBlocks = '';
+                  } else if (typeof response.toolCall.parameters.searchReplaceBlocks !== 'string') {
+                    logger.warn(
+                      `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                      `edit_file tool has non-string searchReplaceBlocks, converting to string`
+                    );
+                    // Convert to string if it's not already
+                    response.toolCall.parameters.searchReplaceBlocks = String(response.toolCall.parameters.searchReplaceBlocks);
+                  }
+                }
                 
                 // Store the conversation context
                 activeTurnContexts.set(safeRequestId, {
@@ -1428,11 +1440,15 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
           chatMode: message.payload.chatMode,
         });
         
+        logger.info(`Provider Response (Non-Stream) [${safeRequestId}]: ` +
+          `Success: ${response.success}, Tokens Used: ${response.tokensUsed}, Text Length: ${response.text?.length || 0}, ` +
+          `ToolCall: ${response.toolCall ? response.toolCall.name : 'none'}, WaitingForToolCall: ${!!response.waitingForToolCall}`);
+        
         // Log tool call information if present
         if (response.toolCall) {
           logger.info(
             `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-            `Tool call detected in non-streaming response: ${response.toolCall.name}, ` +
+            `Tool call detected in response: ${response.toolCall.name}, ` +
             `parameters: ${JSON.stringify(response.toolCall.parameters)}`
           );
           
@@ -1476,7 +1492,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
         } else {
           logger.info(
             `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-            `No tool call detected in non-streaming response`
+            `No tool call detected in response`
           );
           
           sendToClient(ws, {
@@ -1599,14 +1615,19 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
   const userId = ws.connectionData.userId;
   
   // Log the full request details for debugging
-  logger.info(`FULL TOOL EXECUTION RESULT [${safeRequestId}]: ${JSON.stringify({
-    toolName,
-    toolCallId,
-    isError,
-    resultPreview: typeof result === 'string' ? 
-      (result.length > 100 ? `${result.substring(0, 100)}...` : result) : 
-      'Non-string result'
-  }, null, 2)}`);
+  let resultPreview: string;
+  if (isError) {
+    resultPreview = `Error: ${errorDetails ? String(errorDetails).substring(0, 50) : 'Unknown'}`;
+  } else if (typeof result === 'string') {
+    resultPreview = `String(len:${result.length})${result.length > 50 ? ", " + result.substring(0, 50) + "..." : ""}`;
+  } else if (typeof result === 'object' && result !== null) {
+    resultPreview = `Object(keys:${Object.keys(result).join(', ').substring(0,50)})`;
+  } else {
+    resultPreview = String(result).substring(0,50);
+  }
+
+  logger.info(`Tool Execution Result [${safeRequestId}]: ` +
+    `ToolName: ${toolName}, ToolCallId: ${toolCallId}, IsError: ${isError}, ResultPreview: ${resultPreview}`);
   
   if (!userId && config.authEnabled) {
     logger.error(`WS AUTH [${ws.connectionData.connectionId}][${safeRequestId}] No user ID available for tool execution result`);
@@ -1805,13 +1826,9 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
             );
             
             // Log full response details for debugging
-            logger.info(`FULL RESPONSE [${safeRequestId}]: ${JSON.stringify({
-              success: response.success,
-              tokensUsed: response.tokensUsed,
-              textLength: response.text?.length,
-              toolCall: response.toolCall,
-              waitingForToolCall: response.waitingForToolCall
-            }, null, 2)}`);
+            logger.info(`Provider Response (ToolExec Stream) [${safeRequestId}]: ` +
+              `Success: ${response.success}, Tokens Used: ${response.tokensUsed}, Text Length: ${response.text?.length || 0}, ` +
+              `ToolCall: ${response.toolCall ? response.toolCall.name : 'none'}, WaitingForToolCall: ${!!response.waitingForToolCall}`);
             
             // Process response to extract and handle any function calls that might be in the text
             // Strip out any remaining function call text from the response
@@ -1837,6 +1854,26 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
               
               // Always ensure waitingForToolCall is true when a tool call is detected
               response.waitingForToolCall = true;
+              
+              // Special handling for edit_file tool to ensure searchReplaceBlocks always exists
+              if (response.toolCall.name === 'edit_file') {
+                // Ensure that searchReplaceBlocks parameter exists and is a string
+                if (!response.toolCall.parameters.searchReplaceBlocks) {
+                  logger.warn(
+                    `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                    `edit_file tool missing searchReplaceBlocks parameter, adding empty default`
+                  );
+                  // If editing an empty file, add an empty searchReplaceBlocks parameter
+                  response.toolCall.parameters.searchReplaceBlocks = '';
+                } else if (typeof response.toolCall.parameters.searchReplaceBlocks !== 'string') {
+                  logger.warn(
+                    `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                    `edit_file tool has non-string searchReplaceBlocks, converting to string`
+                  );
+                  // Convert to string if it's not already
+                  response.toolCall.parameters.searchReplaceBlocks = String(response.toolCall.parameters.searchReplaceBlocks);
+                }
+              }
               
               // Store the conversation context
               activeTurnContexts.set(safeRequestId, {
@@ -1933,7 +1970,11 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           tools,
           chatMode: requestChatMode,
         });
-        
+
+        logger.info(`Provider Response (ToolExec Non-Stream) [${safeRequestId}]: ` +
+          `Success: ${response.success}, Tokens Used: ${response.tokensUsed}, Text Length: ${response.text?.length || 0}, ` +
+          `ToolCall: ${response.toolCall ? response.toolCall.name : 'none'}, WaitingForToolCall: ${!!response.waitingForToolCall}`);
+
         // If this is a tool call, update the conversation context and keep it active
         if (response.toolCall) {
           logger.info(
@@ -1956,6 +1997,24 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
             }]
           });
           
+          // Special handling for edit_file tool
+          if (response.toolCall.name === 'edit_file') {
+            // Ensure that searchReplaceBlocks parameter exists and is a string
+            if (!response.toolCall.parameters.searchReplaceBlocks) {
+              logger.warn(
+                `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                `Non-streaming edit_file tool missing searchReplaceBlocks parameter, adding empty default`
+              );
+              response.toolCall.parameters.searchReplaceBlocks = '';
+            } else if (typeof response.toolCall.parameters.searchReplaceBlocks !== 'string') {
+              logger.warn(
+                `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                `Non-streaming edit_file tool has non-string searchReplaceBlocks, converting to string`
+              );
+              response.toolCall.parameters.searchReplaceBlocks = String(response.toolCall.parameters.searchReplaceBlocks);
+            }
+          }
+          
           // Update the conversation context with the latest messages
           conversationContext.messages = messages;
           activeTurnContexts.set(safeRequestId, conversationContext);
@@ -1968,7 +2027,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
               success: response.success,
               requestId: safeRequestId,
               toolCall: response.toolCall,
-              waitingForToolCall: true
+              waitingForToolCall: response.waitingForToolCall
             }
           });
         } else {

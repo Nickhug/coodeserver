@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import axios from 'axios';
 
 // Get the WebSocket server base URL from environment variables or use a default
-const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_SERVER_URL || 'http://localhost:8080';
+const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_SERVER_URL || 'http://localhost:3001';
 
 export async function GET(req: NextRequest) {
   try {

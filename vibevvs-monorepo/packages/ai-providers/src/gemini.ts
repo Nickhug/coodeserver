@@ -657,6 +657,19 @@ export async function sendStreamingRequest(
             parameters: part.functionCall.args || {},
             id: rawResponse.candidates[0].contentId || 'unknown'
           };
+          
+          // Special handling for edit_file tool
+          if (responseObj.toolCall.name === 'edit_file') {
+            // Ensure that searchReplaceBlocks parameter exists and is a string
+            if (!responseObj.toolCall.parameters.searchReplaceBlocks) {
+              logger.warn(`Edit file tool call missing searchReplaceBlocks parameter, adding empty default`);
+              responseObj.toolCall.parameters.searchReplaceBlocks = '';
+            } else if (typeof responseObj.toolCall.parameters.searchReplaceBlocks !== 'string') {
+              logger.warn(`Edit file tool call has non-string searchReplaceBlocks, converting to string`);
+              responseObj.toolCall.parameters.searchReplaceBlocks = String(responseObj.toolCall.parameters.searchReplaceBlocks);
+            }
+          }
+          
           // Explicitly ensure waitingForToolCall is true
           responseObj.waitingForToolCall = true;
           
@@ -706,6 +719,19 @@ export async function sendStreamingRequest(
                 parameters: parameters,
                 id: `extracted-${Date.now()}`
               };
+              
+              // Special handling for edit_file tool
+              if (responseObj.toolCall.name === 'edit_file') {
+                // Ensure that searchReplaceBlocks parameter exists and is a string
+                if (!responseObj.toolCall.parameters.searchReplaceBlocks) {
+                  logger.warn(`Extracted edit_file tool call missing searchReplaceBlocks parameter, adding empty default`);
+                  responseObj.toolCall.parameters.searchReplaceBlocks = '';
+                } else if (typeof responseObj.toolCall.parameters.searchReplaceBlocks !== 'string') {
+                  logger.warn(`Extracted edit_file tool call has non-string searchReplaceBlocks, converting to string`);
+                  responseObj.toolCall.parameters.searchReplaceBlocks = String(responseObj.toolCall.parameters.searchReplaceBlocks);
+                }
+              }
+              
               responseObj.waitingForToolCall = true;
               
               logger.info(`Extracted toolCall from text: ${JSON.stringify(responseObj.toolCall, null, 2)}`);
@@ -730,6 +756,19 @@ export async function sendStreamingRequest(
           parameters: rawResponse.candidates[0].functionCall.args || {},
           id: rawResponse.candidates[0].contentId || 'unknown'
         };
+        
+        // Special handling for edit_file tool
+        if (responseObj.toolCall.name === 'edit_file') {
+          // Ensure that searchReplaceBlocks parameter exists and is a string
+          if (!responseObj.toolCall.parameters.searchReplaceBlocks) {
+            logger.warn(`Candidate-level edit_file tool call missing searchReplaceBlocks parameter, adding empty default`);
+            responseObj.toolCall.parameters.searchReplaceBlocks = '';
+          } else if (typeof responseObj.toolCall.parameters.searchReplaceBlocks !== 'string') {
+            logger.warn(`Candidate-level edit_file tool call has non-string searchReplaceBlocks, converting to string`);
+            responseObj.toolCall.parameters.searchReplaceBlocks = String(responseObj.toolCall.parameters.searchReplaceBlocks);
+          }
+        }
+        
         // Explicitly ensure waitingForToolCall is true
         responseObj.waitingForToolCall = true;
         
