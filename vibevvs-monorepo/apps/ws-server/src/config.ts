@@ -4,7 +4,7 @@
 
 // Default configuration values
 const DEFAULT_PORT = 3001;
-const DEFAULT_HOST = '0.0.0.0';
+const DEFAULT_HOST = '::';
 const DEFAULT_WS_PATH = '/ws';
 const DEFAULT_PING_INTERVAL = 30000; // 30 seconds
 
