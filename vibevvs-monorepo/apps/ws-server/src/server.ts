@@ -244,22 +244,11 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
   const userAgent = req.headers['user-agent'] || 'unknown';
   logger.info(`WS CONNECT [${connectionId}] New connection from ${ip}, UA: ${userAgent}`);
   
-  // Check authentication if enabled
-  let token: string | undefined = undefined;
+  // Log all headers for debugging
+  logger.debug(`WS CONNECT [${connectionId}] Request headers: ${JSON.stringify(req.headers, null, 2)}`);
   
-  // Extract token from request headers
-  if (config.authEnabled) {
-    // Extract token from Sec-WebSocket-Protocol header
-    const protocol = req.headers['sec-websocket-protocol'];
-    if (protocol) {
-      token = protocol;
-      logger.debug(`WS AUTH [${connectionId}] Token provided in protocol header`);
-    }
-  }
-  
-  // Set up WebSocket with connection data
-  const wsWithData = ws as WebSocketWithData;
-  wsWithData.connectionData = {
+  // Add connection data to WebSocket
+  (ws as WebSocketWithData).connectionData = {
     connectionId,
     userId,
     isAuthenticated,
@@ -267,56 +256,72 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
   };
   
   // Store connection
-  connections.set(connectionId, wsWithData.connectionData);
+  connections.set(connectionId, (ws as WebSocketWithData).connectionData);
   
-  // Log connection
+  // Log connection established
   logger.info(`WS OPEN [${connectionId}] WebSocket connection established`);
   
-  // Send welcome message
-  sendToClient(wsWithData, {
-    type: isAuthenticated ? MessageType.AUTH_SUCCESS : MessageType.CONNECT_SUCCESS,
-    payload: {
-      connectionId,
-      userId: userId || null,
-      serverTime: new Date().toISOString(),
-      serverInfo: {
-        environment: config.environment
+  // Handle error events - add detailed logging
+  ws.on('error', (error) => {
+    logger.error(`WS ERROR [${connectionId}] ${error.message}`, { 
+      stack: error.stack,
+      code: (error as any).code 
+    });
+  });
+  
+  // Handle close events - add detailed logging
+  ws.on('close', (code, reason) => {
+    logger.info(`WS CLOSE [${connectionId}] ${reason ? ` Code: ${code}, Reason: ${reason.toString()}` : ` Code: ${code}, Reason: `}`);
+    // Remove from connections
+    connections.delete(connectionId);
+  });
+  
+  // Respond immediately with a welcome message to test the connection
+  try {
+    sendToClient(ws as WebSocketWithData, {
+      type: MessageType.CONNECT_SUCCESS,
+      payload: {
+        status: 'connected',
+        connectionId,
+        timestamp: Date.now()
+      }
+    });
+    logger.info(`WS WELCOME [${connectionId}] Sent welcome message`);
+  } catch (error) {
+    logger.error(`WS ERROR [${connectionId}] Failed to send welcome message: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  
+  // Handle incoming messages
+  ws.on('message', async (message) => {
+    try {
+      await handleIncomingMessage(ws as WebSocketWithData, message.toString());
+    } catch (error) {
+      logger.error(`WS ERROR [${connectionId}] Error handling message: ${error instanceof Error ? error.message : String(error)}`);
+      
+      // Send error back to client
+      try {
+        sendToClient(ws as WebSocketWithData, {
+          type: MessageType.ERROR,
+          payload: {
+            error: error instanceof Error ? error.message : String(error),
+            timestamp: Date.now()
+          }
+        });
+      } catch (sendError) {
+        logger.error(`WS ERROR [${connectionId}] Failed to send error message: ${sendError instanceof Error ? sendError.message : String(sendError)}`);
       }
     }
   });
   
-  // If token was provided, authenticate
-  if (token) {
-    // We'll authenticate in the message handler to keep this function simpler
-    handleIncomingMessage(wsWithData, JSON.stringify({
-      type: MessageType.AUTHENTICATE,
-      payload: { token }
-    }));
-  }
-  
-  // Set up event handlers
-  ws.on('message', (data) => {
-    logger.debug(`WS RECEIVE [${connectionId}] Received message of ${data.toString().length} bytes`);
-    handleIncomingMessage(wsWithData, data.toString());
+  // Native ping/pong handlers for better connection stability
+  ws.on('ping', (data) => {
+    logger.debug(`WS PING [${connectionId}] Received ping`);
+    (ws as WebSocketWithData).connectionData.lastPingTime = Date.now();
   });
   
-  ws.on('close', (code, reason) => {
-    // Remove connection
-    connections.delete(connectionId);
-    
-    // Log disconnection with code details
-    const reasonStr = reason ? reason.toString() : 'No reason provided';
-    logger.info(`WS CLOSE [${connectionId}] ${userId ? `(User: ${userId})` : ''} Code: ${code}, Reason: ${reasonStr}`);
-  });
-  
-  ws.on('error', (error) => {
-    logger.error(`WS ERROR [${connectionId}] ${error.message}`, error);
-  });
-  
-  // Update ping time on pong
-  ws.on('pong', () => {
-    wsWithData.connectionData.lastPingTime = Date.now();
-    logger.debug(`WS PONG [${connectionId}] Received pong response`);
+  ws.on('pong', (data) => {
+    logger.debug(`WS PONG [${connectionId}] Received pong`);
+    (ws as WebSocketWithData).connectionData.lastPingTime = Date.now();
   });
 }
 

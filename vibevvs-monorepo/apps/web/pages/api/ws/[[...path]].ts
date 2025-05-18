@@ -35,6 +35,16 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     env: process.env.NODE_ENV,
   });
 
+  // Log if we got upgrade headers for diagnostic purposes
+  if (req.headers.upgrade) {
+    logger.info(`[WS_PROXY] Received WebSocket upgrade request with headers:`, {
+      upgrade: req.headers.upgrade,
+      connection: req.headers.connection,
+      'sec-websocket-key': req.headers['sec-websocket-key'],
+      'sec-websocket-version': req.headers['sec-websocket-version'],
+    });
+  }
+
   // Test connectivity to the internal WebSocket host
   // This is for diagnostic purposes only
   const testSocket = new net.Socket();
@@ -75,12 +85,33 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     },
     // Add connection timeout (10 seconds - increased from 5)
     timeout: 10000,
+    // Preserve original headers - important for WebSocket
+    preserveHeaderKeyCase: true,
+    // Don't follow redirects - let the client handle that
+    followRedirects: false,
     // Log proxy activity for debugging
     onProxyReq: (proxyReq: any, req: any) => {
       // Always add WebSocket upgrade headers regardless of original request
       // This is critical for Railway private network proxying to work correctly
       proxyReq.setHeader('Upgrade', 'websocket');
       proxyReq.setHeader('Connection', 'Upgrade');
+      
+      // Preserve original WebSocket headers if they exist
+      if (req.headers['sec-websocket-key']) {
+        proxyReq.setHeader('Sec-WebSocket-Key', req.headers['sec-websocket-key']);
+      }
+      
+      if (req.headers['sec-websocket-version']) {
+        proxyReq.setHeader('Sec-WebSocket-Version', req.headers['sec-websocket-version']);
+      }
+      
+      if (req.headers['sec-websocket-protocol']) {
+        proxyReq.setHeader('Sec-WebSocket-Protocol', req.headers['sec-websocket-protocol']);
+      }
+      
+      if (req.headers['sec-websocket-extensions']) {
+        proxyReq.setHeader('Sec-WebSocket-Extensions', req.headers['sec-websocket-extensions']);
+      }
       
       logger.info(`[WS_PROXY] Proxying request to: ${WS_INTERNAL_HOST}:${WS_INTERNAL_PORT}${WS_INTERNAL_PATH}`, {
         method: req.method,
@@ -110,6 +141,23 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       // Ensure WebSocket upgrade headers are present for the upgrade request
       proxyReq.setHeader('Upgrade', 'websocket');
       proxyReq.setHeader('Connection', 'Upgrade');
+      
+      // Copy all WebSocket-specific headers
+      if (req.headers['sec-websocket-key']) {
+        proxyReq.setHeader('Sec-WebSocket-Key', req.headers['sec-websocket-key']);
+      }
+      
+      if (req.headers['sec-websocket-version']) {
+        proxyReq.setHeader('Sec-WebSocket-Version', req.headers['sec-websocket-version']);
+      }
+      
+      if (req.headers['sec-websocket-protocol']) {
+        proxyReq.setHeader('Sec-WebSocket-Protocol', req.headers['sec-websocket-protocol']);
+      }
+      
+      if (req.headers['sec-websocket-extensions']) {
+        proxyReq.setHeader('Sec-WebSocket-Extensions', req.headers['sec-websocket-extensions']);
+      }
       
       logger.info(`[WS_PROXY] WebSocket upgrade request proxied to: ${WS_INTERNAL_HOST}:${WS_INTERNAL_PORT}${WS_INTERNAL_PATH}`, {
         headers: proxyReq.getHeaders(),
