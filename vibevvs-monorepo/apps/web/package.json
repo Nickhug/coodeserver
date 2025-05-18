@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "NEXT_PUBLIC_WS_SERVER_URL=wss://coodeai.com/api/ws next dev",
-    "build": "NEXT_PUBLIC_WS_SERVER_URL=wss://coodeai.com/api/ws next build",
-    "start": "NEXT_PUBLIC_WS_SERVER_URL=wss://coodeai.com/api/ws next start",
+    "dev": "NEXT_PUBLIC_WS_SERVER_URL=ws://localhost:3000/api/ws next dev",
+    "build": "next build",
+    "start": "next start",
     "lint": "next lint"
   },
   "dependencies": {
