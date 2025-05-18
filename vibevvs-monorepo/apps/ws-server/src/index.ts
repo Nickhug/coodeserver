@@ -18,9 +18,17 @@ logger.info(`Host: ${config.host}`);
 logger.info(`Auth Enabled: ${config.authEnabled}`);
 
 // Validate the configuration
-const { isValid, errors } = validateConfig();
+const { isValid, errors, warnings } = validateConfig();
+
+// Log warnings - these are non-fatal
+if (warnings.length > 0) {
+  logger.warn('Configuration warnings detected:');
+  warnings.forEach(warning => logger.warn(`  - ${warning}`));
+}
+
+// Log errors - these may be fatal in production
 if (!isValid) {
-  logger.error('Configuration issues detected:');
+  logger.error('Configuration errors detected:');
   errors.forEach(error => logger.error(`  - ${error}`));
   
   if (config.environment === 'production') {

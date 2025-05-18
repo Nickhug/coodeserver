@@ -712,12 +712,12 @@ export function startWebSocketServer(): http.Server {
   // Set up the WebSocket server
   setupWebSocketServer(server);
   
-  // Log IPv6 support information
+  // Log host configuration information
   if (config.host === '::') {
     logger.info('Server configured to listen on dual-stack IPv4/IPv6 (::)');
   } else if (config.host === '0.0.0.0') {
-    logger.warn('Server configured to listen on IPv4 only (0.0.0.0). Railway private networking requires IPv6 support.');
-    logger.warn('Consider changing WS_HOST to "::" in your environment variables or updating the DEFAULT_HOST in config.ts');
+    logger.info('Server configured to listen on IPv4 only (0.0.0.0)');
+    logger.info('Using Railway TCP Proxy at wss://gondola.proxy.rlwy.net:28028/ws');
   }
   
   // Start the server

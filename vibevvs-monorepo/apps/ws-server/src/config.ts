@@ -4,7 +4,7 @@
 
 // Default configuration values
 const DEFAULT_PORT = 3001;
-const DEFAULT_HOST = '::';
+const DEFAULT_HOST = '0.0.0.0'; // Changed to IPv4 only for TCP proxy usage
 const DEFAULT_WS_PATH = '/ws';
 const DEFAULT_PING_INTERVAL = 30000; // 30 seconds
 
@@ -38,8 +38,9 @@ export const config = {
 /**
  * Validate the configuration and return any errors
  */
-export function validateConfig(): { isValid: boolean; errors: string[] } {
+export function validateConfig(): { isValid: boolean; errors: string[]; warnings: string[] } {
   const errors: string[] = [];
+  const warnings: string[] = [];
 
   // Server configuration validation
   if (isNaN(config.port) || config.port <= 0) {
@@ -50,9 +51,9 @@ export function validateConfig(): { isValid: boolean; errors: string[] } {
     errors.push('Host cannot be empty');
   }
   
-  // Add a warning if the host is set to IPv4 only (0.0.0.0) which won't work with Railway private networking
+  // Downgrade this from an error to a warning since we're using TCP proxy, not private networking
   if (config.host === '0.0.0.0') {
-    errors.push('WARNING: Host set to 0.0.0.0 (IPv4 only). For Railway private networking to work, host should be "::" (dual stack IPv4/IPv6)');
+    warnings.push('Host set to 0.0.0.0 (IPv4 only). For Railway private networking to work, host should be "::" (dual stack IPv4/IPv6)');
   }
 
   if (!config.wsPath) {
@@ -84,6 +85,7 @@ export function validateConfig(): { isValid: boolean; errors: string[] } {
   return {
     isValid: errors.length === 0,
     errors,
+    warnings,
   };
 }
 
