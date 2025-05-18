@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "NEXT_PUBLIC_WS_SERVER_URL=ws://localhost:3000/api/proxy/ws next dev",
+    "dev": "NEXT_PUBLIC_WS_SERVER_URL=wss://gondola.proxy.rlwy.net:28028 next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
