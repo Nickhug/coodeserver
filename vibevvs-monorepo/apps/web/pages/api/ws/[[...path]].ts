@@ -29,32 +29,37 @@ const proxy = createProxyMiddleware({
   ws: true,
   changeOrigin: true,
   pathRewrite: { '^/api/ws': '' }, // Remove the /api/ws prefix when forwarding
-  logLevel: 'debug' as any,
-  logProvider: () => ({
-    log: logger.debug.bind(logger),
-    debug: logger.debug.bind(logger),
-    info: logger.info.bind(logger),
-    warn: logger.warn.bind(logger),
-    error: logger.error.bind(logger),
-  }),
+  
+  // Logger configuration - http-proxy-middleware v3 uses a different approach
+  logger,
 
-  onError: (err: NetworkError, req: http.IncomingMessage, res: http.ServerResponse | net.Socket) => {
-    logger.error(`[WS_PROXY] Error during proxying: ${err.message}`, {
-      errorCode: err.code,
-      target: TARGET_WS_URL,
-      url: req.url,
-    });
+  // Error handler
+  on: {
+    error: (err: NetworkError, req: http.IncomingMessage, res: http.ServerResponse | net.Socket) => {
+      logger.error(`[WS_PROXY] Error during proxying: ${err.message}`, {
+        errorCode: err.code,
+        target: TARGET_WS_URL,
+        url: req.url,
+      });
 
-    // Handle HTTP response errors
-    if (res instanceof http.ServerResponse && !res.headersSent) {
-      res.writeHead(502, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ 
-        error: 'WebSocket proxy error', 
-        message: err.message,
-        code: err.code 
-      }));
+      // Handle HTTP response errors
+      if (res instanceof http.ServerResponse && !res.headersSent) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+          error: 'WebSocket proxy error', 
+          message: err.message,
+          code: err.code 
+        }));
+      }
+    },
+    // Optional: Add other event handlers if needed
+    proxyReq: (proxyReq, req) => {
+      logger.debug(`[WS_PROXY] Proxying request: ${req.method} ${req.url}`);
+    },
+    proxyRes: (proxyRes, req) => {
+      logger.debug(`[WS_PROXY] Received response: ${proxyRes.statusCode} for ${req.url}`);
     }
-  },
+  }
 });
 
 // Main handler for Next.js API route
