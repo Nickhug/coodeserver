@@ -1,10 +1,10 @@
-// Simple WebSocket proxy for Railway internal networking
+// Direct TCP/WebSocket proxy for Railway internal networking
 import { NextApiRequest, NextApiResponse } from 'next';
-import { Server } from 'http';
+import { createServer } from 'http';
 import { Socket } from 'net';
 import logger from '@repo/logger';
 
-// Config for WebSocket (disable body parsing)
+// Disable body parsing for WebSockets
 export const config = {
   api: {
     bodyParser: false,
@@ -12,60 +12,110 @@ export const config = {
   },
 };
 
-// Railway private networking target
+// Railway internal networking target
 const WS_HOST = process.env.INTERNAL_WS_HOST || 'ws-server.railway.internal';
-const WS_PORT = process.env.INTERNAL_WS_PORT || '3001';
+const WS_PORT = parseInt(process.env.INTERNAL_WS_PORT || '3001', 10);
 const WS_PATH = process.env.INTERNAL_WS_PATH || '/ws';
 const TARGET = `http://${WS_HOST}:${WS_PORT}${WS_PATH}`;
 
-// Log configuration on startup
-logger.info(`[WS_PROXY] WebSocket proxy configured with target: ${TARGET}`);
+// Log the configuration
+logger.info(`[WS_PROXY] Direct TCP proxy to ${TARGET}`);
 
 /**
- * This is a very basic proxy handler for WebSockets
- * It handles the upgrade and forwards the connection to the internal service
+ * Simple proxy that directly forwards the TCP connection
  */
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
-  const { socket } = res;
-  
-  // This is a hack to access the raw Node.js server instance
-  const server = (res as any).socket.server as Server;
-  
-  // Log the incoming request
-  logger.info(`[WS_PROXY] Handling ${req.method} request to ${req.url}`);
-  
-  if (req.method === 'GET') {
-    // For WebSocket upgrade requests
-    if (req.headers.upgrade && req.headers.upgrade.toLowerCase() === 'websocket') {
-      logger.info(`[WS_PROXY] WebSocket upgrade request detected`);
-      
-      // Get the upgrade handler from the server
-      const upgradeHandler = server.listeners('upgrade')[0];
-      
-      // Add special route header for the upgrade handler to identify this route
-      req.headers['x-forwarded-host'] = WS_HOST;
-      req.headers['x-forwarded-port'] = WS_PORT;
-      req.headers['x-forwarded-path'] = WS_PATH;
-      req.headers['x-railway-internal'] = 'true';
-      
-      // Let the upgrade handler do its work
-      upgradeHandler(req, socket as Socket, Buffer.alloc(0));
-      
-      // Return here, the upgrade will be handled
-      return;
-    }
-    
-    // For regular HTTP requests to this endpoint
-    res.status(426).json({ 
+  // For non-WebSocket requests
+  if (!req.headers.upgrade || req.headers.upgrade.toLowerCase() !== 'websocket') {
+    logger.info(`[WS_PROXY] Non-WebSocket request received: ${req.method} ${req.url}`);
+    return res.status(426).json({
       error: 'Upgrade Required',
       message: 'This endpoint is for WebSocket connections only'
     });
-    return;
   }
   
-  // Reject non-GET requests
-  res.status(405).json({ 
-    error: 'Method Not Allowed',
-    message: 'Only GET requests are allowed'
-  });
+  // For WebSocket requests, we need to handle the upgrade
+  logger.info(`[WS_PROXY] WebSocket request received: ${req.url}`);
+  
+  // Create a direct TCP connection to the target WebSocket server
+  try {
+    // Get the socket from the response
+    const clientSocket = res.socket;
+    if (!clientSocket) {
+      logger.error('[WS_PROXY] No client socket found');
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+    
+    logger.info(`[WS_PROXY] Creating direct TCP connection to ${WS_HOST}:${WS_PORT}`);
+    
+    // Create a TCP connection to the WebSocket server
+    const serverSocket = new Socket();
+    
+    // Handle errors on the server socket
+    serverSocket.on('error', (err) => {
+      logger.error(`[WS_PROXY] Server socket error: ${err.message}`);
+      clientSocket.end();
+    });
+    
+    // Handle errors on the client socket
+    clientSocket.on('error', (err) => {
+      logger.error(`[WS_PROXY] Client socket error: ${err.message}`);
+      serverSocket.end();
+    });
+    
+    // Forward data from server to client
+    serverSocket.on('data', (data) => {
+      clientSocket.write(data);
+    });
+    
+    // Forward data from client to server
+    clientSocket.on('data', (data) => {
+      serverSocket.write(data);
+    });
+    
+    // Handle connection close
+    serverSocket.on('close', () => {
+      logger.info('[WS_PROXY] Server socket closed');
+      clientSocket.end();
+    });
+    
+    clientSocket.on('close', () => {
+      logger.info('[WS_PROXY] Client socket closed');
+      serverSocket.end();
+    });
+    
+    // Connect to the target server
+    serverSocket.connect(WS_PORT, WS_HOST, () => {
+      logger.info(`[WS_PROXY] Connected to ${WS_HOST}:${WS_PORT}`);
+      
+      // Send the WebSocket upgrade headers to the server
+      const headers = [
+        `GET ${WS_PATH} HTTP/1.1`,
+        `Host: ${WS_HOST}:${WS_PORT}`,
+        'Upgrade: websocket',
+        'Connection: Upgrade',
+        `Sec-WebSocket-Key: ${req.headers['sec-websocket-key']}`,
+        `Sec-WebSocket-Version: ${req.headers['sec-websocket-version']}`,
+        `Origin: http://${WS_HOST}:${WS_PORT}`,
+        '',
+        ''
+      ].join('\r\n');
+      
+      // Send the headers to the server
+      serverSocket.write(headers);
+    });
+    
+    // This is a hack to prevent Next.js from closing the connection
+    // We need to keep the response alive but not send anything
+    res.writeHead(101);
+    res.socket?.on('close', () => {
+      logger.info('[WS_PROXY] Response socket closed');
+    });
+    
+  } catch (error) {
+    logger.error(`[WS_PROXY] Error: ${(error as Error).message}`);
+    if (!res.headersSent) {
+      res.status(502).json({ error: 'WebSocket proxy error' });
+    }
+  }
 } 

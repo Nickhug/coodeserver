@@ -3,8 +3,8 @@ import { clerkMiddleware } from '@clerk/nextjs/server';
 // Configure middleware to run on specific paths
 export const config = {
   matcher: [
-    // Include all API routes except WebSocket
-    '/api/((?!ws).*)',
+    // Include all API routes except WebSocket and proxy paths
+    '/api/((?!ws|proxy).*)',
     // Explicitly include auth routes to ensure they're processed by Clerk middleware
     '/api/auth/:path*',
     // Include all other routes except static files
