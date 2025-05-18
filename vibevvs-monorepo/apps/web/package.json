@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "NEXT_PUBLIC_WS_SERVER_URL=ws://localhost:3000/api/ws next dev",
+    "dev": "NEXT_PUBLIC_WS_SERVER_URL=ws://localhost:3000/api/proxy/ws next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
@@ -36,6 +36,7 @@
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
+    "@types/http-proxy": "^1.17.14",
     "@types/ws": "^8.5.10",
     "autoprefixer": "^10.4.17",
     "eslint": "^9",
