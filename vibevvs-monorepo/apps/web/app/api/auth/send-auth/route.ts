@@ -8,7 +8,10 @@ import { generateToken } from "@repo/auth";
 import logger from "@repo/logger";
 
 // Get the WebSocket server base URL from environment variables or use the default
-const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_SERVER_URL || 'wss://gondola.proxy.rlwy.net:28028/ws';
+const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_SERVER_URL || 'ws://gondola.proxy.rlwy.net:28028/ws';
+
+// For debugging
+logger.info(`Using WebSocket server URL: ${WS_BASE_URL}`);
 
 /**
  * API route to send authentication data to a WebSocket connection
@@ -121,8 +124,28 @@ export async function POST(req: NextRequest) {
 
     // Send auth data to the WebSocket server via its HTTP API
     try {
-      // Ensure the URL ends with /api/auth but doesn't duplicate it
-      const baseUrl = WS_BASE_URL.endsWith('/') ? WS_BASE_URL.slice(0, -1) : WS_BASE_URL;
+      // Parse the WebSocket URL to correctly extract host and port
+      let baseUrl;
+      try {
+        // Create a URL object from the WebSocket URL
+        const wsUrl = new URL(WS_BASE_URL);
+        
+        // Convert protocol from ws/wss to http/https
+        const protocol = wsUrl.protocol === 'ws:' ? 'http:' : 'https:';
+        
+        // Construct the base URL without the /ws path
+        baseUrl = `${protocol}//${wsUrl.host}`;
+        
+        logger.info(`Constructed base URL: ${baseUrl} from WebSocket URL: ${WS_BASE_URL}`);
+      } catch (urlError) {
+        logger.error(`Error parsing WebSocket URL: ${urlError}`);
+        // Fallback to simple string replacement if URL parsing fails
+        baseUrl = WS_BASE_URL.replace(/^ws:\/\//, 'http://')
+                            .replace(/^wss:\/\//, 'https://')
+                            .replace(/\/ws$/, '');
+        logger.info(`Fallback base URL: ${baseUrl}`);
+      }
+      
       const authUrl = `${baseUrl}/api/auth`;
       
       // Log the URL we're going to call for debugging
@@ -152,6 +175,7 @@ export async function POST(req: NextRequest) {
           let connectionExists = false;
 
           try {
+            logger.info(`Checking connection status at: ${checkUrl}`);
             const checkResponse = await axios.get(checkUrl, { timeout: REQUEST_TIMEOUT_MS });
             if (checkResponse.status === 200 && checkResponse.data.connections) {
               const connections = checkResponse.data.connections;
@@ -159,16 +183,26 @@ export async function POST(req: NextRequest) {
               
               if (!connectionExists) {
                 logger.warn(`Connection ID ${connectionId} not found on server. Active connections: ${connections.length}`);
+                logger.info(`Active connection IDs: ${connections.map((c: any) => c.id).join(', ')}`);
                 // Don't retry if the connection doesn't exist at all
                 throw new Error('Connection not found on server');
+              } else {
+                logger.info(`Found connection ${connectionId} on server`);
               }
             }
           } catch (checkError) {
             // Debug endpoint might be disabled in production, so continue anyway
             logger.info('Could not check connection status, continuing with auth attempt');
+            logger.error('Check connection error:', checkError);
           }
           
           // Send the auth data
+          logger.info(`Sending auth request to ${authUrl} with data:`, {
+            connectionId,
+            tokenLength: token.length,
+            userData: { ...userData, id: '***', uuid: '***' } // Mask sensitive data
+          });
+          
           const response = await axios.post(authUrl, 
             {
               connectionId,
@@ -184,6 +218,7 @@ export async function POST(req: NextRequest) {
           );
 
           responseData = response.data;
+          logger.info(`Auth response status: ${response.status}, data:`, responseData);
           
           if (response.status === 200 && response.data.success) {
             logger.info(`Successfully sent auth data to WebSocket for connection ${connectionId}`);
