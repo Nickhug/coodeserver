@@ -18,20 +18,45 @@ const isPublicRoute = createRouteMatcher([
 export default clerkMiddleware((auth, req) => {
   const url = new URL(req.url);
 
-  // 1. Prioritize VVS auth token flow: If these params are present, let it through immediately.
-  // This allows VVS to handle its authentication without Clerk interfering.
-  if (url.searchParams.has('auth_token') || url.searchParams.has('connection_id')) {
+  // Special handling for VVS auth flow
+  if (url.searchParams.has('auth_token')) {
+    // This is a direct auth token request, let it pass through
     return NextResponse.next();
   }
 
-  // 2. If the route is NOT a public route (as defined by our matcher),
-  // then protect it. auth() itself gives access to userId, protect(), etc.
+  // Check if we're dealing with a VVS connection request
+  if (url.searchParams.has('connection_id')) {
+    const connectionId = url.searchParams.get('connection_id');
+    
+    // If not on login page, redirect to login with connection_id
+    if (!url.pathname.startsWith('/login')) {
+      const loginUrl = new URL('/login', req.url);
+      // Make sure connectionId is not null before setting it
+      if (connectionId) {
+        loginUrl.searchParams.set('connection_id', connectionId);
+      }
+      return NextResponse.redirect(loginUrl);
+    }
+    
+    // Already on login page with connection_id, let it proceed
+    return NextResponse.next();
+  }
+
+  // Standard route protection
   if (!isPublicRoute(req)) {
-    auth.protect();
+    // Check if we have a session cookie that indicates authentication
+    const hasSession = req.cookies.has('__clerk_session');
+    
+    if (!hasSession) {
+      // Not authenticated, redirect to login
+      const loginUrl = new URL('/login', req.url);
+      // Preserve the return URL for post-login redirect
+      loginUrl.searchParams.set('redirect_url', url.pathname);
+      return NextResponse.redirect(loginUrl);
+    }
   }
   
-  // 3. If it is a public route (or if auth().protect() didn't redirect because user is authenticated),
-  // allow the request to proceed.
+  // Either the route is public, or the user is authenticated
   return NextResponse.next();
 });
 

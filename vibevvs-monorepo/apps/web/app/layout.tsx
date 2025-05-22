@@ -52,24 +52,24 @@ export default function RootLayout({
         }
       }}
     >
-      <html lang="en">
-        <head>
-          <link rel="icon" href="/favicon.ico" />
-          <Script
-            src="https://unpkg.com/three@0.159.0/build/three.min.js"
-            strategy="beforeInteractive"
-          />
-          <Script
-            src="https://unpkg.com/three@0.159.0/examples/jsm/loaders/SVGLoader.js"
-            strategy="beforeInteractive"
-          />
-        </head>
-        <body
-          className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+    <html lang="en">
+      <head>
+        <link rel="icon" href="/favicon.ico" />
+        <Script
+          src="https://unpkg.com/three@0.159.0/build/three.min.js"
+          strategy="beforeInteractive"
+        />
+        <Script
+          src="https://unpkg.com/three@0.159.0/examples/jsm/loaders/SVGLoader.js"
+          strategy="beforeInteractive"
+        />
+      </head>
+      <body
+        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
         >
           {children}
-        </body>
-      </html>
+      </body>
+    </html>
     </ClerkProvider>
   );
 }

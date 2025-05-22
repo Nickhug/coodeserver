@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
+import { auth } from "@clerk/nextjs/server";
 import axios from 'axios';
 import { getUserByClerkId, createUser, storeAuthToken } from "@repo/db";
 import { generateToken } from "@repo/auth";
@@ -11,267 +12,170 @@ const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_SERVER_URL || 'ws://gondola.proxy
 // For debugging
 logger.info(`Using WebSocket server URL: ${WS_BASE_URL}`);
 
-/**
- * API route to send authentication data to a WebSocket connection
- */
+// Support both GET and POST methods to handle redirects from login and direct POST requests
+export async function GET(request: NextRequest) {
+  return handleAuthRequest(request);
+}
+
 export async function POST(request: NextRequest) {
+  return handleAuthRequest(request);
+}
+
+// Combined handler for both GET and POST
+async function handleAuthRequest(request: NextRequest) {
   try {
-    // Get the auth cookie directly from the request instead
-    const sessionToken = request.cookies.get("__session")?.value;
+    // Get auth session to verify user is logged in
+    const session = await auth();
+    const userId = session.userId;
     
-    if (!sessionToken) {
+    if (!userId) {
       return NextResponse.json(
         { success: false, message: 'Not authenticated' },
         { status: 401 }
       );
     }
     
-    // For simplicity, use a fixed userId for VVS authentication
-    // In production, you would decode and verify the session token
-    const userId = "user_vvs_authenticated";
+    // Get connection_id from query params (GET) or request body (POST)
+    let connectionId: string | null = null;
     
-    // Get the connection ID from the request body
-    const body = await request.json();
-    const { connectionId } = body;
+    // Check URL params first (for GET redirects from login)
+    const url = new URL(request.url);
+    connectionId = url.searchParams.get('connection_id');
+    
+    // If not in URL params, try to get from request body (for POST requests)
+    if (!connectionId && request.method === 'POST') {
+      try {
+        const body = await request.json();
+        connectionId = body.connectionId;
+      } catch (e) {
+        // Ignore JSON parsing errors
+      }
+    }
 
     if (!connectionId) {
       return NextResponse.json(
-        { success: false, message: 'Missing connection ID' },
+        { success: false, message: 'Missing connection_id parameter' },
         { status: 400 }
       );
     }
 
-    // Get user data from our database
-    logger.info(`Attempting to fetch user with Clerk ID: ${userId}`);
-    let dbUser;
+    // Get user data from database - the rest of the function stays mostly the same
+    logger.info(`Fetching user with Clerk ID: ${userId}`);
+    let dbUser = await getUserByClerkId(userId);
 
-    try {
-      dbUser = await getUserByClerkId(userId);
-
+    if (!dbUser) {
+      // Create user if they don't exist yet
+      logger.info(`User not found in database. Creating a new user record.`);
+      const email = `${userId}@placeholder.com`; // Replace with actual email from Clerk if available
+      dbUser = await createUser(userId, email);
+      
       if (!dbUser) {
-        logger.info(`User with Clerk ID ${userId} not found in database. Creating a new user record.`);
-
-        // Try to create a new user if they don't exist
-        // We need to get the email from Clerk, but we don't have it here
-        // For now, use a placeholder email and let the user update it later
-        const placeholderEmail = `${userId}@placeholder.com`;
-        const newUser = await createUser(userId, placeholderEmail);
-
-        if (!newUser) {
-          return NextResponse.json({
-            success: false,
-            message: "Failed to create user in database"
-          }, { status: 500 });
-        }
-
-        logger.info(`Created new user with ID: ${newUser.id}`);
-        dbUser = newUser;
+        return NextResponse.json({
+          success: false,
+          message: "Failed to create user in database"
+        }, { status: 500 });
       }
-
-      // Continue with the existing user
-      logger.info(`Found user in database: ${dbUser.id}`);
-    } catch (dbError) {
-      logger.error("Error fetching/creating user:", dbError);
-      return NextResponse.json({
-        success: false,
-        message: `Database error: ${dbError instanceof Error ? dbError.message : 'Unknown error'}`
-      }, { status: 500 });
     }
 
-    // Prepare user data to be sent
+    // Prepare user data to send to VVS
     const userData = {
-      id: userId, // Use clerk_id as the ID for consistency
-      uuid: dbUser.id, // Include the database UUID as a separate field
+      id: userId,
+      uuid: dbUser.id,
       email: dbUser.email,
       credits: dbUser.credits_remaining,
       subscription: dbUser.subscription_tier
     };
 
-    // Generate a token for the client
+    // Generate a token for VVS
     const token = generateToken();
-
-    // Store the token in the database with a 5-minute expiry
-    logger.info(`Storing token for Clerk user ${userId}, expires at ${new Date(Date.now() + 5 * 60 * 1000).toISOString()}`);
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes from now
+    
+    // Store the token with a 5-minute expiry
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
     const storedToken = await storeAuthToken(token, userId, expiresAt);
-
+    
     if (!storedToken) {
-      logger.error(`Failed to store auth token for user ${userId}`);
       return NextResponse.json({
         success: false,
         message: "Failed to store authentication token"
       }, { status: 500 });
     }
-
-    logger.info(`Successfully stored auth token for user ${userId}`);
-
-    // Send auth data to the WebSocket server via its HTTP API
+    
+    // Send auth data to the WebSocket server
     try {
-      // Parse the WebSocket URL to correctly extract host and port
-      let baseUrl;
-      try {
-        // Create a URL object from the WebSocket URL
-        const wsUrl = new URL(WS_BASE_URL);
-        
-        // Convert protocol from ws/wss to http/https
-        const protocol = wsUrl.protocol === 'ws:' ? 'http:' : 'https:';
-        
-        // Construct the base URL without the /ws path
-        baseUrl = `${protocol}//${wsUrl.host}`;
-        
-        logger.info(`Constructed base URL: ${baseUrl} from WebSocket URL: ${WS_BASE_URL}`);
-      } catch (urlError) {
-        logger.error(`Error parsing WebSocket URL: ${urlError}`);
-        // Fallback to simple string replacement if URL parsing fails
-        baseUrl = WS_BASE_URL.replace(/^ws:\/\//, 'http://')
-                            .replace(/^wss:\/\//, 'https://')
-                            .replace(/\/ws$/, '');
-        logger.info(`Fallback base URL: ${baseUrl}`);
-      }
-      
+      // Convert WS URL to HTTP URL
+      const wsUrl = new URL(WS_BASE_URL);
+      const protocol = wsUrl.protocol === 'ws:' ? 'http:' : 'https:';
+      const baseUrl = `${protocol}//${wsUrl.host}`;
       const authUrl = `${baseUrl}/api/auth`;
       
-      // Log the URL we're going to call for debugging
-      logger.info(`Sending auth data to WebSocket server at: ${authUrl}`);
-      logger.info(`Using connection ID: ${connectionId}`);
+      // Send auth data to WS server
+      const response = await axios.post(authUrl, {
+        connectionId,
+        token,
+        userData
+      }, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 5000 // 5 second timeout
+      });
       
-      // Add timeout and retry logic
-      const MAX_RETRIES = 3;
-      const RETRY_DELAY_MS = 1000;
-      const REQUEST_TIMEOUT_MS = 5000;
-      
-      let retries = 0;
-      let success = false;
-      let lastError;
-      let responseData = null;
-      
-      while (retries <= MAX_RETRIES && !success) {
-        try {
-          if (retries > 0) {
-            logger.info(`Retry attempt #${retries} for connection ${connectionId}`);
-            // Wait a bit between retries
-            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * retries));
-          }
-          
-          // First check if the connection exists by requesting connection status
-          const checkUrl = `${baseUrl}/api/debug/connections`;
-          let connectionExists = false;
-
-          try {
-            logger.info(`Checking connection status at: ${checkUrl}`);
-            const checkResponse = await axios.get(checkUrl, { timeout: REQUEST_TIMEOUT_MS });
-            if (checkResponse.status === 200 && checkResponse.data.connections) {
-              const connections = checkResponse.data.connections;
-              connectionExists = connections.some((conn: any) => conn.id === connectionId);
-              
-              if (!connectionExists) {
-                logger.warn(`Connection ID ${connectionId} not found on server. Active connections: ${connections.length}`);
-                logger.info(`Active connection IDs: ${connections.map((c: any) => c.id).join(', ')}`);
-                // Don't retry if the connection doesn't exist at all
-                throw new Error('Connection not found on server');
-              } else {
-                logger.info(`Found connection ${connectionId} on server`);
-              }
-            }
-          } catch (checkError) {
-            // Debug endpoint might be disabled in production, so continue anyway
-            logger.info('Could not check connection status, continuing with auth attempt');
-            logger.error('Check connection error:', checkError);
-          }
-          
-          // Send the auth data
-          logger.info(`Sending auth request to ${authUrl} with data:`, {
-            connectionId,
-            tokenLength: token.length,
-            userData: { ...userData, id: '***', uuid: '***' } // Mask sensitive data
-          });
-          
-          const response = await axios.post(authUrl, 
-            {
-              connectionId,
-              token,
-              userData
-            },
-            {
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              timeout: REQUEST_TIMEOUT_MS
-            }
+      if (response.status === 200 && response.data.success) {
+        // If this was a GET request from browser redirect, return a success page
+        if (request.method === 'GET') {
+          return new NextResponse(
+            `
+            <html>
+              <head>
+                <title>Authentication Complete</title>
+                <style>
+                  body { 
+                    font-family: system-ui, sans-serif; 
+                    background-color: #000; 
+                    color: #fff;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                    text-align: center;
+                  }
+                  .container {
+                    max-width: 500px;
+                    padding: 2rem;
+                    background-color: rgba(255,255,255,0.05);
+                    border-radius: 0.5rem;
+                    border: 1px solid rgba(255,255,255,0.1);
+                  }
+                  h1 { color: #d81b60; }
+                  p { color: rgba(255,255,255,0.8); }
+                </style>
+              </head>
+              <body>
+                <div class="container">
+                  <h1>Authentication Complete</h1>
+                  <p>You have been successfully authenticated with VVS.</p>
+                  <p>You can now close this window and return to your editor.</p>
+                </div>
+              </body>
+            </html>
+            `,
+            { status: 200, headers: { 'Content-Type': 'text/html' } }
           );
-
-          responseData = response.data;
-          logger.info(`Auth response status: ${response.status}, data:`, responseData);
-          
-          if (response.status === 200 && response.data.success) {
-            logger.info(`Successfully sent auth data to WebSocket for connection ${connectionId}`);
-            success = true;
-          } else {
-            throw new Error(`WebSocket server responded with unexpected status: ${JSON.stringify(response.data)}`);
-          }
-        } catch (err) {
-          lastError = err;
-          retries++;
-          
-          if (axios.isAxiosError(err) && err.response && err.response.status === 404) {
-            // If the connection wasn't found, don't retry - it's gone
-            if (err.response.data && typeof err.response.data === 'object' && 
-                'message' in err.response.data && 
-                typeof err.response.data.message === 'string' && 
-                err.response.data.message.includes('Connection not found')) {
-              logger.error(`Connection ${connectionId} not found on WebSocket server, won't retry`);
-              break;
-            }
-          }
-          
-          logger.warn(`Error on attempt #${retries}: ${err}`);
-        }
-      }
-      
-      if (!success) {
-        // Format error message for better debugging
-        let errorMsg = 'Failed to send auth data to WebSocket server after retries';
-        let errorDetails = '';
-        
-        if (lastError) {
-          if (axios.isAxiosError(lastError)) {
-            if (lastError.response) {
-              errorDetails = ` - ${lastError.response.status} ${lastError.response.statusText}`;
-              logger.error(`Response data:`, lastError.response.data);
-            } else if (lastError.request) {
-              errorDetails = ' - No response received';
-            } else {
-              errorDetails = ` - ${lastError.message}`;
-            }
-          } else if (lastError instanceof Error) {
-            errorDetails = ` - ${lastError.message}`;
-          } else {
-            errorDetails = ` - Unknown error object: ${JSON.stringify(lastError)}`;
-          }
         }
         
-        throw new Error(errorMsg + errorDetails);
+        // For POST requests, return JSON success
+        return NextResponse.json({ success: true });
+      } else {
+        throw new Error(`WebSocket server response: ${JSON.stringify(response.data)}`);
       }
-
-      logger.info(`Found user UUID ${dbUser.id} for clerk_id ${userId}`);
-      return NextResponse.json({ success: true });
     } catch (wsError) {
       logger.error("Error sending auth to WebSocket server:", wsError);
-      
-      // Extract more detailed error info for debugging
-      let details = '';
-      if (axios.isAxiosError(wsError) && wsError.response) {
-        details = ` - ${wsError.response.status} ${wsError.response.statusText}`;
-        logger.error(`Response data:`, wsError.response.data);
-      }
-      
       return NextResponse.json({
         success: false,
-        message: `Failed to send auth data to WebSocket server${details}`
+        message: `Failed to send auth data to WebSocket server: ${wsError instanceof Error ? wsError.message : 'Unknown error'}`
       }, { status: 500 });
     }
   } catch (error) {
-    logger.error("Error sending auth to WebSocket:", error);
+    logger.error("Error in auth handling:", error);
     return NextResponse.json({
       success: false,
       message: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`

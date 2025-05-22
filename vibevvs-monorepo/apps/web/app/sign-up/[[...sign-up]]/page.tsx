@@ -10,9 +10,9 @@ export default function SignUpPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-black">
       <div className="w-full max-w-md">
-        <SignUp 
-          appearance={{
-            elements: {
+              <SignUp 
+                appearance={{
+                  elements: {
               rootBox: "mx-auto",
               card: "bg-black/40 border border-white/10 shadow-xl",
               headerTitle: "text-white",
@@ -27,8 +27,8 @@ export default function SignUpPage() {
           path="/sign-up"
           redirectUrl="/dashboard"
           signInUrl="/login"
-        />
-      </div>
-    </div>
+              />
+            </div>
+          </div>
   );
 } 

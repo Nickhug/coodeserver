@@ -1,10 +1,22 @@
 "use client";
 
 import { SignIn } from "@clerk/nextjs";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
 
 export default function LoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const [isVvsFlow, setIsVvsFlow] = useState(false);
+  
+  // Check if this is a VVS login flow (presence of connection_id)
+  const connectionId = searchParams?.get('connection_id');
+  
+  useEffect(() => {
+    if (connectionId) {
+      setIsVvsFlow(true);
+    }
+  }, [connectionId]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-black">
@@ -24,9 +36,17 @@ export default function LoginPage() {
             }
           }}
           path="/login"
-          redirectUrl="/dashboard"
+          afterSignInUrl={isVvsFlow && connectionId ? `/api/auth/send-auth?connection_id=${connectionId}` : '/dashboard'}
           signUpUrl="/sign-up"
         />
+        
+        {isVvsFlow && (
+          <div className="mt-4 text-center">
+            <p className="text-white/70 text-sm">
+              Signing in for VVS integration. You'll be redirected back to the editor after login.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );
