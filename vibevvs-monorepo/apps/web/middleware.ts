@@ -17,46 +17,58 @@ const isPublicRoute = createRouteMatcher([
 
 export default clerkMiddleware((auth, req) => {
   const url = new URL(req.url);
+  
+  // Add some debugging for VVS auth flow
+  if (url.searchParams.has('connection_id') || url.searchParams.has('auth_token')) {
+    console.log("🔄 VVS auth flow detected:", url.pathname, url.searchParams.toString());
+  }
 
-  // Special handling for VVS auth flow
+  // Always allow VVS auth token requests to pass through
   if (url.searchParams.has('auth_token')) {
-    // This is a direct auth token request, let it pass through
+    console.log("✅ Auth token request - allowing through");
     return NextResponse.next();
   }
 
-  // Check if we're dealing with a VVS connection request
+  // Special handling for VVS connection requests
   if (url.searchParams.has('connection_id')) {
     const connectionId = url.searchParams.get('connection_id');
+    console.log("🔍 Connection ID:", connectionId);
     
-    // If not on login page, redirect to login with connection_id
-    if (!url.pathname.startsWith('/login')) {
-      const loginUrl = new URL('/login', req.url);
-      // Make sure connectionId is not null before setting it
-      if (connectionId) {
-        loginUrl.searchParams.set('connection_id', connectionId);
-      }
-      return NextResponse.redirect(loginUrl);
+    // Already on the login page - allow through
+    if (url.pathname.startsWith('/login')) {
+      console.log("✅ Already on login page with connection_id - allowing through");
+      return NextResponse.next();
     }
     
-    // Already on login page with connection_id, let it proceed
-    return NextResponse.next();
+    // Already on the send-auth endpoint - allow through
+    if (url.pathname.startsWith('/api/auth/send-auth')) {
+      console.log("✅ On send-auth endpoint - allowing through");
+      return NextResponse.next();
+    }
+    
+    // Redirect to login with the connection_id preserved
+    console.log("🔄 Redirecting to login with connection_id");
+    const loginUrl = new URL('/login', req.url);
+    if (connectionId) {
+      loginUrl.searchParams.set('connection_id', connectionId);
+    }
+    return NextResponse.redirect(loginUrl);
   }
 
   // Standard route protection
   if (!isPublicRoute(req)) {
-    // Check if we have a session cookie that indicates authentication
-    const hasSession = req.cookies.has('__clerk_session');
+    // Check for Clerk session cookie instead of using the auth object directly
+    const hasClerkSession = req.cookies.has('__clerk_session');
     
-    if (!hasSession) {
-      // Not authenticated, redirect to login
+    if (!hasClerkSession) {
+      console.log("🔒 Protected route, not authenticated - redirecting to login:", url.pathname);
+      // Redirect to login
       const loginUrl = new URL('/login', req.url);
-      // Preserve the return URL for post-login redirect
-      loginUrl.searchParams.set('redirect_url', url.pathname);
       return NextResponse.redirect(loginUrl);
     }
   }
   
-  // Either the route is public, or the user is authenticated
+  // Either public route or user is authenticated
   return NextResponse.next();
 });
 

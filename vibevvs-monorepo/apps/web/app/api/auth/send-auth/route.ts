@@ -24,16 +24,21 @@ export async function POST(request: NextRequest) {
 // Combined handler for both GET and POST
 async function handleAuthRequest(request: NextRequest) {
   try {
+    console.log("🔄 Auth request received:", request.method, request.url);
+    
     // Get auth session to verify user is logged in
     const session = await auth();
     const userId = session.userId;
     
     if (!userId) {
+      console.error("❌ Not authenticated - no userId in session");
       return NextResponse.json(
         { success: false, message: 'Not authenticated' },
         { status: 401 }
       );
     }
+    
+    console.log("✅ Authenticated user:", userId);
     
     // Get connection_id from query params (GET) or request body (POST)
     let connectionId: string | null = null;
@@ -41,18 +46,21 @@ async function handleAuthRequest(request: NextRequest) {
     // Check URL params first (for GET redirects from login)
     const url = new URL(request.url);
     connectionId = url.searchParams.get('connection_id');
+    console.log("🔍 Connection ID from URL:", connectionId);
     
     // If not in URL params, try to get from request body (for POST requests)
     if (!connectionId && request.method === 'POST') {
       try {
         const body = await request.json();
         connectionId = body.connectionId;
+        console.log("🔍 Connection ID from request body:", connectionId);
       } catch (e) {
-        // Ignore JSON parsing errors
+        console.error("❌ Error parsing request body:", e);
       }
     }
 
     if (!connectionId) {
+      console.error("❌ Missing connection_id parameter");
       return NextResponse.json(
         { success: false, message: 'Missing connection_id parameter' },
         { status: 400 }
@@ -108,6 +116,8 @@ async function handleAuthRequest(request: NextRequest) {
       const baseUrl = `${protocol}//${wsUrl.host}`;
       const authUrl = `${baseUrl}/api/auth`;
       
+      console.log("🔄 Sending auth data to WS server:", authUrl);
+      
       // Send auth data to WS server
       const response = await axios.post(authUrl, {
         connectionId,
@@ -117,6 +127,8 @@ async function handleAuthRequest(request: NextRequest) {
         headers: { 'Content-Type': 'application/json' },
         timeout: 5000 // 5 second timeout
       });
+      
+      console.log("✅ WS server response:", response.status, response.data);
       
       if (response.status === 200 && response.data.success) {
         // If this was a GET request from browser redirect, return a success page
