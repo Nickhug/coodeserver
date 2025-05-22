@@ -1,16 +1,15 @@
 "use client";
 
-import { SignUp } from "@clerk/nextjs";
-import { BackgroundGradientAnimation } from "../../../components/ui/background-gradient-animation";
-import { NoiseTexture } from "../../../components/ui/noise-texture";
-import Link from "next/link";
-import { dark } from "@clerk/themes";
+import { SignIn } from "@clerk/nextjs";
+import { useRouter } from "next/navigation";
 
-export default function SignUpPage() {
+export default function LoginPage() {
+  const router = useRouter();
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-black">
       <div className="w-full max-w-md">
-        <SignUp 
+        <SignIn 
           appearance={{
             elements: {
               rootBox: "mx-auto",
@@ -24,9 +23,9 @@ export default function SignUpPage() {
               identityPreview: "bg-black/60 border-white/10"
             }
           }}
-          path="/sign-up"
+          path="/login"
           redirectUrl="/dashboard"
-          signInUrl="/login"
+          signUpUrl="/sign-up"
         />
       </div>
     </div>

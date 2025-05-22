@@ -1,0 +1,3 @@
+Please create a favicon.ico file in the public directory.
+This is just a placeholder reminder created by the assistant since binary files can't be directly created through the text interface.
+You should add a proper favicon icon to make the site look professional. 

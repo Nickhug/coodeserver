@@ -30,10 +30,17 @@
   "dependencies": {
     "@clerk/backend": "^1.31.4",
     "@google/generative-ai": "^0.24.1",
+    "@iconify/react": "^6.0.0",
+    "@lobehub/icons-static-svg": "^1.47.0",
+    "clsx": "^2.1.1",
     "eslint-config-next": "^15.3.2",
+    "framer-motion": "^12.12.1",
     "http-proxy": "^1.18.1",
+    "motion": "^12.12.1",
     "next": "^15.3.2",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "simple-icons": "^14.14.0",
+    "tailwind-merge": "^3.3.0"
   }
 }
