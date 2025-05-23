@@ -182,7 +182,7 @@ export default function Home() {
       <div style={{ height: navbarHeight > 0 ? `${navbarHeight}px` : 'calc(64px + 1rem)' }} />
 
       {/* Hero Section */}
-      <Section className="pt-20 md:pt-28 pb-3">
+      <Section className="pt-10 md:pt-14 pb-3">
         <BackgroundGradientAnimation 
           gradientBackgroundStart="#c04848" 
           gradientBackgroundEnd="#480048"
