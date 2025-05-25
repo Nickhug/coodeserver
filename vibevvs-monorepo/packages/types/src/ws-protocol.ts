@@ -35,6 +35,9 @@ export enum MessageType {
   PROVIDER_STREAM_CHUNK = 'provider_stream_chunk',
   PROVIDER_STREAM_END = 'provider_stream_end',
   
+  // Tool messages
+  TOOL_EXECUTION_RESULT = 'tool_execution_result',
+  
   // User data messages
   USER_DATA_REQUEST = 'user_data_request',
   USER_DATA_RESPONSE = 'user_data_response',

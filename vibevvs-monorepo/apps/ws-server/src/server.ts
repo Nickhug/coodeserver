@@ -381,7 +381,7 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
       await handleProviderList(ws);
     } else if (messageType === MessageType.PROVIDER_MODELS) {
       await handleProviderModels(ws, clientMessage);
-    } else if (messageType === 'user_data_request') {
+    } else if (messageType === MessageType.USER_DATA_REQUEST) {
       await handleUserDataRequest(ws, clientMessage);
     } else if (messageType === MessageType.PROVIDER_REQUEST) {
       if (config.authEnabled && !isAuthenticated) {
@@ -1597,7 +1597,7 @@ async function handleUserDataRequest(ws: WebSocketWithData, message: ClientMessa
     if (userId !== ws.connectionData.userId) {
       logger.warn(`User data request from ${ws.connectionData.userId} for another user ${userId}`);
       sendToClient(ws, {
-        type: 'user_data_response' as any,
+        type: MessageType.USER_DATA_RESPONSE,
         payload: {
           error: 'Unauthorized to access this user data'
         }
@@ -1611,7 +1611,7 @@ async function handleUserDataRequest(ws: WebSocketWithData, message: ClientMessa
     if (!user) {
       logger.warn(`User with ID ${userId} not found in database`);
       sendToClient(ws, {
-        type: 'user_data_response' as any,
+        type: MessageType.USER_DATA_RESPONSE,
         payload: {
           error: 'User not found'
         }
@@ -1630,7 +1630,7 @@ async function handleUserDataRequest(ws: WebSocketWithData, message: ClientMessa
     // Send user data back to client
     logger.info(`Sending user data for ${userId}`);
     sendToClient(ws, {
-      type: 'user_data_response' as any,
+      type: MessageType.USER_DATA_RESPONSE,
       payload: {
         user: userData
       }
@@ -1638,7 +1638,7 @@ async function handleUserDataRequest(ws: WebSocketWithData, message: ClientMessa
   } catch (error) {
     logger.error('Error handling user data request:', error);
     sendToClient(ws, {
-      type: 'user_data_response' as any,
+      type: MessageType.USER_DATA_RESPONSE,
       payload: {
         error: 'Error fetching user data'
       }
