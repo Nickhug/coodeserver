@@ -527,7 +527,7 @@ export async function sendStreamingRequest(
                 // This could be an incomplete JSON chunk
                 // Store it and try to combine with the next chunk
                 logger.warn(`Incomplete JSON chunk detected: ${jsonText.substring(0, 50)}...`);
-                partialLine = line;
+                partialLine = jsonText;
                 
                 // Set up timeout to prevent hanging if we don't get the rest of the JSON
                 setupPartialLineTimeout();
@@ -577,18 +577,65 @@ export async function sendStreamingRequest(
     
     // If we still have a partial line at the end, try to use it
     if (partialLine) {
-      logger.warn(`Stream ended with remaining partial line: ${partialLine.substring(0, 50)}...`);
+      logger.warn(`Stream ended with remaining partial line: ${partialLine.substring(0, 100)}...`);
       try {
-        // Try to extract any useful text from the partial line
-        const textMatch = partialLine.match(/"text":\s*"([^"]*)"/);
-        if (textMatch && textMatch[1]) {
-          const extractedText = textMatch[1];
-          logger.info(`Extracted text from partial line: ${extractedText}`);
-          handlers.onChunk(extractedText);
-          completeText += extractedText;
+        const parsedPartial = JSON.parse(partialLine);
+        // If parsing succeeded, this partial line was actually a complete JSON object.
+        // It could be a final data chunk or an error object.
+        rawResponse = parsedPartial; // Update rawResponse with this final parsed object
+        logger.info(`Successfully parsed final partial line as JSON: ${JSON.stringify(parsedPartial, null, 2)}`);
+
+        // Check if this parsed final object is an error
+        if (parsedPartial.error) {
+          logger.error(`Error detected in final parsed partial line: ${JSON.stringify(parsedPartial.error)}`);
+          // This error will be handled by onComplete based on rawResponse
+          completeText = ''; // Clear any previously accumulated text if we end on an error
+        } else if (parsedPartial.candidates && parsedPartial.candidates[0]?.content?.parts) {
+          // Or, if it's a regular data chunk, extract text
+          let finalChunkText = '';
+          for (const part of parsedPartial.candidates[0].content.parts) {
+            if (part.text) {
+              finalChunkText += part.text;
+            }
+          }
+          if (finalChunkText) {
+            logger.info(`Extracted text from final parsed partial line: ${finalChunkText}`);
+            handlers.onChunk(finalChunkText); // Process it like a regular chunk
+            completeText += finalChunkText;
+          }
         }
       } catch (e) {
-        logger.error(`Failed to extract text from partial line: ${e}`);
+        // JSON.parse failed, so it's not a complete JSON object.
+        // This is the case for the originally reported log.
+        logger.error(`Final partial line is not valid JSON: ${partialLine.substring(0, 100)}... Error: ${e}`);
+        // Attempt to extract text using regex as a last resort, if it wasn't an error that should have been JSON
+        if (!partialLine.toLowerCase().includes('"error"')) {
+          const textMatch = partialLine.match(/"text":\s*"([^"]*)"/);
+          if (textMatch && textMatch[1]) {
+            const extractedText = textMatch[1];
+            logger.info(`Extracted text via regex from non-JSON final partial line: ${extractedText}`);
+            handlers.onChunk(extractedText);
+            completeText += extractedText;
+          }
+        } else {
+            // It contains "error" but isn't valid JSON. This is the problematic scenario.
+            logger.error(`Final partial line contained 'error' but was not valid JSON: ${partialLine.substring(0, 150)}`);
+            // Synthesize an error in rawResponse so onComplete can handle it.
+            let errorMessage = 'Incomplete error response from API.';
+            let errorCode = 'PARTIAL_API_ERROR';
+            // Try to extract a message from the partial error if possible
+            const messageMatch = partialLine.match(/"message":\s*"([^"]*)/);
+            if (messageMatch && messageMatch[1]) {
+                errorMessage = messageMatch[1] + "..."; // Indicate it's partial
+            }
+            const codeMatch = partialLine.match(/"code":\s*(\d+)/);
+            if (codeMatch && codeMatch[1]) {
+                errorCode = `API_CODE_${codeMatch[1]}`;
+            }
+            rawResponse = { error: { message: errorMessage, code: errorCode, details: partialLine } };
+            completeText = ''; // Clear any text, we are ending on an error.
+            logger.info('Set rawResponse to a synthesized error due to partial error JSON at stream end.');
+        }
       }
     }
     
@@ -857,6 +904,7 @@ export async function streamGeminiMessage(params: {
   if (tools && Array.isArray(tools) && tools.length > 0) {
     logger.info(`Gemini API request includes ${tools.length} tools: ${tools.map(t => t.name).join(', ')}`);
   }
+  
   
   await sendStreamingRequest(
     {

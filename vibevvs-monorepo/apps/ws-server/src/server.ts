@@ -1226,7 +1226,10 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
           const userChatMode = message.payload.chatMode;
           const chatMode: 'normal' | 'gather' | 'agent' = 
             userChatMode === 'gather' ? 'gather' :
-            userChatMode === 'agent' ? 'agent' : 'normal';
+            userChatMode === 'normal' ? 'normal' : 'agent';
+          
+          // Log chat mode and tools for debugging
+          logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ChatMode: ${userChatMode} -> ${chatMode}, Tools: ${tools ? tools.map((t: any) => t.name).join(', ') : 'none'}`);
           
           // Use Gemini's streaming API with proper handlers
           await gemini.streamGeminiMessage({
@@ -1344,6 +1347,42 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               logger.info(`Provider Response (Stream) [${safeRequestId}]: ` +
                 `Success: ${response.success}, Tokens Used: ${response.tokensUsed}, Text Length: ${response.text?.length || 0}, ` +
                 `ToolCall: ${response.toolCall ? response.toolCall.name : 'none'}, WaitingForToolCall: ${!!response.waitingForToolCall}`);
+              
+              // Attempt to parse response.text for an error, even if response.success is true
+              let apiErrorPayload: any = null;
+              if (response.text) {
+                try {
+                  const parsedText = JSON.parse(response.text);
+                  if (parsedText && parsedText.error) {
+                    apiErrorPayload = parsedText.error;
+                    logger.warn(
+                      `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                      `Error found in Gemini response text: ${JSON.stringify(apiErrorPayload)}`
+                    );
+                  }
+                } catch (e) {
+                  // Not a JSON error, proceed as normal
+                }
+              }
+
+              if (apiErrorPayload) {
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_ERROR,
+                  payload: {
+                    error: apiErrorPayload.message || 'Error from Gemini API',
+                    code: apiErrorPayload.code || 'GEMINI_API_ERROR',
+                    details: apiErrorPayload.details,
+                    requestId: safeRequestId,
+                    provider,
+                    model
+                  }
+                });
+                // Log usage if available, even on API error, as tokens might have been consumed
+                if (userId && response.tokensUsed) {
+                  logUsage(userId, provider, model, response.tokensUsed);
+                }
+                return; // Stop further processing
+              }
               
               // Process response to extract and handle any function calls that might be in the text
               // Strip out any remaining function call text from the response
@@ -1734,7 +1773,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
     const userChatMode = message.payload.chatMode;
     const requestChatMode: 'normal' | 'gather' | 'agent' = 
       userChatMode === 'gather' ? 'gather' :
-      userChatMode === 'agent' ? 'agent' : 'normal';
+      userChatMode === 'normal' ? 'normal' : 'agent';
     
     // Process based on whether this is a streaming request
     if (stream) {
