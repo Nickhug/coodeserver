@@ -46,7 +46,7 @@ export const config = {
   embeddingModel: process.env.EMBEDDING_MODEL || 'text-embedding-004',
   embeddingApiVersion: process.env.EMBEDDING_API_VERSION || 'v1alpha',
   embeddingBatchSize: process.env.EMBEDDING_BATCH_SIZE ? parseInt(process.env.EMBEDDING_BATCH_SIZE, 10) : 5,
-  embeddingRateLimit: parseInt(process.env.EMBEDDING_RATE_LIMIT || '10', 10),
+  embeddingRateLimit: parseInt(process.env.EMBEDDING_RATE_LIMIT || '5', 10),
 };
 
 /**

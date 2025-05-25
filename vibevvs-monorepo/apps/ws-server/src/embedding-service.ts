@@ -36,10 +36,12 @@ const EMBEDDING_API_VERSION = (config.embeddingApiVersion || 'v1alpha') as 'v1al
 const RATE_LIMIT = config.embeddingRateLimit || 10; // requests per minute
 const BATCH_SIZE = 5; // embeddings per batch
 
-// Rate limiting
+// Rate limiting with more conservative approach
 const rateLimiter = {
   requests: 0,
   resetTime: Date.now() + 60000, // 1 minute window
+  lastRequestTime: 0,
+  minDelayBetweenRequests: 6000, // 6 seconds between requests (10 per minute)
   
   async checkLimit(): Promise<boolean> {
     const now = Date.now();
@@ -52,15 +54,26 @@ const rateLimiter = {
       return false;
     }
     
+    // Check minimum delay between requests
+    const timeSinceLastRequest = now - this.lastRequestTime;
+    if (timeSinceLastRequest < this.minDelayBetweenRequests) {
+      return false;
+    }
+    
     this.requests++;
+    this.lastRequestTime = now;
     return true;
   },
   
   async waitForSlot(): Promise<void> {
     while (!(await this.checkLimit())) {
-      const waitTime = this.resetTime - Date.now();
-      logger.info(`Rate limit reached, waiting ${waitTime}ms`);
-      await new Promise(resolve => setTimeout(resolve, Math.min(waitTime, 5000)));
+      const now = Date.now();
+      const waitTime = Math.max(
+        this.resetTime - now,
+        this.minDelayBetweenRequests - (now - this.lastRequestTime)
+      );
+      logger.info(`Rate limit: waiting ${waitTime}ms before next request`);
+      await new Promise(resolve => setTimeout(resolve, Math.min(waitTime + 100, 10000))); // Add 100ms buffer
     }
   }
 };

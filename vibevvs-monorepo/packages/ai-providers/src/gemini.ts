@@ -1021,32 +1021,43 @@ export async function generateBatchEmbeddings(params: {
   for (let i = 0; i < contents.length; i += batchSize) {
     const batch = contents.slice(i, i + batchSize);
     
-    // Process batch in parallel
-    const batchPromises = batch.map(async (item) => {
-      const result = await generateEmbedding({
-        apiKey,
-        content: item.content,
-        model,
-        apiVersion
-      });
-      
-      return {
-        id: item.id,
-        embedding: result.embedding,
-        tokensUsed: result.tokensUsed,
-        error: result.error
-      };
-    });
+    // Process batch sequentially (not in parallel) to avoid rate limits
+    for (const item of batch) {
+      try {
+        const result = await generateEmbedding({
+          apiKey,
+          content: item.content,
+          model,
+          apiVersion
+        });
+        
+        results.push({
+          id: item.id,
+          embedding: result.embedding,
+          tokensUsed: result.tokensUsed,
+          error: result.error
+        });
+        
+        totalTokensUsed += result.tokensUsed;
+        
+        // Add delay between individual requests within a batch
+        if (batch.indexOf(item) < batch.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay between requests
+        }
+      } catch (error) {
+        logger.error(`Error generating embedding for item ${item.id}:`, error);
+        results.push({
+          id: item.id,
+          embedding: [],
+          tokensUsed: 0,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
     
-    const batchResults = await Promise.all(batchPromises);
-    results.push(...batchResults);
-    
-    // Track total tokens
-    totalTokensUsed += batchResults.reduce((sum, r) => sum + r.tokensUsed, 0);
-    
-    // Add delay between batches to avoid rate limits
+    // Add longer delay between batches
     if (i + batchSize < contents.length) {
-      await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay
+      await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay between batches
     }
     
     logger.info(`Processed batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(contents.length / batchSize)}`);
