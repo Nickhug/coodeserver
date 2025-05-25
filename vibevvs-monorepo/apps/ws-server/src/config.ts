@@ -33,6 +33,18 @@ export const config = {
   geminiApiKey: process.env.GEMINI_API_KEY || '',
   groqApiKey: process.env.GROQ_API_KEY || '',
   mistralApiKey: process.env.MISTRAL_API_KEY || '',
+  
+  // R2 Storage Configuration
+  r2AccountId: process.env.R2_ACCOUNT_ID || '',
+  r2AccessKeyId: process.env.R2_ACCESS_KEY_ID || '',
+  r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
+  r2BucketName: process.env.R2_BUCKET_NAME || 'vvs-embeddings',
+  r2Endpoint: process.env.R2_ENDPOINT || '',
+  
+  // Embedding Configuration
+  embeddingModel: process.env.EMBEDDING_MODEL || 'text-embedding-004',
+  embeddingBatchSize: process.env.EMBEDDING_BATCH_SIZE ? parseInt(process.env.EMBEDDING_BATCH_SIZE, 10) : 5,
+  embeddingRateLimit: process.env.EMBEDDING_RATE_LIMIT ? parseInt(process.env.EMBEDDING_RATE_LIMIT, 10) : 10, // requests per minute
 };
 
 /**
@@ -80,6 +92,20 @@ export function validateConfig(): { isValid: boolean; errors: string[]; warnings
 
   if (config.defaultProvider === 'mistral' && !config.mistralApiKey) {
     errors.push('Mistral is set as the default provider but MISTRAL_API_KEY is not provided');
+  }
+
+  // R2 validation (warnings only, as it's optional)
+  if (!config.r2AccountId || !config.r2AccessKeyId || !config.r2SecretAccessKey || !config.r2Endpoint) {
+    warnings.push('R2 storage is not fully configured. Embedding storage will be disabled.');
+  }
+  
+  // Embedding configuration validation
+  if (config.embeddingBatchSize <= 0) {
+    errors.push(`Invalid embedding batch size: ${config.embeddingBatchSize}`);
+  }
+  
+  if (config.embeddingRateLimit <= 0) {
+    errors.push(`Invalid embedding rate limit: ${config.embeddingRateLimit}`);
   }
 
   return {

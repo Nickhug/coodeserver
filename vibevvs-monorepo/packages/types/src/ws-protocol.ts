@@ -39,6 +39,16 @@ export enum MessageType {
   USER_DATA_REQUEST = 'user_data_request',
   USER_DATA_RESPONSE = 'user_data_response',
   
+  // Codebase indexing messages
+  CODEBASE_INDEX_REQUEST = 'codebase_index_request',
+  CODEBASE_INDEX_RESPONSE = 'codebase_index_response',
+  CODEBASE_EMBEDDING_REQUEST = 'codebase_embedding_request',
+  CODEBASE_EMBEDDING_RESPONSE = 'codebase_embedding_response',
+  CODEBASE_EMBEDDING_BATCH_REQUEST = 'codebase_embedding_batch_request',
+  CODEBASE_EMBEDDING_BATCH_RESPONSE = 'codebase_embedding_batch_response',
+  CODEBASE_SEARCH_REQUEST = 'codebase_search_request',
+  CODEBASE_SEARCH_RESPONSE = 'codebase_search_response',
+  
   // General error
   ERROR = 'error'
 }
@@ -251,4 +261,111 @@ export type UserDataRequestMessage = ClientMessage & { payload: UserDataRequestP
 /**
  * User data response message
  */
-export type UserDataResponseMessage = ServerMessage & { payload: UserDataResponsePayload }; 
+export type UserDataResponseMessage = ServerMessage & { payload: UserDataResponsePayload };
+
+/**
+ * Code chunk interface for codebase indexing
+ */
+export interface CodeChunk {
+  id: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  content: string;
+  type: 'function' | 'class' | 'method' | 'interface' | 'type' | 'variable' | 'import' | 'export';
+  name?: string;
+  language: string;
+  metadata?: {
+    signature?: string;
+    docstring?: string;
+    complexity?: number;
+    dependencies?: string[];
+    exports?: string[];
+  };
+}
+
+/**
+ * Codebase embedding request payload
+ */
+export interface CodebaseEmbeddingRequestPayload {
+  requestId: string;
+  chunk: CodeChunk;
+  model?: string;
+}
+
+/**
+ * Codebase embedding response payload
+ */
+export interface CodebaseEmbeddingResponsePayload {
+  requestId: string;
+  chunkId: string;
+  embedding: number[];
+  model: string;
+  tokensUsed?: number;
+  cached?: boolean;
+  error?: string;
+}
+
+/**
+ * Codebase embedding batch request payload
+ */
+export interface CodebaseEmbeddingBatchRequestPayload {
+  requestId: string;
+  chunks: CodeChunk[];
+  model?: string;
+}
+
+/**
+ * Codebase embedding batch response payload
+ */
+export interface CodebaseEmbeddingBatchResponsePayload {
+  requestId: string;
+  embeddings: Array<{
+    chunkId: string;
+    embedding: number[];
+    cached?: boolean;
+  }>;
+  model: string;
+  totalTokensUsed?: number;
+  errors?: Array<{
+    chunkId: string;
+    error: string;
+  }>;
+}
+
+/**
+ * Codebase search request payload
+ */
+export interface CodebaseSearchRequestPayload {
+  requestId: string;
+  query: string;
+  limit?: number;
+  filters?: {
+    fileTypes?: string[];
+    paths?: string[];
+    languages?: string[];
+  };
+}
+
+/**
+ * Codebase search response payload
+ */
+export interface CodebaseSearchResponsePayload {
+  requestId: string;
+  results: Array<{
+    chunk: CodeChunk;
+    score: number;
+    highlights?: string[];
+  }>;
+  error?: string;
+}
+
+/**
+ * Type definitions for codebase indexing messages
+ */
+export type CodebaseEmbeddingRequestMessage = ClientMessage & { payload: CodebaseEmbeddingRequestPayload };
+export type CodebaseEmbeddingResponseMessage = ServerMessage & { payload: CodebaseEmbeddingResponsePayload };
+export type CodebaseEmbeddingBatchRequestMessage = ClientMessage & { payload: CodebaseEmbeddingBatchRequestPayload };
+export type CodebaseEmbeddingBatchResponseMessage = ServerMessage & { payload: CodebaseEmbeddingBatchResponsePayload };
+export type CodebaseSearchRequestMessage = ClientMessage & { payload: CodebaseSearchRequestPayload };
+export type CodebaseSearchResponseMessage = ServerMessage & { payload: CodebaseSearchResponsePayload }; 

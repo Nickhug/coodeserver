@@ -915,10 +915,155 @@ export async function sendGeminiMessage(params: {
   });
 }
 
+/**
+ * Generate embeddings using Gemini's text embedding model
+ */
+export async function generateEmbedding(params: {
+  apiKey: string;
+  content: string;
+  model?: string;
+}): Promise<{
+  embedding: number[];
+  tokensUsed: number;
+  model: string;
+  error?: string;
+}> {
+  const { apiKey, content, model = 'text-embedding-004' } = params;
+  
+  try {
+    logger.info(`Generating embedding with model: ${model}`);
+    
+    // Gemini embedding API endpoint
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${apiKey}`;
+    
+    const requestBody = {
+      model: `models/${model}`,
+      content: {
+        parts: [{
+          text: content
+        }]
+      }
+    };
+    
+    const fetch = globalThis.fetch;
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody)
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Gemini Embedding API error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+    
+    const data = await response.json();
+    
+    if (!data.embedding || !data.embedding.values) {
+      throw new Error('Invalid embedding response format');
+    }
+    
+    // Estimate tokens (Gemini doesn't provide token count for embeddings)
+    const estimatedTokens = Math.ceil(content.length / 4);
+    
+    return {
+      embedding: data.embedding.values,
+      tokensUsed: estimatedTokens,
+      model: model
+    };
+  } catch (error) {
+    logger.error('Error generating embedding:', error);
+    return {
+      embedding: [],
+      tokensUsed: 0,
+      model: model,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+/**
+ * Generate embeddings for multiple texts in batch
+ */
+export async function generateBatchEmbeddings(params: {
+  apiKey: string;
+  contents: Array<{ id: string; content: string }>;
+  model?: string;
+  batchSize?: number;
+}): Promise<{
+  embeddings: Array<{
+    id: string;
+    embedding: number[];
+    tokensUsed: number;
+    error?: string;
+  }>;
+  totalTokensUsed: number;
+  model: string;
+}> {
+  const { apiKey, contents, model = 'text-embedding-004', batchSize = 5 } = params;
+  
+  logger.info(`Generating batch embeddings for ${contents.length} items with batch size ${batchSize}`);
+  
+  const results: Array<{
+    id: string;
+    embedding: number[];
+    tokensUsed: number;
+    error?: string;
+  }> = [];
+  
+  let totalTokensUsed = 0;
+  
+  // Process in batches to avoid rate limits
+  for (let i = 0; i < contents.length; i += batchSize) {
+    const batch = contents.slice(i, i + batchSize);
+    
+    // Process batch in parallel
+    const batchPromises = batch.map(async (item) => {
+      const result = await generateEmbedding({
+        apiKey,
+        content: item.content,
+        model
+      });
+      
+      return {
+        id: item.id,
+        embedding: result.embedding,
+        tokensUsed: result.tokensUsed,
+        error: result.error
+      };
+    });
+    
+    const batchResults = await Promise.all(batchPromises);
+    results.push(...batchResults);
+    
+    // Track total tokens
+    totalTokensUsed += batchResults.reduce((sum, r) => sum + r.tokensUsed, 0);
+    
+    // Add delay between batches to avoid rate limits
+    if (i + batchSize < contents.length) {
+      await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay
+    }
+    
+    logger.info(`Processed batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(contents.length / batchSize)}`);
+  }
+  
+  return {
+    embeddings: results,
+    totalTokensUsed,
+    model
+  };
+}
+
 export default {
   sendRequest,
   sendStreamingRequest,
   listModels,
   streamGeminiMessage,
-  sendGeminiMessage
+  sendGeminiMessage,
+  generateEmbedding,
+  generateBatchEmbeddings,
+  getModelConfig,
+  estimateTokenCount
 };

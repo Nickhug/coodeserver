@@ -45,6 +45,18 @@ MISTRAL_API_KEY=your_mistral_api_key
 # Database (Supabase)
 SUPABASE_URL=https://your-project-id.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
+
+# R2 Storage (for embeddings)
+R2_ACCOUNT_ID=your_cloudflare_account_id
+R2_ACCESS_KEY_ID=your_r2_access_key_id
+R2_SECRET_ACCESS_KEY=your_r2_secret_access_key
+R2_BUCKET_NAME=vvs-embeddings
+R2_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
+
+# Embedding Configuration
+EMBEDDING_MODEL=text-embedding-004
+EMBEDDING_BATCH_SIZE=5
+EMBEDDING_RATE_LIMIT=10
 ```
 
 ### Installation

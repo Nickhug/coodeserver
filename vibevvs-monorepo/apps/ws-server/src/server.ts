@@ -354,6 +354,11 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
       const toolName = clientMessage.payload?.toolName || 'unknown';
       const toolId = clientMessage.payload?.toolCallId || 'unknown';
       logger.info(`WS MSG [${connectionId}][${requestId}] Tool execution result: ${toolName}, id: ${toolId}, error: ${!!clientMessage.payload?.isError}`);
+    } else if (messageType === MessageType.CODEBASE_EMBEDDING_REQUEST) {
+      logger.info(`WS MSG [${connectionId}][${requestId}] Codebase embedding request`);
+    } else if (messageType === MessageType.CODEBASE_EMBEDDING_BATCH_REQUEST) {
+      const chunkCount = clientMessage.payload?.chunks?.length || 0;
+      logger.info(`WS MSG [${connectionId}][${requestId}] Codebase embedding batch request for ${chunkCount} chunks`);
     } else {
       logger.debug(`WS MSG [${connectionId}] Received message type: ${messageType}`);
     }
@@ -405,6 +410,34 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
         return;
       }
       await handleToolExecutionResult(ws, clientMessage);
+    } else if (messageType === MessageType.CODEBASE_EMBEDDING_REQUEST) {
+      if (config.authEnabled && !isAuthenticated) {
+        logger.warn(`WS AUTH [${connectionId}] Unauthorized embedding request rejected`);
+        sendToClient(ws, { 
+          type: MessageType.ERROR, 
+          payload: { 
+            error: 'Authentication required', 
+            code: 'UNAUTHORIZED',
+            requestId: clientMessage.payload?.requestId
+          } 
+        });
+        return;
+      }
+      await handleCodebaseEmbeddingRequest(ws, clientMessage);
+    } else if (messageType === MessageType.CODEBASE_EMBEDDING_BATCH_REQUEST) {
+      if (config.authEnabled && !isAuthenticated) {
+        logger.warn(`WS AUTH [${connectionId}] Unauthorized batch embedding request rejected`);
+        sendToClient(ws, { 
+          type: MessageType.ERROR, 
+          payload: { 
+            error: 'Authentication required', 
+            code: 'UNAUTHORIZED',
+            requestId: clientMessage.payload?.requestId
+          } 
+        });
+        return;
+      }
+      await handleCodebaseEmbeddingBatchRequest(ws, clientMessage);
     } else {
       logger.warn(`WS MSG [${connectionId}] Unknown message type: ${messageType}`);
       sendToClient(ws, { 
@@ -2103,6 +2136,140 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
     
     // Clean up any context due to error
     activeTurnContexts.delete(safeRequestId);
+  }
+}
+
+/**
+ * Handle codebase embedding request
+ */
+async function handleCodebaseEmbeddingRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
+  if (message.type !== MessageType.CODEBASE_EMBEDDING_REQUEST) {
+    logger.error('Invalid message type passed to handleCodebaseEmbeddingRequest');
+    return;
+  }
+
+  const { chunk, requestId } = message.payload;
+  const userId = ws.connectionData.userId;
+  
+  if (!userId) {
+    logger.error(`WS EMBEDDING [${ws.connectionData.connectionId}][${requestId}] No user ID available for embedding request`);
+    sendToClient(ws, {
+      type: MessageType.CODEBASE_EMBEDDING_RESPONSE,
+      payload: {
+        requestId,
+        embedding: [],
+        model: config.embeddingModel,
+        error: 'User ID not available'
+      }
+    });
+    return;
+  }
+  
+  logger.info(`Processing embedding request for chunk ${chunk.id} from user ${userId}`);
+  
+  try {
+    // Import embedding service
+    const embeddingService = await import('./embedding-service');
+    
+    // Generate embedding
+    const result = await embeddingService.generateChunkEmbedding(chunk, userId);
+    
+    // Send response
+    sendToClient(ws, {
+      type: MessageType.CODEBASE_EMBEDDING_RESPONSE,
+      payload: {
+        requestId,
+        embedding: result.embedding,
+        model: result.model,
+        tokensUsed: result.tokensUsed
+      }
+    });
+    
+    // Log usage
+    if (result.tokensUsed && result.tokensUsed > 0) {
+      logUsage(userId, 'gemini', config.embeddingModel, result.tokensUsed);
+    }
+  } catch (error) {
+    logger.error(`Error generating embedding for chunk ${chunk.id}:`, error);
+    sendToClient(ws, {
+      type: MessageType.CODEBASE_EMBEDDING_RESPONSE,
+      payload: {
+        requestId,
+        embedding: [],
+        model: config.embeddingModel,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    });
+  }
+}
+
+/**
+ * Handle codebase embedding batch request
+ */
+async function handleCodebaseEmbeddingBatchRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
+  if (message.type !== MessageType.CODEBASE_EMBEDDING_BATCH_REQUEST) {
+    logger.error('Invalid message type passed to handleCodebaseEmbeddingBatchRequest');
+    return;
+  }
+
+  const { chunks, requestId, batchId } = message.payload;
+  const userId = ws.connectionData.userId;
+  
+  if (!userId) {
+    logger.error(`WS EMBEDDING [${ws.connectionData.connectionId}][${requestId}] No user ID available for batch embedding request`);
+    sendToClient(ws, {
+      type: MessageType.CODEBASE_EMBEDDING_BATCH_RESPONSE,
+      payload: {
+        requestId,
+        batchId,
+        embeddings: [],
+        errors: chunks.map((chunk: any) => ({ chunkId: chunk.id, error: 'User ID not available' })),
+        tokensUsed: 0
+      }
+    });
+    return;
+  }
+  
+  logger.info(`Processing batch embedding request for ${chunks.length} chunks from user ${userId}`);
+  
+  try {
+    // Import embedding service
+    const embeddingService = await import('./embedding-service');
+    
+    // Generate embeddings
+    const result = await embeddingService.generateBatchEmbeddings(chunks, userId);
+    
+    // Send response
+    sendToClient(ws, {
+      type: MessageType.CODEBASE_EMBEDDING_BATCH_RESPONSE,
+      payload: {
+        requestId,
+        batchId,
+        embeddings: result.embeddings,
+        errors: result.errors,
+        tokensUsed: result.totalTokensUsed
+      }
+    });
+    
+    // Log usage
+    if (result.totalTokensUsed && result.totalTokensUsed > 0) {
+      logUsage(userId, 'gemini', config.embeddingModel, result.totalTokensUsed);
+    }
+  } catch (error) {
+    logger.error(`Error generating batch embeddings:`, error);
+    sendToClient(ws, {
+      type: MessageType.CODEBASE_EMBEDDING_BATCH_RESPONSE,
+      payload: {
+        requestId,
+        batchId,
+        embeddings: [],
+        errors: chunks.map((chunk: any) => ({ 
+          chunkId: chunk.id, 
+          error: error instanceof Error ? error.message : String(error) 
+        })),
+        tokensUsed: 0
+      }
+    });
   }
 }
 
