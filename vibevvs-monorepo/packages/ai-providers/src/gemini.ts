@@ -922,19 +922,20 @@ export async function generateEmbedding(params: {
   apiKey: string;
   content: string;
   model?: string;
+  apiVersion?: 'v1beta' | 'v1alpha';
 }): Promise<{
   embedding: number[];
   tokensUsed: number;
   model: string;
   error?: string;
 }> {
-  const { apiKey, content, model = 'text-embedding-004' } = params;
+  const { apiKey, content, model = 'text-embedding-004', apiVersion = 'v1beta' } = params;
   
   try {
-    logger.info(`Generating embedding with model: ${model}`);
+    logger.info(`Generating embedding with model: ${model}, API version: ${apiVersion}`);
     
-    // Gemini embedding API endpoint
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${apiKey}`;
+    // Use v1alpha for experimental models, v1beta for stable models
+    const endpoint = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:embedContent?key=${apiKey}`;
     
     const requestBody = {
       model: `models/${model}`,
@@ -992,6 +993,7 @@ export async function generateBatchEmbeddings(params: {
   contents: Array<{ id: string; content: string }>;
   model?: string;
   batchSize?: number;
+  apiVersion?: 'v1beta' | 'v1alpha';
 }): Promise<{
   embeddings: Array<{
     id: string;
@@ -1002,9 +1004,9 @@ export async function generateBatchEmbeddings(params: {
   totalTokensUsed: number;
   model: string;
 }> {
-  const { apiKey, contents, model = 'text-embedding-004', batchSize = 5 } = params;
+  const { apiKey, contents, model = 'text-embedding-004', batchSize = 5, apiVersion = 'v1beta' } = params;
   
-  logger.info(`Generating batch embeddings for ${contents.length} items with batch size ${batchSize}`);
+  logger.info(`Generating batch embeddings for ${contents.length} items with batch size ${batchSize}, API version: ${apiVersion}`);
   
   const results: Array<{
     id: string;
@@ -1024,7 +1026,8 @@ export async function generateBatchEmbeddings(params: {
       const result = await generateEmbedding({
         apiKey,
         content: item.content,
-        model
+        model,
+        apiVersion
       });
       
       return {
@@ -1056,6 +1059,124 @@ export async function generateBatchEmbeddings(params: {
   };
 }
 
+/**
+ * Generate a grounded answer using Gemini's Semantic Retrieval API
+ * This provides a hosted question answering service for RAG systems
+ */
+export async function generateAnswer(params: {
+  apiKey: string;
+  model: string;
+  query: string;
+  passages: Array<{ id: string; content: string }>;
+  answerStyle?: 'ABSTRACTIVE' | 'EXTRACTIVE' | 'VERBOSE';
+  temperature?: number;
+  maxChunksCount?: number;
+  minimumRelevanceScore?: number;
+}): Promise<{
+  answer: string;
+  answerableProbability: number;
+  sources: Array<{ id: string; relevanceScore?: number }>;
+  tokensUsed: number;
+  error?: string;
+}> {
+  const { 
+    apiKey, 
+    model, 
+    query, 
+    passages, 
+    answerStyle = 'ABSTRACTIVE',
+    temperature = 0.2,
+    maxChunksCount = 10,
+    minimumRelevanceScore = 0.5
+  } = params;
+  
+  try {
+    logger.info(`Generating answer with Semantic Retrieval API, model: ${model}, passages: ${passages.length}`);
+    
+    // Semantic Retrieval API endpoint
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateAnswer?key=${apiKey}`;
+    
+    const requestBody = {
+      contents: [{
+        role: 'user',
+        parts: [{ text: query }]
+      }],
+      answerStyle: answerStyle,
+      temperature: temperature,
+      grounding_source: {
+        inlinePassages: {
+          passages: passages.map(passage => ({
+            id: passage.id,
+            content: {
+              parts: [{ text: passage.content }]
+            }
+          }))
+        }
+      }
+    };
+    
+    const fetch = globalThis.fetch;
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody)
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Gemini Semantic Retrieval API error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+    
+    const data = await response.json();
+    
+    if (!data.answer || !data.answer.content || !data.answer.content.parts) {
+      throw new Error('Invalid semantic retrieval response format');
+    }
+    
+    // Extract answer text
+    const answerText = data.answer.content.parts
+      .filter((part: any) => part.text)
+      .map((part: any) => part.text)
+      .join('');
+    
+    // Extract source citations if available
+    const sources: Array<{ id: string; relevanceScore?: number }> = [];
+    if (data.answer.citationMetadata && data.answer.citationMetadata.citationSources) {
+      for (const citation of data.answer.citationMetadata.citationSources) {
+        if (citation.uri) {
+          // Extract passage ID from URI if it matches our format
+          const passageId = citation.uri.replace(/^passage:/, '');
+          sources.push({
+            id: passageId,
+            relevanceScore: citation.relevanceScore
+          });
+        }
+      }
+    }
+    
+    // Estimate tokens
+    const estimatedTokens = Math.ceil((query.length + answerText.length) / 4);
+    
+    return {
+      answer: answerText,
+      answerableProbability: data.answerableProbability || 0,
+      sources: sources,
+      tokensUsed: estimatedTokens
+    };
+  } catch (error) {
+    logger.error('Error generating semantic retrieval answer:', error);
+    return {
+      answer: '',
+      answerableProbability: 0,
+      sources: [],
+      tokensUsed: 0,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
 export default {
   sendRequest,
   sendStreamingRequest,
@@ -1065,5 +1186,6 @@ export default {
   generateEmbedding,
   generateBatchEmbeddings,
   getModelConfig,
-  estimateTokenCount
+  estimateTokenCount,
+  generateAnswer
 };

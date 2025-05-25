@@ -38,13 +38,15 @@ export const config = {
   r2AccountId: process.env.R2_ACCOUNT_ID || '',
   r2AccessKeyId: process.env.R2_ACCESS_KEY_ID || '',
   r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
-  r2BucketName: process.env.R2_BUCKET_NAME || 'vvs-embeddings',
+  r2ApiToken: process.env.R2_API_TOKEN || '',
+  r2BucketName: process.env.R2_BUCKET_NAME || 'coodestorage',
   r2Endpoint: process.env.R2_ENDPOINT || '',
   
   // Embedding Configuration
   embeddingModel: process.env.EMBEDDING_MODEL || 'text-embedding-004',
+  embeddingApiVersion: process.env.EMBEDDING_API_VERSION || 'v1alpha',
   embeddingBatchSize: process.env.EMBEDDING_BATCH_SIZE ? parseInt(process.env.EMBEDDING_BATCH_SIZE, 10) : 5,
-  embeddingRateLimit: process.env.EMBEDDING_RATE_LIMIT ? parseInt(process.env.EMBEDDING_RATE_LIMIT, 10) : 10, // requests per minute
+  embeddingRateLimit: parseInt(process.env.EMBEDDING_RATE_LIMIT || '10', 10),
 };
 
 /**

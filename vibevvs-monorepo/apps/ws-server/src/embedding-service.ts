@@ -30,6 +30,12 @@ if (config.r2AccountId && config.r2AccessKeyId && config.r2SecretAccessKey && co
   logger.warn('R2 storage not configured, embeddings will not be persisted');
 }
 
+// Configuration
+const EMBEDDING_MODEL = config.embeddingModel || 'text-embedding-004';
+const EMBEDDING_API_VERSION = (config.embeddingApiVersion || 'v1alpha') as 'v1alpha' | 'v1beta'; // Use v1alpha for experimental models
+const RATE_LIMIT = config.embeddingRateLimit || 10; // requests per minute
+const BATCH_SIZE = 5; // embeddings per batch
+
 // Rate limiting
 const rateLimiter = {
   requests: 0,
@@ -42,7 +48,7 @@ const rateLimiter = {
       this.resetTime = now + 60000;
     }
     
-    if (this.requests >= config.embeddingRateLimit) {
+    if (this.requests >= RATE_LIMIT) {
       return false;
     }
     
@@ -168,7 +174,7 @@ export async function generateChunkEmbedding(
     return {
       chunkId: chunk.id,
       embedding: cachedEmbedding,
-      model: config.embeddingModel,
+      model: EMBEDDING_MODEL,
       tokensUsed: 0, // No tokens used for cached result
     };
   }
@@ -180,7 +186,8 @@ export async function generateChunkEmbedding(
   const result = await gemini.generateEmbedding({
     apiKey: config.geminiApiKey,
     content: formatChunkForEmbedding(chunk),
-    model: config.embeddingModel,
+    model: EMBEDDING_MODEL,
+    apiVersion: EMBEDDING_API_VERSION,
   });
   
   if (result.error) {
@@ -220,8 +227,8 @@ export async function generateBatchEmbeddings(
   let totalTokensUsed = 0;
   
   // Process chunks in batches
-  for (let i = 0; i < chunks.length; i += config.embeddingBatchSize) {
-    const batch = chunks.slice(i, i + config.embeddingBatchSize);
+  for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+    const batch = chunks.slice(i, i + BATCH_SIZE);
     
     // Check cache and prepare chunks that need embedding
     const chunksToEmbed: Array<{ chunk: CodeChunk; key: string }> = [];
@@ -234,7 +241,7 @@ export async function generateBatchEmbeddings(
         embeddings.push({
           chunkId: chunk.id,
           embedding: cachedEmbedding,
-          model: config.embeddingModel,
+          model: EMBEDDING_MODEL,
           tokensUsed: 0,
         });
       } else {
@@ -252,17 +259,18 @@ export async function generateBatchEmbeddings(
         content: formatChunkForEmbedding(item.chunk),
       }));
       
-      const result = await gemini.generateBatchEmbeddings({
+      const batchResult = await gemini.generateBatchEmbeddings({
         apiKey: config.geminiApiKey,
         contents,
-        model: config.embeddingModel,
-        batchSize: config.embeddingBatchSize,
+        model: EMBEDDING_MODEL,
+        batchSize: BATCH_SIZE,
+        apiVersion: EMBEDDING_API_VERSION,
       });
       
-      totalTokensUsed += result.totalTokensUsed;
+      totalTokensUsed += batchResult.totalTokensUsed;
       
       // Process results
-      for (const embedding of result.embeddings) {
+      for (const embedding of batchResult.embeddings) {
         const item = chunksToEmbed.find(c => c.chunk.id === embedding.id);
         if (!item) continue;
         
@@ -275,7 +283,7 @@ export async function generateBatchEmbeddings(
           embeddings.push({
             chunkId: embedding.id,
             embedding: embedding.embedding,
-            model: config.embeddingModel,
+            model: EMBEDDING_MODEL,
             tokensUsed: embedding.tokensUsed,
           });
           
@@ -292,7 +300,7 @@ export async function generateBatchEmbeddings(
     }
     
     // Log progress
-    logger.info(`Processed embedding batch ${Math.floor(i / config.embeddingBatchSize) + 1}/${Math.ceil(chunks.length / config.embeddingBatchSize)}`);
+    logger.info(`Processed embedding batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(chunks.length / BATCH_SIZE)}`);
   }
   
   return {
