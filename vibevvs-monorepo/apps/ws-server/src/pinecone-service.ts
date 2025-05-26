@@ -41,13 +41,18 @@ function getUserNamespace(userId: string): string {
   return `user-${userId}`;
 }
 
+/**
+ * Export getUserNamespace for external use
+ */
+export { getUserNamespace };
+
 // Initialize index connection
 async function initializeIndex(): Promise<void> {
   if (!pineconeClient) {
     logger.error('Pinecone client not initialized - check API key configuration');
     throw new Error('Pinecone client not initialized');
   }
-  
+
   // If index is already initialized and working, skip
   if (pineconeIndex) {
     try {
@@ -60,14 +65,14 @@ async function initializeIndex(): Promise<void> {
       pineconeIndex = null;
     }
   }
-  
+
   try {
     logger.info('Initializing Pinecone index connection...');
-    
+
     // Check if index exists, if not create it
     const indexes = await pineconeClient.listIndexes();
     const indexExists = indexes.indexes?.some(idx => idx.name === config.pineconeIndexName);
-    
+
     if (!indexExists) {
       logger.info(`Creating Pinecone serverless index for multitenancy: ${config.pineconeIndexName}`);
       try {
@@ -82,7 +87,7 @@ async function initializeIndex(): Promise<void> {
             }
           }
         });
-        
+
         // Wait for index to be ready
         logger.info('Waiting for serverless index to be ready...');
         await new Promise(resolve => setTimeout(resolve, 15000)); // Increased wait time
@@ -97,19 +102,19 @@ async function initializeIndex(): Promise<void> {
       }
     } else {
       logger.info(`Pinecone index ${config.pineconeIndexName} already exists`);
-      
+
       // Check if existing index has correct dimensions
       try {
         const tempIndex = pineconeClient.index(config.pineconeIndexName);
         const stats = await tempIndex.describeIndexStats();
-        
+
         // Check if the index has the wrong dimensions
         if (stats.dimension && stats.dimension !== 3072) {
           logger.error(`Index ${config.pineconeIndexName} has wrong dimensions: ${stats.dimension} (expected 3072)`);
           logger.error('You need to delete the existing index and let the system recreate it with correct dimensions');
           throw new Error(`Index dimension mismatch: found ${stats.dimension}, expected 3072. Please delete the index in Pinecone console.`);
         }
-        
+
         logger.info(`Index dimensions verified: ${stats.dimension || 'unknown'}`);
       } catch (statsError: any) {
         if (statsError.message?.includes('dimension mismatch')) {
@@ -118,10 +123,10 @@ async function initializeIndex(): Promise<void> {
         logger.warn('Could not verify index dimensions, proceeding anyway:', statsError.message);
       }
     }
-    
+
     // Connect to the index
     pineconeIndex = pineconeClient.index(config.pineconeIndexName);
-    
+
     // Test the connection
     try {
       const testStats = await pineconeIndex.describeIndexStats();
@@ -136,12 +141,12 @@ async function initializeIndex(): Promise<void> {
       pineconeIndex = null; // Reset on failure
       throw testError;
     }
-    
+
   } catch (error: any) {
     logger.error('Failed to initialize Pinecone index:', error);
     // Reset state on any error
     pineconeIndex = null;
-    
+
     // Provide helpful error messages
     if (error.message?.includes('API key')) {
       logger.error('Pinecone API key issue - check your PINECONE_API_KEY environment variable');
@@ -150,7 +155,7 @@ async function initializeIndex(): Promise<void> {
     } else if (error.message?.includes('not found')) {
       logger.error('Pinecone index not found - will attempt to create on next try');
     }
-    
+
     throw error;
   }
 }
@@ -182,15 +187,15 @@ export async function upsertVectors(
   }>
 ): Promise<void> {
   await initializeIndex();
-  
+
   if (!pineconeIndex) {
     throw new Error('Pinecone index not initialized');
   }
-  
+
   try {
     // Get user-specific namespace for multitenancy
     const userNamespace = getUserNamespace(userId);
-    
+
     // Remove userId from metadata since namespace provides isolation
     const vectorsForNamespace = vectors.map(v => ({
       ...v,
@@ -202,7 +207,7 @@ export async function upsertVectors(
         tenant: userNamespace
       }
     }));
-    
+
     // Upsert in batches of 100 to user's dedicated namespace
     const batchSize = 100;
     for (let i = 0; i < vectorsForNamespace.length; i += batchSize) {
@@ -227,7 +232,7 @@ export async function upsertVectors(
       }
       // ---- END IMMEDIATE FETCH DEBUG ----
     }
-    
+
     logger.info(`Successfully upserted ${vectors.length} vectors for user ${userId} in namespace ${userNamespace}`);
   } catch (error) {
     logger.error(`Error upserting vectors to Pinecone for user ${userId}:`, error);
@@ -244,38 +249,38 @@ export async function searchUserCodebase(
   options: SearchOptions = {}
 ): Promise<VectorSearchResult[]> {
   await initializeIndex();
-  
+
   if (!pineconeIndex) {
     logger.error('Pinecone index not initialized');
     return [];
   }
-  
+
   const limit = options.limit || 10;
   const userNamespace = getUserNamespace(userId);
-  
+
   try {
     // Build filter for additional filtering within the user's namespace
     const filter: any = {};
-    
+
     if (options.filters) {
       const { fileTypes, paths, languages } = options.filters;
-      
+
       if (fileTypes && fileTypes.length > 0) {
         filter.fileType = { $in: fileTypes };
       }
-      
+
       if (paths && paths.length > 0) {
         // Create an OR condition for path matching
         filter.$or = paths.map((path: string) => ({
           filePath: { $contains: path }
         }));
       }
-      
+
       if (languages && languages.length > 0) {
         filter.language = { $in: languages };
       }
     }
-    
+
     // Query Pinecone in user's dedicated namespace
     const queryResponse = await pineconeIndex.namespace(userNamespace).query({
       vector: queryEmbedding,
@@ -284,10 +289,10 @@ export async function searchUserCodebase(
       includeMetadata: true,
       includeValues: false
     });
-    
+
     // Convert results to our format
     const vectorResults: VectorSearchResult[] = [];
-    
+
     if (queryResponse.matches) {
       for (const match of queryResponse.matches) {
         if (match.metadata) {
@@ -302,7 +307,7 @@ export async function searchUserCodebase(
             name: match.metadata.name as string,
             metadata: match.metadata.metadata || {}
           };
-          
+
           vectorResults.push({
             chunk,
             score: match.score || 0,
@@ -311,10 +316,10 @@ export async function searchUserCodebase(
         }
       }
     }
-    
+
     logger.info(`Vector search completed: found ${vectorResults.length} results for user ${userId} in namespace ${userNamespace}`);
     return vectorResults;
-    
+
   } catch (error) {
     logger.error(`Error performing vector search for user ${userId} in namespace ${userNamespace}:`, error);
     return [];
@@ -335,14 +340,14 @@ export async function hybridSearch(
     ...options,
     limit: (options.limit || 10) * 3 // Get more results for re-ranking
   });
-  
+
   if (vectorResults.length === 0) {
     return [];
   }
-  
+
   // Perform keyword scoring and re-ranking
   const rerankedResults = performKeywordScoring(query, vectorResults);
-  
+
   // Combine scores and sort
   const finalResults = rerankedResults
     .map(result => ({
@@ -352,7 +357,7 @@ export async function hybridSearch(
     }))
     .sort((a, b) => b.combinedScore - a.combinedScore)
     .slice(0, options.limit || 10);
-  
+
   const userNamespace = getUserNamespace(userId);
   logger.info(`Hybrid search completed: returning ${finalResults.length} results for user ${userId} from namespace ${userNamespace}`);
   return finalResults;
@@ -367,55 +372,55 @@ function performKeywordScoring(
 ): Array<VectorSearchResult & { keywordScore: number }> {
   const queryLower = query.toLowerCase();
   const queryTokens = tokenize(queryLower);
-  
+
   return results.map(result => {
     let keywordScore = 0;
     const highlights: string[] = [];
-    
+
     // Score based on exact matches in different fields
     const contentLower = result.chunk.content.toLowerCase();
     const nameLower = (result.chunk.name || '').toLowerCase();
     const filePathLower = result.chunk.filePath.toLowerCase();
-    
+
     // Exact query match in content
     if (contentLower.includes(queryLower)) {
       keywordScore += 0.5;
       highlights.push(`Exact match in content`);
     }
-    
+
     // Exact query match in name
     if (nameLower && nameLower.includes(queryLower)) {
       keywordScore += 0.3;
       highlights.push(`Exact match in name: ${result.chunk.name}`);
     }
-    
+
     // Exact query match in file path
     if (filePathLower.includes(queryLower)) {
       keywordScore += 0.2;
       highlights.push(`Match in file path`);
     }
-    
+
     // Token-based matching
     const contentTokens = tokenize(contentLower);
     const matchedTokens = queryTokens.filter(token => contentTokens.includes(token));
     const tokenMatchRatio = matchedTokens.length / queryTokens.length;
     keywordScore += tokenMatchRatio * 0.3;
-    
+
     // Boost for matches at the beginning of content
     if (contentLower.startsWith(queryLower)) {
       keywordScore += 0.2;
     }
-    
+
     // Boost for function/class names that match
     if (result.chunk.type === 'function' || result.chunk.type === 'class' || result.chunk.type === 'method') {
       if (nameLower && queryTokens.some(token => nameLower.includes(token))) {
         keywordScore += 0.2;
       }
     }
-    
+
     // Normalize score to 0-1 range
     keywordScore = Math.min(1, keywordScore);
-    
+
     return {
       ...result,
       keywordScore,
@@ -442,13 +447,13 @@ export async function deleteFileVectors(
   filePath: string
 ): Promise<void> {
   await initializeIndex();
-  
+
   if (!pineconeIndex) {
     throw new Error('Pinecone index not initialized');
   }
-  
+
   const userNamespace = getUserNamespace(userId);
-  
+
   try {
     // Query to find all vectors for this file in user's namespace
     const queryResponse = await pineconeIndex.namespace(userNamespace).query({
@@ -459,17 +464,17 @@ export async function deleteFileVectors(
       },
       includeValues: false
     });
-    
+
     if (queryResponse.matches && queryResponse.matches.length > 0) {
       const ids = queryResponse.matches.map((match: any) => match.id);
-      
+
       // Delete in batches from user's namespace
       const batchSize = 1000;
       for (let i = 0; i < ids.length; i += batchSize) {
         const batch = ids.slice(i, i + batchSize);
         await pineconeIndex.namespace(userNamespace).deleteMany(batch);
       }
-      
+
       logger.info(`Deleted ${ids.length} vectors for file ${filePath} from user ${userId} namespace ${userNamespace}`);
     }
   } catch (error) {
@@ -483,13 +488,13 @@ export async function deleteFileVectors(
  */
 export async function deleteUserVectors(userId: string): Promise<void> {
   await initializeIndex();
-  
+
   if (!pineconeIndex) {
     throw new Error('Pinecone index not initialized');
   }
-  
+
   const userNamespace = getUserNamespace(userId);
-  
+
   try {
     // Delete all vectors in the user's namespace (tenant offboarding)
     await pineconeIndex.namespace(userNamespace).deleteAll();
@@ -505,11 +510,11 @@ export async function deleteUserVectors(userId: string): Promise<void> {
  */
 export async function getIndexStats(): Promise<any> {
   await initializeIndex();
-  
+
   if (!pineconeIndex) {
     throw new Error('Pinecone index not initialized');
   }
-  
+
   try {
     const stats = await pineconeIndex.describeIndexStats();
     return stats;
@@ -528,19 +533,19 @@ export async function getUserNamespaceStats(userId: string): Promise<{
   recordCount?: number; // Changed from 'any' to a more specific type
 }> {
   await initializeIndex();
-  
+
   if (!pineconeIndex) {
     logger.error('Pinecone index not initialized, cannot get namespace stats for user ${userId}.');
     throw new Error('Pinecone index not initialized');
   }
-  
+
   const userNamespace = getUserNamespace(userId);
-  
+
   try {
     // Use describeNamespace as per Pinecone documentation for serverless indexes
     const namespaceSummary = await pineconeIndex.describeNamespace(userNamespace);
     logger.info(`Namespace summary for ${userNamespace} (user: ${userId}): ${JSON.stringify(namespaceSummary)}`);
-    
+
     return {
       namespace: userNamespace, // or namespaceSummary.name if preferred
       userId,
@@ -548,9 +553,9 @@ export async function getUserNamespaceStats(userId: string): Promise<{
     };
   } catch (error: any) {
     // Handle cases where the namespace might not exist (e.g., new user)
-    if (error.name === 'PineconeNotFoundError' || 
-        (error.message && 
-          (error.message.includes('NamespaceNotExistsError') || 
+    if (error.name === 'PineconeNotFoundError' ||
+        (error.message &&
+          (error.message.includes('NamespaceNotExistsError') ||
            error.message.toLowerCase().includes('not found') ||
            error.message.toLowerCase().includes('does not exist'))
         ) || (error.status && error.status === 404)
@@ -590,11 +595,11 @@ export async function listTenantNamespaces(): Promise<Array<{
   vectorCount: number;
 }>> {
   await initializeIndex();
-  
+
   if (!pineconeIndex) {
     throw new Error('Pinecone index not initialized');
   }
-  
+
   try {
     const stats = await pineconeIndex.describeIndexStats();
     const tenants: Array<{
@@ -602,7 +607,7 @@ export async function listTenantNamespaces(): Promise<Array<{
       userId: string;
       vectorCount: number;
     }> = [];
-    
+
     if (stats.namespaces) {
       for (const [namespace, namespaceStats] of Object.entries(stats.namespaces)) {
         // Extract userId from namespace (format: "user-{userId}" or "user-{userId}-{baseNamespace}")
@@ -616,7 +621,7 @@ export async function listTenantNamespaces(): Promise<Array<{
         }
       }
     }
-    
+
     logger.info(`Found ${tenants.length} tenant namespaces in index`);
     return tenants;
   } catch (error) {
@@ -638,5 +643,3 @@ export async function tenantExists(userId: string): Promise<boolean> {
   }
 }
 
-// Export getUserNamespace utility function
-export { getUserNamespace }; 
