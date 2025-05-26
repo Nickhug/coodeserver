@@ -155,7 +155,17 @@ export async function generateChunkEmbedding(
 export async function generateBatchEmbeddings(
   chunks: CodeChunk[],
   userId: string,
-  onProgress?: (progress: { completed: number; total: number; currentBatch: number; totalBatches: number }) => void
+  onProgress?: (progress: {
+    completedChunks: number;
+    totalChunks: number;
+    currentBatchNumber: number;
+    totalBatches: number;
+    successfullyStoredInBatch: number;
+    errorsInBatch: number;
+    currentFileRelativePath?: string;
+    fileStatus?: 'embedding_started' | 'embedding_progress' | 'file_completed' | 'file_error';
+    fileErrorDetails?: string;
+  }) => void
 ): Promise<{
   embeddings: EmbeddingResponse[];
   errors: Array<{ chunkId: string; error: string }>;
@@ -173,14 +183,35 @@ export async function generateBatchEmbeddings(
   // Wait for a slot before starting any batch processing
   await embeddingRateLimiter.waitForSlot();
   
+  let currentFileForProgress: string | undefined = undefined;
+  let overallProcessedChunks = 0;
+
   // Process chunks in batches
   for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
-    const currentBatch = Math.floor(i / BATCH_SIZE) + 1;
+    const currentBatchNumber = Math.floor(i / BATCH_SIZE) + 1;
     const batch = chunks.slice(i, i + BATCH_SIZE);
-    
-    logger.info(`Processing batch ${currentBatch}/${totalBatches} (${batch.length} chunks)`);
-    
-    // Prepare chunks for embedding
+    let successfullyStoredInCurrentBatch = 0;
+    let errorsInCurrentBatch = 0;
+
+    logger.info(`Processing batch ${currentBatchNumber}/${totalBatches} (${batch.length} chunks)`);
+
+    // Determine current file being processed for progress reporting
+    if (batch.length > 0 && batch[0].filePath !== currentFileForProgress) {
+      currentFileForProgress = batch[0].filePath;
+      if (onProgress) {
+        onProgress({
+          completedChunks: overallProcessedChunks,
+          totalChunks: chunks.length,
+          currentBatchNumber,
+          totalBatches,
+          successfullyStoredInBatch: 0,
+          errorsInBatch: 0,
+          currentFileRelativePath: currentFileForProgress,
+          fileStatus: 'embedding_started'
+        });
+      }
+    }
+
     const chunksToEmbed: Array<{ chunk: CodeChunk; key: string }> = [];
     
     for (const chunk of batch) {
@@ -193,7 +224,7 @@ export async function generateBatchEmbeddings(
         // Check rate limit before each batch request
         const canRequest = await embeddingRateLimiter.checkLimit();
         if (!canRequest) {
-          logger.warn(`Rate limit hit during batch ${currentBatch}, skipping remaining chunks in this batch.`);
+          logger.warn(`Rate limit hit during batch ${currentBatchNumber}, skipping remaining chunks in this batch.`);
           batch.forEach(c => errors.push({ chunkId: c.id, error: 'Rate limit hit, batch skipped' }));
           continue;
         }
@@ -264,9 +295,9 @@ export async function generateBatchEmbeddings(
           try {
             await pineconeService.upsertVectors(userId, vectorsToUpsert);
             successfullyStored += vectorsToUpsert.length;
-            logger.info(`Successfully stored ${vectorsToUpsert.length} vectors in Pinecone for batch ${currentBatch}`);
+            logger.info(`Successfully stored ${vectorsToUpsert.length} vectors in Pinecone for batch ${currentBatchNumber}`);
           } catch (pineconeError) {
-            logger.error(`Failed to store vectors in Pinecone for batch ${currentBatch}:`, pineconeError);
+            logger.error(`Failed to store vectors in Pinecone for batch ${currentBatchNumber}:`, pineconeError);
             // Add errors for all vectors that failed to store
             vectorsToUpsert.forEach(vector => {
               const chunkId = vector.metadata.chunkId;
@@ -279,20 +310,59 @@ export async function generateBatchEmbeddings(
         }
         
         // Report progress
-        const completed = Math.min(i + BATCH_SIZE, chunks.length);
+        overallProcessedChunks += batch.length;
         if (onProgress) {
           onProgress({
-            completed,
-            total: chunks.length,
-            currentBatch,
-            totalBatches
+            completedChunks: overallProcessedChunks,
+            totalChunks: chunks.length,
+            currentBatchNumber,
+            totalBatches,
+            successfullyStoredInBatch: successfullyStoredInCurrentBatch,
+            errorsInBatch: errorsInCurrentBatch,
+            currentFileRelativePath: currentFileForProgress,
+            fileStatus: 'embedding_progress'
           });
         }
         
-        logger.info(`Batch ${currentBatch}/${totalBatches} complete: ${completed}/${chunks.length} chunks processed, ${successfullyStored} stored in Pinecone`);
-        
+        logger.info(`Batch ${currentBatchNumber}/${totalBatches} complete: ${overallProcessedChunks}/${chunks.length} chunks processed so far, ${successfullyStored} stored in Pinecone`);
+
+        // Check if the current file is completed in this batch
+        if (currentFileForProgress) {
+          const remainingChunksInFile = chunks.slice(i + batch.length).filter(c => c.filePath === currentFileForProgress);
+          if (remainingChunksInFile.length === 0) {
+            // All chunks for currentFileForProgress have been processed (or attempted)
+            let fileHasErrors = false;
+            const fileErrorMessages: string[] = [];
+
+            batchResult.embeddings.forEach(embedding => {
+              if (embedding.error) {
+                const erroredChunk = chunksToEmbed.find(c => c.chunk.id === embedding.id);
+                if (erroredChunk?.chunk.filePath === currentFileForProgress) {
+                  fileHasErrors = true;
+                  fileErrorMessages.push(`Chunk ${embedding.id}: ${embedding.error}`);
+                }
+              }
+            });
+
+            if (onProgress) {
+              onProgress({
+                completedChunks: overallProcessedChunks,
+                totalChunks: chunks.length,
+                currentBatchNumber,
+                totalBatches,
+                successfullyStoredInBatch: successfullyStoredInCurrentBatch,
+                errorsInBatch: errorsInCurrentBatch, // This still refers to batch-level errors, not file-specific from this logic
+                currentFileRelativePath: currentFileForProgress,
+                fileStatus: fileHasErrors ? 'file_error' : 'file_completed',
+                fileErrorDetails: fileHasErrors ? fileErrorMessages.join('; ') : undefined
+              });
+            }
+            currentFileForProgress = undefined; // Reset for the next file
+          }
+        }
+
       } catch (batchError) {
-        logger.error(`Error processing batch ${currentBatch}:`, batchError);
+        logger.error(`Error processing batch ${currentBatchNumber}:`, batchError);
         // Add errors for all chunks in this batch
         chunksToEmbed.forEach(item => {
           errors.push({

@@ -33,7 +33,7 @@ interface WebSocketWithData extends WebSocket {
  */
 interface TurnContext {
   provider: string;
-  model: string; 
+  model: string;
   apiKey: string;
   temperature?: number;
   maxTokens?: number;
@@ -61,14 +61,14 @@ const TURN_CONTEXT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 setInterval(() => {
   const now = Date.now();
   let expiredCount = 0;
-  
+
   for (const [requestId, context] of activeTurnContexts.entries()) {
     if (now - context.createdAt > TURN_CONTEXT_TIMEOUT_MS) {
       activeTurnContexts.delete(requestId);
       expiredCount++;
     }
   }
-  
+
   if (expiredCount > 0) {
     logger.info(`Cleaned up ${expiredCount} stale turn contexts, ${activeTurnContexts.size} remaining active.`);
   }
@@ -80,23 +80,23 @@ setInterval(() => {
 export function setupServer(): http.Server {
   // Create Express app
   const app = express();
-  
+
   // Configure CORS
   app.use(cors({
     origin: config.corsOrigins,
     credentials: true,
     methods: ['GET', 'POST', 'OPTIONS']
   }));
-  
+
   // Parse JSON bodies
   app.use(express.json());
-  
+
   // Log all incoming requests
   app.use((req, res, next) => {
     logger.info(`HTTP Request: ${req.method} ${req.url}`);
     next();
   });
-  
+
   // Health check endpoint
   app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -104,7 +104,7 @@ export function setupServer(): http.Server {
 
   // Create HTTP server
   const server = http.createServer(app);
-  
+
   logger.info(`Server setup complete. Server ready to handle HTTP requests and WebSockets.`);
   return server;
 }
@@ -114,7 +114,7 @@ export function setupServer(): http.Server {
  */
 export function setupWebSocketServer(server: http.Server): WebSocketServer {
   // Create WebSocket server with optimized settings for streaming
-  const wss = new WebSocketServer({ 
+  const wss = new WebSocketServer({
     server,
     path: config.wsPath,
     // Increase max payload size
@@ -135,19 +135,19 @@ export function setupWebSocketServer(server: http.Server): WebSocketServer {
       threshold: 1024 // Only compress messages larger than 1KB
     }
   });
-  
+
   // Store global reference
   globalWss = wss;
-  
+
   // Log server configuration
   logger.info(`WebSocket server configured with optimized settings for streaming`);
   logger.info(`WebSocket permessage-deflate compression enabled with threshold: 1024 bytes`);
-      
+
   // Track WebSocket server stats
   let totalConnections = 0;
   let peakConcurrentConnections = 0;
   const clientVersions = new Map<string, number>();
-  
+
   // Server-wide connection monitoring
   wss.on('connection', () => {
     totalConnections++;
@@ -155,7 +155,7 @@ export function setupWebSocketServer(server: http.Server): WebSocketServer {
     if (concurrentConnections > peakConcurrentConnections) {
       peakConcurrentConnections = concurrentConnections;
     }
-    
+
     // Log connection stats periodically (every 10 connections)
     if (totalConnections % 10 === 0) {
       logger.info(
@@ -164,20 +164,20 @@ export function setupWebSocketServer(server: http.Server): WebSocketServer {
       );
     }
   });
-      
+
   // Set up ping interval for connection keepalive
   const pingInterval = global.setInterval(() => {
     const now = Date.now();
-    
+
     wss.clients.forEach((ws) => {
       const wsWithData = ws as WebSocketWithData;
-      
+
       if (!wsWithData.connectionData) {
         return;
       }
-      
+
       const timeSinceLastPing = now - wsWithData.connectionData.lastPingTime;
-      
+
       // Use a longer timeout (3x ping interval) to avoid premature disconnections
       if (timeSinceLastPing > config.pingInterval * 3) {
         logger.warn(`WS TIMEOUT [${wsWithData.connectionData.connectionId}] Connection timed out after ${timeSinceLastPing}ms, closing`);
@@ -185,19 +185,19 @@ export function setupWebSocketServer(server: http.Server): WebSocketServer {
         connections.delete(wsWithData.connectionData.connectionId);
         return;
       }
-      
+
       // Send native WebSocket ping
       try {
         ws.ping();
-        
+
         // For older clients that don't handle native pings well, also send an application-level ping
         if (timeSinceLastPing > config.pingInterval * 1.5) {
-          sendToClient(wsWithData, { 
+          sendToClient(wsWithData, {
             type: MessageType.PONG, // Send PONG proactively
-            payload: { 
+            payload: {
               serverTime: new Date().toISOString(),
               timestamp: Date.now()
-            } 
+            }
           });
         }
       } catch (error) {
@@ -205,7 +205,7 @@ export function setupWebSocketServer(server: http.Server): WebSocketServer {
       }
     });
   }, config.pingInterval);
-  
+
   // Log server metrics every 5 minutes
   const metricsInterval = global.setInterval(() => {
     logger.info(
@@ -213,17 +213,17 @@ export function setupWebSocketServer(server: http.Server): WebSocketServer {
       `Total historical: ${totalConnections}, Peak concurrent: ${peakConcurrentConnections}`
     );
   }, 5 * 60 * 1000);
-  
+
   // Clean up intervals if the server is stopped
   wss.on('close', () => {
     logger.info('WebSocket server closing, cleaning up intervals');
     clearInterval(pingInterval);
     clearInterval(metricsInterval);
   });
-  
+
   // Handle connection events
   wss.on('connection', handleConnection);
-  
+
   return wss;
 }
 
@@ -235,18 +235,18 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
   const connectionId = uuidv4();
   let userId: string | undefined = undefined;
   let isAuthenticated = false;
-  
+
   // Log connection attempt with details
-  const ip = req.headers['x-forwarded-for'] || 
-             req.socket.remoteAddress || 
+  const ip = req.headers['x-forwarded-for'] ||
+             req.socket.remoteAddress ||
              'unknown';
-             
+
   const userAgent = req.headers['user-agent'] || 'unknown';
   logger.info(`WS CONNECT [${connectionId}] New connection from ${ip}, UA: ${userAgent}`);
-  
+
   // Log all headers for debugging
   logger.debug(`WS CONNECT [${connectionId}] Request headers: ${JSON.stringify(req.headers, null, 2)}`);
-  
+
   // Add connection data to WebSocket
   (ws as WebSocketWithData).connectionData = {
     connectionId,
@@ -254,28 +254,28 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
     isAuthenticated,
     lastPingTime: Date.now()
   };
-  
+
   // Store connection
   connections.set(connectionId, (ws as WebSocketWithData).connectionData);
-  
+
   // Log connection established
   logger.info(`WS OPEN [${connectionId}] WebSocket connection established`);
-  
+
   // Handle error events - add detailed logging
   ws.on('error', (error) => {
-    logger.error(`WS ERROR [${connectionId}] ${error.message}`, { 
+    logger.error(`WS ERROR [${connectionId}] ${error.message}`, {
       stack: error.stack,
-      code: (error as any).code 
+      code: (error as any).code
     });
   });
-  
+
   // Handle close events - add detailed logging
   ws.on('close', (code, reason) => {
     logger.info(`WS CLOSE [${connectionId}] ${reason ? ` Code: ${code}, Reason: ${reason.toString()}` : ` Code: ${code}, Reason: `}`);
     // Remove from connections
     connections.delete(connectionId);
   });
-  
+
   // Respond immediately with a welcome message to test the connection
   try {
     sendToClient(ws as WebSocketWithData, {
@@ -290,14 +290,14 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
   } catch (error) {
     logger.error(`WS ERROR [${connectionId}] Failed to send welcome message: ${error instanceof Error ? error.message : String(error)}`);
   }
-  
+
   // Handle incoming messages
   ws.on('message', async (message) => {
     try {
       await handleIncomingMessage(ws as WebSocketWithData, message.toString());
     } catch (error) {
       logger.error(`WS ERROR [${connectionId}] Error handling message: ${error instanceof Error ? error.message : String(error)}`);
-      
+
       // Send error back to client
       try {
         sendToClient(ws as WebSocketWithData, {
@@ -312,13 +312,13 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
       }
     }
   });
-  
+
   // Native ping/pong handlers for better connection stability
   ws.on('ping', (data) => {
     logger.debug(`WS PING [${connectionId}] Received ping`);
     (ws as WebSocketWithData).connectionData.lastPingTime = Date.now();
   });
-  
+
   ws.on('pong', (data) => {
     logger.debug(`WS PONG [${connectionId}] Received pong`);
     (ws as WebSocketWithData).connectionData.lastPingTime = Date.now();
@@ -330,19 +330,19 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
  */
 async function handleIncomingMessage(ws: WebSocketWithData, message: string): Promise<void> {
   const { connectionId, userId, isAuthenticated } = ws.connectionData;
-  
+
   try {
     // Parse message
     const clientMessage = JSON.parse(message) as ClientMessage;
-    
+
     // Update last ping time for all message types
     ws.connectionData.lastPingTime = Date.now();
     connections.set(connectionId, ws.connectionData);
-    
+
     // Get the message type as string for safer comparison
     const messageType = clientMessage.type as string;
     const requestId = clientMessage.payload?.requestId || 'no-request-id';
-    
+
     // Log based on message type
     if (messageType === MessageType.PING) {
       logger.debug(`WS MSG [${connectionId}] Ping received`);
@@ -362,13 +362,13 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
     } else if (messageType === MessageType.CODEBASE_SEARCH_REQUEST) {
       if (config.authEnabled && !isAuthenticated) {
         logger.warn(`WS AUTH [${connectionId}] Unauthorized codebase search request rejected`);
-        sendToClient(ws, { 
-          type: MessageType.ERROR, 
-          payload: { 
-            error: 'Authentication required', 
+        sendToClient(ws, {
+          type: MessageType.ERROR,
+          payload: {
+            error: 'Authentication required',
             code: 'UNAUTHORIZED',
             requestId: clientMessage.payload?.requestId
-          } 
+          }
         });
         return;
       }
@@ -376,18 +376,18 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
     } else {
       logger.debug(`WS MSG [${connectionId}] Received message type: ${messageType}`);
     }
-    
+
     // Handle message by type
     if (messageType === MessageType.PING) {
       // Immediately respond with PONG to keep connection alive
       // This is critical for client heartbeat mechanism
-      sendToClient(ws, { 
-        type: MessageType.PONG, 
-        payload: { 
+      sendToClient(ws, {
+        type: MessageType.PONG,
+        payload: {
           timestamp: Date.now(),
           serverTime: new Date().toISOString(),
           connectionId: connectionId // Echo back the connection ID for verification
-        } 
+        }
       });
     } else if (messageType === MessageType.AUTHENTICATE) {
       await handleAuthentication(ws, clientMessage);
@@ -400,12 +400,12 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
     } else if (messageType === MessageType.PROVIDER_REQUEST) {
       if (config.authEnabled && !isAuthenticated) {
         logger.warn(`WS AUTH [${connectionId}] Unauthorized provider request rejected`);
-        sendToClient(ws, { 
-          type: MessageType.PROVIDER_ERROR, 
-          payload: { 
-            error: 'Authentication required', 
-            code: 'UNAUTHORIZED' 
-          } 
+        sendToClient(ws, {
+          type: MessageType.PROVIDER_ERROR,
+          payload: {
+            error: 'Authentication required',
+            code: 'UNAUTHORIZED'
+          }
         });
         return;
       }
@@ -413,13 +413,13 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
     } else if (messageType === MessageType.TOOL_EXECUTION_RESULT) {
       if (config.authEnabled && !isAuthenticated) {
         logger.warn(`WS AUTH [${connectionId}] Unauthorized tool execution result rejected`);
-        sendToClient(ws, { 
-          type: MessageType.PROVIDER_ERROR, 
-          payload: { 
-            error: 'Authentication required', 
+        sendToClient(ws, {
+          type: MessageType.PROVIDER_ERROR,
+          payload: {
+            error: 'Authentication required',
             code: 'UNAUTHORIZED',
             requestId: clientMessage.payload?.requestId
-          } 
+          }
         });
         return;
       }
@@ -427,13 +427,13 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
     } else if (messageType === MessageType.CODEBASE_EMBEDDING_REQUEST) {
       if (config.authEnabled && !isAuthenticated) {
         logger.warn(`WS AUTH [${connectionId}] Unauthorized embedding request rejected`);
-        sendToClient(ws, { 
-          type: MessageType.ERROR, 
-          payload: { 
-            error: 'Authentication required', 
+        sendToClient(ws, {
+          type: MessageType.ERROR,
+          payload: {
+            error: 'Authentication required',
             code: 'UNAUTHORIZED',
             requestId: clientMessage.payload?.requestId
-          } 
+          }
         });
         return;
       }
@@ -441,13 +441,13 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
     } else if (messageType === MessageType.CODEBASE_EMBEDDING_BATCH_REQUEST) {
       if (config.authEnabled && !isAuthenticated) {
         logger.warn(`WS AUTH [${connectionId}] Unauthorized batch embedding request rejected`);
-        sendToClient(ws, { 
-          type: MessageType.ERROR, 
-          payload: { 
-            error: 'Authentication required', 
+        sendToClient(ws, {
+          type: MessageType.ERROR,
+          payload: {
+            error: 'Authentication required',
             code: 'UNAUTHORIZED',
             requestId: clientMessage.payload?.requestId
-          } 
+          }
         });
         return;
       }
@@ -455,25 +455,39 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
     } else if (messageType === MessageType.CODEBASE_SEARCH_REQUEST) {
       if (config.authEnabled && !isAuthenticated) {
         logger.warn(`WS AUTH [${connectionId}] Unauthorized codebase search request rejected`);
-        sendToClient(ws, { 
-          type: MessageType.ERROR, 
-          payload: { 
-            error: 'Authentication required', 
+        sendToClient(ws, {
+          type: MessageType.ERROR,
+          payload: {
+            error: 'Authentication required',
             code: 'UNAUTHORIZED',
             requestId: clientMessage.payload?.requestId
-          } 
+          }
         });
         return;
       }
       await handleCodebaseSearchRequest(ws, clientMessage);
+    } else if (messageType === MessageType.CODEBASE_CLEAR_INDEX_REQUEST) {
+      if (config.authEnabled && !isAuthenticated) {
+        logger.warn(`WS AUTH [${connectionId}] Unauthorized codebase clear index request rejected`);
+        sendToClient(ws, {
+          type: MessageType.ERROR,
+          payload: {
+            error: 'Authentication required',
+            code: 'UNAUTHORIZED',
+            requestId: clientMessage.payload?.requestId
+          }
+        });
+        return;
+      }
+      await handleCodebaseClearIndexRequest(ws, clientMessage);
     } else {
       logger.warn(`WS MSG [${connectionId}] Unknown message type: ${messageType}`);
-      sendToClient(ws, { 
-        type: MessageType.ERROR, 
-        payload: { 
-          error: `Unknown message type: ${messageType}`, 
-          code: 'UNKNOWN_MESSAGE_TYPE' 
-        } 
+      sendToClient(ws, {
+        type: MessageType.ERROR,
+        payload: {
+          error: `Unknown message type: ${messageType}`,
+          code: 'UNKNOWN_MESSAGE_TYPE'
+        }
       });
     }
   } catch (error) {
@@ -481,13 +495,13 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
     // Log a preview of the problematic message
     const messagePreview = message.length > 100 ? `${message.substring(0, 100)}...` : message;
     logger.debug(`WS ERROR [${connectionId}] Problematic message preview: ${messagePreview}`);
-    
-    sendToClient(ws, { 
-      type: MessageType.ERROR, 
-      payload: { 
-        error: 'Failed to process message', 
-        code: 'INTERNAL_ERROR' 
-      } 
+
+    sendToClient(ws, {
+      type: MessageType.ERROR,
+      payload: {
+        error: 'Failed to process message',
+        code: 'INTERNAL_ERROR'
+      }
     });
   }
 }
@@ -501,17 +515,17 @@ function sendToClient(ws: WebSocketWithData, message: ServerMessage): void {
       ...message,
       timestamp: Date.now()
     });
-    
+
     // Debug logging for all messages
     const { connectionId = 'unknown' } = ws.connectionData || {};
     const messageType = message.type;
     const requestId = (message.payload as any)?.requestId || 'no-request-id';
-    
+
     // For PROVIDER_STREAM_END, add extra logging of toolCall if present
     if (messageType === MessageType.PROVIDER_STREAM_END && (message.payload as any)?.toolCall) {
       const toolCall = (message.payload as any).toolCall;
       const waitingForToolCall = (message.payload as any).waitingForToolCall;
-      
+
       logger.info(
         `WS SEND TOOL CALL [${connectionId}][${requestId}] ` +
         `Tool call in payload: name=${toolCall.name}, ` +
@@ -520,7 +534,7 @@ function sendToClient(ws: WebSocketWithData, message: ServerMessage): void {
         `waitingForToolCall=${waitingForToolCall}`
       );
     }
-    
+
     // Log message being sent with different detail levels based on type
     if (messageType === MessageType.PROVIDER_STREAM_CHUNK) {
       const chunk = (message.payload as any)?.chunk || '';
@@ -555,17 +569,17 @@ function sendToClient(ws: WebSocketWithData, message: ServerMessage): void {
       // Basic logging for other message types
       logger.debug(`WS SEND [${connectionId}] Message type: ${messageType}`);
     }
-    
+
     // Send the message, checking for state
     if (ws.readyState === WebSocket.OPEN) {
       // Log WebSocket state before sending
       logger.debug(`WS STATE [${connectionId}] Before send: ${ws.readyState} (OPEN)`);
-      
+
       // Special handling for Gemini stream chunks to prevent WebSocket overload
       if (message.type === MessageType.PROVIDER_STREAM_CHUNK) {
         // For Gemini models, add a small delay to avoid overwhelming the connection
         // This helps with Gemini 2.5 models which can have premature stream closure issues
-        if ((message.payload as any)?.provider === 'gemini' || 
+        if ((message.payload as any)?.provider === 'gemini' ||
             (message.payload as any)?.model?.includes('gemini')) {
           setTimeout(() => {
             if (ws.readyState === WebSocket.OPEN) {
@@ -606,7 +620,7 @@ function sendToClient(ws: WebSocketWithData, message: ServerMessage): void {
         3: 'CLOSED'
       };
       const stateStr = stateMap[ws.readyState as keyof typeof stateMap] || ws.readyState;
-      
+
       logger.warn(
         `WS DROPPED [${connectionId}][${requestId}] ` +
         `Cannot send ${messageType}, WebSocket state: ${stateStr}`
@@ -628,66 +642,66 @@ function sendToClient(ws: WebSocketWithData, message: ServerMessage): void {
 export function setupHttpRoutes(server: http.Server): void {
   // Get the Express application from the server
   const app = server instanceof http.Server ? server.listeners('request')[0] as express.Application : undefined;
-  
+
   if (!app) {
     logger.error('Cannot set up HTTP routes: Server not properly configured');
     return;
   }
-  
+
   // Add basic CORS middleware directly to this router to ensure it applies
   app.use(cors({
     origin: config.corsOrigins,
     credentials: true,
     methods: ['GET', 'POST', 'OPTIONS']
   }));
-  
+
   // Parse JSON body
   app.use(express.json());
-  
+
   // Log all incoming requests for debugging
   app.use((req, res, next) => {
     logger.info(`HTTP ${req.method} ${req.path}`);
     next();
   });
-  
+
   // Debug endpoint to test API is up
   app.get('/api/health', (req, res) => {
-    res.status(200).json({ 
-      status: 'ok', 
+    res.status(200).json({
+      status: 'ok',
       timestamp: new Date().toISOString(),
       connections: connections.size
     });
   });
-  
+
   // Debug endpoint to list active connections (for debugging)
   app.get('/api/debug/connections', (req, res) => {
     if (process.env.NODE_ENV === 'production') {
       return res.status(403).json({ error: 'Not available in production' });
     }
-    
+
     const connectionsList = Array.from(connections.entries()).map(([id, data]) => ({
       id,
       isAuthenticated: data.isAuthenticated,
       userId: data.userId || null,
       lastPingTime: new Date(data.lastPingTime).toISOString()
     }));
-    
+
     res.status(200).json({ connections: connectionsList });
   });
-  
+
   // Handle authentication from web app - this links web auth to WebSocket connections
   app.post('/api/auth', async (req, res) => {
     logger.info('Received auth request to /api/auth');
     try {
       const { connectionId, token, userData } = req.body;
-      
+
       logger.info(`Auth request for connection: ${connectionId}`);
-      
+
       if (!connectionId || !token) {
         logger.warn('Missing required params: connectionId or token');
-        return res.status(400).json({ 
-          success: false, 
-          message: 'Missing required parameters' 
+        return res.status(400).json({
+          success: false,
+          message: 'Missing required parameters'
         });
       }
 
@@ -698,10 +712,10 @@ export function setupHttpRoutes(server: http.Server): void {
         // List all active connections for debugging
         const activeConnections = Array.from(connections.keys());
         logger.info(`Active connections: ${activeConnections.join(', ') || 'none'}`);
-        
-        return res.status(404).json({ 
-          success: false, 
-          message: 'Connection not found' 
+
+        return res.status(404).json({
+          success: false,
+          message: 'Connection not found'
         });
       }
 
@@ -717,9 +731,9 @@ export function setupHttpRoutes(server: http.Server): void {
 
       if (!wsInstance) {
         logger.warn(`Auth API: WebSocket instance for connection ${connectionId} not found`);
-        return res.status(404).json({ 
-          success: false, 
-          message: 'WebSocket instance not found' 
+        return res.status(404).json({
+          success: false,
+          message: 'WebSocket instance not found'
         });
       }
 
@@ -735,7 +749,7 @@ export function setupHttpRoutes(server: http.Server): void {
           serverTime: new Date().toISOString()
         }
       });
-      
+
       // Update connection data
       wsInstance.connectionData.userId = userData.id;
       wsInstance.connectionData.isAuthenticated = true;
@@ -744,19 +758,19 @@ export function setupHttpRoutes(server: http.Server): void {
       return res.status(200).json({ success: true });
     } catch (error) {
       logger.error('Auth API error:', error);
-      return res.status(500).json({ 
-        success: false, 
-        message: 'Server error processing authentication' 
+      return res.status(500).json({
+        success: false,
+        message: 'Server error processing authentication'
       });
     }
   });
-  
+
   // Global 404 handler
   app.use((req, res) => {
     logger.warn(`404 Not Found: ${req.method} ${req.path}`);
     res.status(404).send({ success: false, message: 'Not Found' });
   });
-  
+
   logger.info('HTTP routes configured');
 }
 
@@ -766,20 +780,20 @@ export function setupHttpRoutes(server: http.Server): void {
 export function startWebSocketServer(): http.Server {
   // Validate configuration first
   const configValidation = validateConfig();
-  
+
   logger.info('=== Server Configuration Validation ===');
   logger.info(`Configuration valid: ${configValidation.isValid}`);
-  
+
   if (configValidation.errors.length > 0) {
     logger.error('Configuration errors:');
     configValidation.errors.forEach((error: string) => logger.error(`  - ${error}`));
   }
-  
+
   if (configValidation.warnings.length > 0) {
     logger.warn('Configuration warnings:');
     configValidation.warnings.forEach((warning: string) => logger.warn(`  - ${warning}`));
   }
-  
+
   // Log environment variables for debugging (without exposing full keys)
   logger.info('=== Environment Variables Check ===');
   logger.info(`NODE_ENV: ${process.env.NODE_ENV || 'not set'}`);
@@ -788,16 +802,16 @@ export function startWebSocketServer(): http.Server {
   logger.info(`PINECONE_INDEX_NAME: ${process.env.PINECONE_INDEX_NAME || 'not set (using default)'}`);
   logger.info(`PINECONE_NAMESPACE: ${process.env.PINECONE_NAMESPACE || 'not set (using default)'}`);
   logger.info('=====================================');
-  
+
   // Set up the HTTP server
   const server = setupServer();
-  
+
   // Set up HTTP routes
   setupHttpRoutes(server);
-  
+
   // Set up the WebSocket server
   setupWebSocketServer(server);
-  
+
   // Log host configuration information
   if (config.host === '::') {
     logger.info('Server configured to listen on dual-stack IPv4/IPv6 (::)');
@@ -805,14 +819,14 @@ export function startWebSocketServer(): http.Server {
     logger.info('Server configured to listen on IPv4 only (0.0.0.0)');
     logger.info('Using Railway TCP Proxy at wss://gondola.proxy.rlwy.net:28028/ws');
   }
-  
+
   // Start the server
   server.listen(config.port, config.host, () => {
     logger.info(`WebSocket server listening on ${config.host}:${config.port}`);
     logger.info(`WebSocket path: ${config.wsPath}`);
     logger.info(`Environment: ${config.environment}`);
   });
-  
+
   return server;
 }
 
@@ -827,10 +841,10 @@ async function handleAuthentication(ws: WebSocketWithData, message: ClientMessag
 
   try {
     const { connectionId } = ws.connectionData;
-    
+
     // Extract token from message
     const token = message.payload?.token;
-    
+
     if (!token) {
       logger.warn(`Authentication failed for ${connectionId}: No token provided`);
       sendToClient(ws, {
@@ -842,13 +856,13 @@ async function handleAuthentication(ws: WebSocketWithData, message: ClientMessag
       });
       return;
     }
-    
+
     // Verify the token
     logger.info(`Authenticating connection ${connectionId} with token`);
-    
+
     // Use our shared DB package to verify and consume the token
     const verificationResult = await verifyAndConsumeAuthToken(token);
-    
+
     if (!verificationResult) {
       logger.warn(`Authentication failed for ${connectionId}: Invalid token`);
       sendToClient(ws, {
@@ -860,17 +874,17 @@ async function handleAuthentication(ws: WebSocketWithData, message: ClientMessag
       });
       return;
     }
-    
+
     const userId = verificationResult.userId;
-    
+
     // Set connection as authenticated
     ws.connectionData.userId = userId;
     ws.connectionData.isAuthenticated = true;
     connections.set(connectionId, ws.connectionData);
-    
+
     // Get user data from DB
     const user = await getUserByClerkId(userId);
-    
+
     // Create user data object to send
     const userData = user ? {
       id: userId,
@@ -878,7 +892,7 @@ async function handleAuthentication(ws: WebSocketWithData, message: ClientMessag
       credits: user.credits_remaining,
       subscription: user.subscription_tier
     } : { id: userId };
-    
+
     // Send authentication success message
     logger.info(`Authentication successful for connection ${connectionId} for user ${userId}`);
     sendToClient(ws, {
@@ -961,9 +975,9 @@ async function handleProviderModels(ws: WebSocketWithData, message: ClientMessag
     logger.error('Invalid message type passed to handleProviderModels');
     return;
   }
-  
+
   const { provider } = message.payload;
-  
+
   try {
     let models: any[] = [];
     let available = false;
@@ -984,7 +998,7 @@ async function handleProviderModels(ws: WebSocketWithData, message: ClientMessag
               features: ['chat', 'tools', 'structured-output', 'caching', 'code-execution', 'search-grounding', 'thinking']
             },
             {
-              id: 'gemini-2.5-pro-preview-05-06', 
+              id: 'gemini-2.5-pro-preview-05-06',
               name: 'Gemini 2.5 Pro Preview',
               provider: 'gemini',
               available: true,
@@ -1004,7 +1018,7 @@ async function handleProviderModels(ws: WebSocketWithData, message: ClientMessag
           ];
         }
         break;
-        
+
       case 'openai':
         if (config.openaiApiKey) {
           available = true;
@@ -1039,7 +1053,7 @@ async function handleProviderModels(ws: WebSocketWithData, message: ClientMessag
           ];
         }
         break;
-        
+
       case 'groq':
         if (config.groqApiKey) {
           available = true;
@@ -1074,7 +1088,7 @@ async function handleProviderModels(ws: WebSocketWithData, message: ClientMessag
           ];
         }
         break;
-        
+
       case 'mistral':
         if (config.mistralApiKey) {
           available = true;
@@ -1109,7 +1123,7 @@ async function handleProviderModels(ws: WebSocketWithData, message: ClientMessag
           ];
         }
         break;
-        
+
       default:
         sendToClient(ws, {
           type: MessageType.PROVIDER_ERROR,
@@ -1152,18 +1166,18 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
   }
 
   const { provider, model, prompt, temperature, maxTokens, stream = false, requestId, systemMessage, tools } = message.payload;
-  
+
   // Ensure requestId is always available, generate one if needed
   const safeRequestId = requestId || `gen-${uuidv4().substring(0, 8)}`;
-  
+
   const userId = ws.connectionData.userId;
-  
+
   // Log the full request details for debugging
   logger.info(`Provider Request [${safeRequestId}]: ` +
     `Provider: ${provider}, Model: ${model}, User: ${userId || 'anonymous'}, Stream: ${stream}, ` +
     `Prompt Length: ${prompt?.length || 0}, SysMsg Length: ${systemMessage?.length || 0}, ` +
     `Tools: ${tools ? tools.length : 0} (${tools?.map((t: any) => t.name || 'unnamed').join(', ') || 'none'})`);
-  
+
   if (!userId && config.authEnabled) {
     logger.error(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] No user ID available for provider request`);
     sendToClient(ws, {
@@ -1176,13 +1190,13 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
     });
     return;
   }
-  
+
   // Log if system message and tools are present
   if (systemMessage) {
     // No need for redundant logging of systemMessage.length, already in the main request log
     // logger.info(`Request ${safeRequestId} includes system message, length: ${systemMessage.length}`);
   }
-  
+
   if (tools && Array.isArray(tools) && tools.length > 0) {
     // No need for redundant logging of tool count and names, already in the main request log
     // logger.info(`Request ${safeRequestId} includes ${tools.length} tools: ${tools.map(t => t.name).join(', ')}`);
@@ -1207,9 +1221,9 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
       logger.debug(`TOOLS AFTER PROCESSING for Gemini [${safeRequestId}]: ${JSON.stringify(tools, null, 2)}`); // Changed to debug
     }
   }
-  
+
   logger.info(`Processing ${provider} request for model ${model} from user ${userId || 'anonymous'}`);
-  
+
   try {
     // Check if provider is configured
     let apiKey: string;
@@ -1237,7 +1251,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
         });
         return;
     }
-    
+
     if (!apiKey) {
       sendToClient(ws, {
         type: MessageType.PROVIDER_ERROR,
@@ -1255,7 +1269,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
       if (stream) {
         // Handle streaming response using the proper streaming API
         logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Initiating request to model ${model}`);
-        
+
         try {
           // First, notify client that streaming has started
           sendToClient(ws, {
@@ -1266,7 +1280,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               requestId: safeRequestId
             }
           });
-          
+
           // Track streaming stats for this request
           const streamStats = {
             startTime: Date.now(),
@@ -1274,16 +1288,16 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             totalCharsStreamed: 0,
             lastChunkTime: Date.now()
           };
-          
+
           // Properly initialize chatMode as a valid string value
           const userChatMode = message.payload.chatMode;
-          const chatMode: 'normal' | 'gather' | 'agent' = 
+          const chatMode: 'normal' | 'gather' | 'agent' =
             userChatMode === 'gather' ? 'gather' :
             userChatMode === 'normal' ? 'normal' : 'agent';
-          
+
           // Log chat mode and tools for debugging
           logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ChatMode: ${userChatMode} -> ${chatMode}, Tools: ${tools ? tools.map((t: any) => t.name).join(', ') : 'none'}`);
-          
+
           // Use Gemini's streaming API with proper handlers
           await gemini.streamGeminiMessage({
             apiKey,
@@ -1303,7 +1317,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               streamStats.chunkCount++;
               streamStats.totalCharsStreamed += chunk.length;
               streamStats.lastChunkTime = Date.now();
-              
+
               // Log every 10th chunk to avoid log flooding
               if (streamStats.chunkCount % 10 === 0) {
                 logger.debug(
@@ -1313,14 +1327,14 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   `${Date.now() - streamStats.startTime}ms elapsed`
                 );
               }
-              
+
               // Check if the chunk contains any function call syntax that should be parsed out
               // Typical patterns include JSON function call syntax like {"functionCall":{...}} or similar
               if (
-                (chunk.includes('antml:function_calls') || 
-                 chunk.includes('functionCall') || 
-                 chunk.includes('"name":"') || 
-                 chunk.includes('"parameters":')) && 
+                (chunk.includes('antml:function_calls') ||
+                 chunk.includes('functionCall') ||
+                 chunk.includes('"name":"') ||
+                 chunk.includes('"parameters":')) &&
                 (chunk.includes('{') && chunk.includes('}'))
               ) {
                 // Log potential function call in stream
@@ -1329,14 +1343,14 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   `Function call detected in stream chunk, will be handled properly at stream end. ` +
                   `Length: ${chunk.length}, preview: "${chunk.substring(0, 50)}..."`
                 );
-                
+
                 // Instead of skipping this chunk entirely, let's still send the text content
                 // but mark that a tool call was detected in the stream
                 const cleanedChunk = chunk
                   .replace(/<function_calls>[\s\S]*?<\/antml:function_calls>/g, '')
                   .replace(/```(json)?\s*\{\s*"name"\s*:[\s\S]*?\}\s*```/g, '')
                   .replace(/\{\s*"functionCall"\s*:[\s\S]*?\}/g, '');
-                
+
                 if (cleanedChunk.trim()) {
                   // If there's still content after removing function call syntax, send it
                   sendToClient(ws, {
@@ -1349,7 +1363,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                     }
                   });
                 }
-                
+
                 // Don't return early - continue processing stream
                 // The function call will be properly extracted in onComplete
               } else {
@@ -1370,7 +1384,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                 `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
                 `Streaming error after ${streamStats.chunkCount} chunks: ${error.message}`
               );
-              
+
               sendToClient(ws, {
                 type: MessageType.PROVIDER_ERROR,
                 payload: {
@@ -1386,21 +1400,21 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               // Calculate streaming metrics
               const elapsedMs = Date.now() - streamStats.startTime;
               const charsPerSecond = streamStats.totalCharsStreamed / (elapsedMs / 1000);
-              
+
               logger.info(
                 `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
                 `Stream complete: ${streamStats.chunkCount} chunks, ` +
                 `${streamStats.totalCharsStreamed} chars, ` +
                 `${elapsedMs}ms total time, ` +
-                `${charsPerSecond.toFixed(1)} chars/sec, ` + 
+                `${charsPerSecond.toFixed(1)} chars/sec, ` +
                 `${response.tokensUsed} tokens used`
               );
-              
+
               // Log full response details for debugging
               logger.info(`Provider Response (Stream) [${safeRequestId}]: ` +
                 `Success: ${response.success}, Tokens Used: ${response.tokensUsed}, Text Length: ${response.text?.length || 0}, ` +
                 `ToolCall: ${response.toolCall ? response.toolCall.name : 'none'}, WaitingForToolCall: ${!!response.waitingForToolCall}`);
-              
+
               // Attempt to parse response.text for an error, even if response.success is true
               let apiErrorPayload: any = null;
               if (response.text) {
@@ -1436,7 +1450,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                 }
                 return; // Stop further processing
               }
-              
+
               // Process response to extract and handle any function calls that might be in the text
               // Strip out any remaining function call text from the response
               if (response.text) {
@@ -1444,13 +1458,13 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   .replace(/<function_calls>[\s\S]*?<\/antml:function_calls>/g, '')
                   .replace(/```(json)?\s*\{\s*"name"\s*:[\s\S]*?\}\s*```/g, '')
                   .replace(/\{\s*"functionCall"\s*:[\s\S]*?\}/g, '');
-                  
+
                 if (cleanedText !== response.text) {
                   logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Cleaned function call text from response`);
                   response.text = cleanedText.trim();
                 }
               }
-              
+
               // Log tool call information if present
               if (response.toolCall) {
                 logger.info(
@@ -1458,10 +1472,10 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   `Tool call detected in response: ${response.toolCall.name}, ` +
                   `parameters: ${JSON.stringify(response.toolCall.parameters)}`
                 );
-                
+
                 // Always ensure waitingForToolCall is true when a tool call is detected
                 response.waitingForToolCall = true;
-                
+
                 // Special handling for edit_file tool to ensure searchReplaceBlocks always exists
                 if (response.toolCall.name === 'edit_file') {
                   // Ensure that searchReplaceBlocks parameter exists and is a string
@@ -1481,7 +1495,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                     response.toolCall.parameters.searchReplaceBlocks = String(response.toolCall.parameters.searchReplaceBlocks);
                   }
                 }
-                
+
                 // Store the conversation context
                 activeTurnContexts.set(safeRequestId, {
                   provider,
@@ -1507,12 +1521,12 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   }],
                   createdAt: Date.now()
                 });
-                
+
                 logger.info(
                   `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
                   `Stored conversation context for future tool call results`
                 );
-                
+
                 // Finalize the stream, directly forwarding the toolCall object
                 sendToClient(ws, {
                   type: MessageType.PROVIDER_STREAM_END,
@@ -1531,7 +1545,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
                   `No tool call detected in response`
                 );
-                
+
                 // Finalize the stream without tool call
                 sendToClient(ws, {
                   type: MessageType.PROVIDER_STREAM_END,
@@ -1544,7 +1558,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   }
                 });
               }
-              
+
               // Log usage if available
               if (userId && response.tokensUsed) {
                 const creditsUsed = response.creditsUsed || (response.tokensUsed / 1000);
@@ -1557,7 +1571,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
             `Error in streaming setup: ${error instanceof Error ? error.message : String(error)}`
           );
-          
+
           sendToClient(ws, {
             type: MessageType.PROVIDER_ERROR,
             payload: {
@@ -1579,11 +1593,11 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
           tools,
           chatMode: message.payload.chatMode,
         });
-        
+
         logger.info(`Provider Response (Non-Stream) [${safeRequestId}]: ` +
           `Success: ${response.success}, Tokens Used: ${response.tokensUsed}, Text Length: ${response.text?.length || 0}, ` +
           `ToolCall: ${response.toolCall ? response.toolCall.name : 'none'}, WaitingForToolCall: ${!!response.waitingForToolCall}`);
-        
+
         // Log tool call information if present
         if (response.toolCall) {
           logger.info(
@@ -1591,7 +1605,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             `Tool call detected in response: ${response.toolCall.name}, ` +
             `parameters: ${JSON.stringify(response.toolCall.parameters)}`
           );
-          
+
           // Store the conversation context
           activeTurnContexts.set(safeRequestId, {
             provider,
@@ -1617,7 +1631,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             }],
             createdAt: Date.now()
           });
-          
+
           sendToClient(ws, {
             type: MessageType.PROVIDER_RESPONSE,
             payload: {
@@ -1634,7 +1648,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
             `No tool call detected in response`
           );
-          
+
           sendToClient(ws, {
             type: MessageType.PROVIDER_RESPONSE,
             payload: {
@@ -1644,11 +1658,11 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               requestId: safeRequestId
             }
           });
-          
+
           // Clean up the context since we're done
           activeTurnContexts.delete(safeRequestId);
         }
-        
+
         // Log usage
         if (userId && response.tokensUsed) {
           const creditsUsed = response.creditsUsed || (response.tokensUsed / 1000);
@@ -1684,7 +1698,7 @@ async function handleUserDataRequest(ws: WebSocketWithData, message: ClientMessa
   // Skip type checking since we already checked in the switch statement
   try {
     const { userId } = message.payload;
-    
+
     // Ensure the requested user ID matches the authenticated user ID (security measure)
     if (userId !== ws.connectionData.userId) {
       logger.warn(`User data request from ${ws.connectionData.userId} for another user ${userId}`);
@@ -1696,10 +1710,10 @@ async function handleUserDataRequest(ws: WebSocketWithData, message: ClientMessa
       });
       return;
     }
-    
+
     // Get user data from database
     const user = await getUserByClerkId(userId);
-    
+
     if (!user) {
       logger.warn(`User with ID ${userId} not found in database`);
       sendToClient(ws, {
@@ -1710,7 +1724,7 @@ async function handleUserDataRequest(ws: WebSocketWithData, message: ClientMessa
       });
       return;
     }
-    
+
     // Format the user data to match expected interface
     const userData = {
       id: userId,
@@ -1718,7 +1732,7 @@ async function handleUserDataRequest(ws: WebSocketWithData, message: ClientMessa
       credits: user.credits_remaining,
       subscription: user.subscription_tier
     };
-    
+
     // Send user data back to client
     logger.info(`Sending user data for ${userId}`);
     sendToClient(ws, {
@@ -1748,12 +1762,12 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
   }
 
   const { requestId, toolCallId, toolName, result, isError, errorDetails } = message.payload;
-  
+
   // Ensure we have a valid requestId
   const safeRequestId = requestId || `tool-exec-${uuidv4().substring(0, 8)}`;
-  
+
   const userId = ws.connectionData.userId;
-  
+
   // Log the full request details for debugging
   let resultPreview: string;
   if (isError) {
@@ -1768,7 +1782,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
 
   logger.info(`Tool Execution Result [${safeRequestId}]: ` +
     `ToolName: ${toolName}, ToolCallId: ${toolCallId}, IsError: ${isError}, ResultPreview: ${resultPreview}`);
-  
+
   if (!userId && config.authEnabled) {
     logger.error(`WS AUTH [${ws.connectionData.connectionId}][${safeRequestId}] No user ID available for tool execution result`);
     sendToClient(ws, {
@@ -1781,13 +1795,13 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
     });
     return;
   }
-  
+
   logger.info(`Processing tool execution result for ${toolName} from user ${userId || 'anonymous'}, requestId: ${safeRequestId}`);
-  
+
   try {
     // Look up the pending conversation context from our request store
     const conversationContext = activeTurnContexts.get(safeRequestId);
-    
+
     if (!conversationContext) {
       logger.error(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] No active conversation found for tool execution result`);
       sendToClient(ws, {
@@ -1800,34 +1814,34 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
       });
       return;
     }
-    
+
     const { provider, model, apiKey, temperature, maxTokens, systemMessage, tools, stream, lastPrompt, messages } = conversationContext;
-    
+
     // Add tool result to messages
-    const toolResponseContent = isError ? 
-      { error: errorDetails || 'Unknown error during tool execution' } : 
+    const toolResponseContent = isError ?
+      { error: errorDetails || 'Unknown error during tool execution' } :
       result;
-    
+
     // Create a proper string representation of the result for the messages array
-    const toolResponseString = typeof toolResponseContent === 'string' ? 
-      toolResponseContent : 
+    const toolResponseString = typeof toolResponseContent === 'string' ?
+      toolResponseContent :
       JSON.stringify(toolResponseContent);
-    
+
     messages.push({
       role: 'tool',
       toolCallId: toolCallId,
       content: toolResponseString
     });
-    
+
     // Now send the updated conversation back to Gemini
     logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Continuing conversation with tool result for ${toolName}`);
-    
+
     // Properly initialize chatMode as a valid string value
     const userChatMode = message.payload.chatMode;
-    const requestChatMode: 'normal' | 'gather' | 'agent' = 
+    const requestChatMode: 'normal' | 'gather' | 'agent' =
       userChatMode === 'gather' ? 'gather' :
       userChatMode === 'normal' ? 'normal' : 'agent';
-    
+
     // Process based on whether this is a streaming request
     if (stream) {
       // Send notification that we're continuing the conversation
@@ -1840,7 +1854,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           model
         }
       });
-      
+
       try {
         // Setup for streaming
         const streamStats = {
@@ -1849,7 +1863,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           totalCharsStreamed: 0,
           lastChunkTime: Date.now()
         };
-        
+
         // Continue conversation with Gemini
         await gemini.streamGeminiMessage({
           apiKey,
@@ -1869,7 +1883,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
             streamStats.chunkCount++;
             streamStats.totalCharsStreamed += chunk.length;
             streamStats.lastChunkTime = Date.now();
-            
+
             // Log every 10th chunk to avoid log flooding
             if (streamStats.chunkCount % 10 === 0) {
               logger.debug(
@@ -1879,14 +1893,14 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
                 `${Date.now() - streamStats.startTime}ms elapsed`
               );
             }
-            
+
             // Check if the chunk contains any function call syntax that should be parsed out
             // Typical patterns include JSON function call syntax like {"functionCall":{...}} or similar
             if (
-              (chunk.includes('antml:function_calls') || 
-               chunk.includes('functionCall') || 
-               chunk.includes('"name":"') || 
-               chunk.includes('"parameters":')) && 
+              (chunk.includes('antml:function_calls') ||
+               chunk.includes('functionCall') ||
+               chunk.includes('"name":"') ||
+               chunk.includes('"parameters":')) &&
               (chunk.includes('{') && chunk.includes('}'))
             ) {
               // Log potential function call in stream
@@ -1895,14 +1909,14 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
                 `Function call detected in stream chunk, will be handled properly at stream end. ` +
                 `Length: ${chunk.length}, preview: "${chunk.substring(0, 50)}..."`
               );
-              
+
               // Instead of skipping this chunk entirely, let's still send the text content
               // but mark that a tool call was detected in the stream
               const cleanedChunk = chunk
                 .replace(/<function_calls>[\s\S]*?<\/antml:function_calls>/g, '')
                 .replace(/```(json)?\s*\{\s*"name"\s*:[\s\S]*?\}\s*```/g, '')
                 .replace(/\{\s*"functionCall"\s*:[\s\S]*?\}/g, '');
-              
+
               if (cleanedChunk.trim()) {
                 // If there's still content after removing function call syntax, send it
                 sendToClient(ws, {
@@ -1915,7 +1929,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
                   }
                 });
               }
-              
+
               // Don't return early - continue processing stream
               // The function call will be properly extracted in onComplete
             } else {
@@ -1936,7 +1950,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
               `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
               `Streaming error after ${streamStats.chunkCount} chunks: ${error.message}`
             );
-            
+
             sendToClient(ws, {
               type: MessageType.PROVIDER_ERROR,
               payload: {
@@ -1947,7 +1961,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
                 model
               }
             });
-            
+
             // Clean up the context
             activeTurnContexts.delete(safeRequestId);
           },
@@ -1955,21 +1969,21 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
             // Calculate streaming metrics
             const elapsedMs = Date.now() - streamStats.startTime;
             const charsPerSecond = streamStats.totalCharsStreamed / (elapsedMs / 1000);
-            
+
             logger.info(
               `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
               `Stream complete: ${streamStats.chunkCount} chunks, ` +
               `${streamStats.totalCharsStreamed} chars, ` +
               `${elapsedMs}ms total time, ` +
-              `${charsPerSecond.toFixed(1)} chars/sec, ` + 
+              `${charsPerSecond.toFixed(1)} chars/sec, ` +
               `${response.tokensUsed} tokens used`
             );
-            
+
             // Log full response details for debugging
             logger.info(`Provider Response (ToolExec Stream) [${safeRequestId}]: ` +
               `Success: ${response.success}, Tokens Used: ${response.tokensUsed}, Text Length: ${response.text?.length || 0}, ` +
               `ToolCall: ${response.toolCall ? response.toolCall.name : 'none'}, WaitingForToolCall: ${!!response.waitingForToolCall}`);
-            
+
             // Process response to extract and handle any function calls that might be in the text
             // Strip out any remaining function call text from the response
             if (response.text) {
@@ -1977,13 +1991,13 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
                 .replace(/<function_calls>[\s\S]*?<\/antml:function_calls>/g, '')
                 .replace(/```(json)?\s*\{\s*"name"\s*:[\s\S]*?\}\s*```/g, '')
                 .replace(/\{\s*"functionCall"\s*:[\s\S]*?\}/g, '');
-                
+
               if (cleanedText !== response.text) {
                 logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Cleaned function call text from response`);
                 response.text = cleanedText.trim();
               }
             }
-            
+
             // Log tool call information if present
             if (response.toolCall) {
               logger.info(
@@ -1991,10 +2005,10 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
                 `Tool call detected in response: ${response.toolCall.name}, ` +
                 `parameters: ${JSON.stringify(response.toolCall.parameters)}`
               );
-              
+
               // Always ensure waitingForToolCall is true when a tool call is detected
               response.waitingForToolCall = true;
-              
+
               // Special handling for edit_file tool to ensure searchReplaceBlocks always exists
               if (response.toolCall.name === 'edit_file') {
                 // Ensure that searchReplaceBlocks parameter exists and is a string
@@ -2014,7 +2028,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
                   response.toolCall.parameters.searchReplaceBlocks = String(response.toolCall.parameters.searchReplaceBlocks);
                 }
               }
-              
+
               // Store the conversation context
               activeTurnContexts.set(safeRequestId, {
                 provider,
@@ -2040,12 +2054,12 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
                 }],
                 createdAt: Date.now()
               });
-              
+
               logger.info(
                 `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
                 `Stored conversation context for future tool call results`
               );
-              
+
               // Finalize the stream, directly forwarding the toolCall object
               sendToClient(ws, {
                 type: MessageType.PROVIDER_STREAM_END,
@@ -2064,7 +2078,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
                 `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
                 `No tool call detected in response`
               );
-              
+
               // Finalize the stream without tool call
               sendToClient(ws, {
                 type: MessageType.PROVIDER_STREAM_END,
@@ -2084,7 +2098,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
           `Error in continued streaming: ${error instanceof Error ? error.message : String(error)}`
         );
-        
+
         sendToClient(ws, {
           type: MessageType.PROVIDER_ERROR,
           payload: {
@@ -2093,7 +2107,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
             requestId: safeRequestId
           }
         });
-        
+
         // Clean up the context due to error
         activeTurnContexts.delete(safeRequestId);
       }
@@ -2122,10 +2136,10 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
             `Another tool call detected in non-streaming response: ${response.toolCall.name}, ` +
             `parameters: ${JSON.stringify(response.toolCall.parameters)}`
           );
-          
+
           // Always ensure waitingForToolCall is true when a tool call is detected
           response.waitingForToolCall = true;
-          
+
           // Add model's response to messages
           messages.push({
             role: 'model',
@@ -2136,7 +2150,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
               parameters: response.toolCall.parameters
             }]
           });
-          
+
           // Special handling for edit_file tool
           if (response.toolCall.name === 'edit_file') {
             // Ensure that searchReplaceBlocks parameter exists and is a string
@@ -2154,11 +2168,11 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
               response.toolCall.parameters.searchReplaceBlocks = String(response.toolCall.parameters.searchReplaceBlocks);
             }
           }
-          
+
           // Update the conversation context with the latest messages
           conversationContext.messages = messages;
           activeTurnContexts.set(safeRequestId, conversationContext);
-          
+
           sendToClient(ws, {
             type: MessageType.PROVIDER_RESPONSE,
             payload: {
@@ -2176,7 +2190,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
             `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
             `No further tool calls detected, finishing non-streaming conversation`
           );
-          
+
           sendToClient(ws, {
             type: MessageType.PROVIDER_RESPONSE,
             payload: {
@@ -2186,11 +2200,11 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
               requestId: safeRequestId
             }
           });
-          
+
           // Clean up the context since we're done
           activeTurnContexts.delete(safeRequestId);
         }
-        
+
         // Log usage
         if (userId && response.tokensUsed) {
           const creditsUsed = response.creditsUsed || (response.tokensUsed / 1000);
@@ -2201,7 +2215,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
           `Error in continued non-streaming request: ${error instanceof Error ? error.message : String(error)}`
         );
-        
+
         sendToClient(ws, {
           type: MessageType.PROVIDER_ERROR,
           payload: {
@@ -2210,7 +2224,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
             requestId: safeRequestId
           }
         });
-        
+
         // Clean up the context due to error
         activeTurnContexts.delete(safeRequestId);
       }
@@ -2225,7 +2239,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
         requestId: safeRequestId
       }
     });
-    
+
     // Clean up any context due to error
     activeTurnContexts.delete(safeRequestId);
   }
@@ -2242,7 +2256,7 @@ async function handleCodebaseEmbeddingRequest(ws: WebSocketWithData, message: Cl
 
   const { chunk, requestId } = message.payload;
   const userId = ws.connectionData.userId;
-  
+
   if (!userId) {
     logger.error(`WS EMBEDDING [${ws.connectionData.connectionId}][${requestId}] No user ID available for embedding request`);
     sendToClient(ws, {
@@ -2256,16 +2270,16 @@ async function handleCodebaseEmbeddingRequest(ws: WebSocketWithData, message: Cl
     });
     return;
   }
-  
+
   logger.info(`Processing embedding request for chunk ${chunk.id} from user ${userId}`);
-  
+
   try {
     // Import embedding service
     const embeddingService = await import('./embedding-service');
-    
+
     // Generate embedding
     const result = await embeddingService.generateChunkEmbedding(chunk, userId);
-    
+
     // Send response
     sendToClient(ws, {
       type: MessageType.CODEBASE_EMBEDDING_RESPONSE,
@@ -2276,7 +2290,7 @@ async function handleCodebaseEmbeddingRequest(ws: WebSocketWithData, message: Cl
         tokensUsed: result.tokensUsed
       }
     });
-    
+
     // Note: Not logging usage for embedding operations as these are for indexing, not chat
   } catch (error) {
     logger.error(`Error generating embedding for chunk ${chunk.id}:`, error);
@@ -2303,7 +2317,7 @@ async function handleCodebaseEmbeddingBatchRequest(ws: WebSocketWithData, messag
 
   const { chunks, requestId, batchId } = message.payload;
   const userId = ws.connectionData.userId;
-  
+
   if (!userId) {
     logger.error(`WS EMBEDDING [${ws.connectionData.connectionId}][${requestId}] No user ID available for batch embedding request`);
     sendToClient(ws, {
@@ -2319,13 +2333,13 @@ async function handleCodebaseEmbeddingBatchRequest(ws: WebSocketWithData, messag
     });
     return;
   }
-  
+
   logger.info(`Processing batch embedding request for ${chunks.length} chunks from user ${userId}`);
-  
+
   try {
     // Import embedding service
     const embeddingService = await import('./embedding-service');
-    
+
     // Generate embeddings with progress tracking
     const result = await embeddingService.generateBatchEmbeddings(chunks, userId, (progress) => {
       // Send progress updates to client
@@ -2334,15 +2348,21 @@ async function handleCodebaseEmbeddingBatchRequest(ws: WebSocketWithData, messag
         payload: {
           requestId,
           batchId,
-          completed: progress.completed,
-          total: progress.total,
-          currentBatch: progress.currentBatch,
+          completedChunks: progress.completedChunks,
+          totalChunks: progress.totalChunks,
+          currentBatchNumber: progress.currentBatchNumber,
           totalBatches: progress.totalBatches,
-          percentage: Math.round((progress.completed / progress.total) * 100)
+          successfullyStoredInBatch: progress.successfullyStoredInBatch, // Added
+          errorsInBatch: progress.errorsInBatch, // Added
+          currentFileRelativePath: progress.currentFileRelativePath, // Added
+          fileStatus: progress.fileStatus, // Added
+          fileErrorDetails: progress.fileErrorDetails, // Added
+          // Calculate overall percentage based on chunks for now, client can refine with file counts
+          percentage: Math.round((progress.completedChunks / progress.totalChunks) * 100)
         }
       });
     });
-    
+
     // Send final response
     sendToClient(ws, {
       type: MessageType.CODEBASE_EMBEDDING_BATCH_RESPONSE,
@@ -2355,11 +2375,11 @@ async function handleCodebaseEmbeddingBatchRequest(ws: WebSocketWithData, messag
         successfullyStored: result.successfullyStored
       }
     });
-    
+
     // Note: Not logging usage for embedding operations as these are for indexing, not chat
-    
+
     logger.info(`Batch embedding completed for user ${userId}: ${result.embeddings.length} successful, ${result.errors.length} errors, ${result.successfullyStored} stored in Pinecone`);
-    
+
   } catch (error) {
     logger.error(`Error generating batch embeddings:`, error);
     sendToClient(ws, {
@@ -2368,9 +2388,9 @@ async function handleCodebaseEmbeddingBatchRequest(ws: WebSocketWithData, messag
         requestId,
         batchId,
         embeddings: [],
-        errors: chunks.map((chunk: any) => ({ 
-          chunkId: chunk.id, 
-          error: error instanceof Error ? error.message : String(error) 
+        errors: chunks.map((chunk: any) => ({
+          chunkId: chunk.id,
+          error: error instanceof Error ? error.message : String(error)
         })),
         tokensUsed: 0,
         successfullyStored: 0
@@ -2390,7 +2410,7 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
 
   const { query, requestId, options } = message.payload;
   const userId = ws.connectionData.userId;
-  
+
   if (!userId) {
     logger.error(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] No user ID available for search request`);
     sendToClient(ws, {
@@ -2409,11 +2429,11 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
     if (query === "__GET_STATS__") {
       logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Processing stats request for user ${userId}`);
       // TEMPORARY DELAY FOR DEBUGGING EVENTUAL CONSISTENCY - REMOVED
-      // await new Promise(resolve => setTimeout(resolve, 20000)); 
+      // await new Promise(resolve => setTimeout(resolve, 20000));
       const pineconeService2 = await import('./pinecone-service');
       const vectorCount = await pineconeService2.getUserVectorCount(userId);
       logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] User ${userId} has ${vectorCount} vectors in Pinecone`);
-      
+
       // Send response with stats
       sendToClient(ws, {
         type: MessageType.CODEBASE_SEARCH_RESPONSE,
@@ -2428,15 +2448,15 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
       });
       return;
     }
-    
+
     logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Processing search request for query: "${query}"`);
-    
+
     // Import embedding service
     const embeddingService = await import('./embedding-service');
-    
+
     // Generate embedding for the query
     const queryEmbeddingResult = await embeddingService.generateQueryEmbedding(query, userId);
-    
+
     if (queryEmbeddingResult.error || !queryEmbeddingResult.embedding || queryEmbeddingResult.embedding.length === 0) {
       logger.error(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Failed to generate query embedding: ${queryEmbeddingResult.error}`);
       sendToClient(ws, {
@@ -2449,10 +2469,10 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
       });
       return;
     }
-    
+
     // Import Pinecone service
     const pineconeService = await import('./pinecone-service');
-    
+
     // Perform hybrid search (vector + keyword)
     const searchResults = await pineconeService.hybridSearch(
       userId,
@@ -2463,9 +2483,9 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
         filters: options?.filters
       }
     );
-    
+
     logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Found ${searchResults.length} results`);
-    
+
     // Send response
     sendToClient(ws, {
       type: MessageType.CODEBASE_SEARCH_RESPONSE,
@@ -2474,7 +2494,7 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
         results: searchResults
       }
     });
-    
+
   } catch (error) {
     logger.error(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Search error:`, error);
     sendToClient(ws, {
@@ -2483,6 +2503,68 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
         requestId,
         results: [],
         error: error instanceof Error ? error.message : 'Search failed'
+      }
+    });
+  }
+}
+
+/**
+ * Handle codebase clear index request
+ */
+async function handleCodebaseClearIndexRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
+  if (message.type !== MessageType.CODEBASE_CLEAR_INDEX_REQUEST) {
+    logger.error('Invalid message type passed to handleCodebaseClearIndexRequest');
+    return;
+  }
+
+  const { requestId } = message.payload;
+  const userId = ws.connectionData.userId;
+
+  if (!userId) {
+    logger.error(`WS CLEAR_INDEX [${ws.connectionData.connectionId}][${requestId}] No user ID available for clear index request`);
+    sendToClient(ws, {
+      type: MessageType.CODEBASE_CLEAR_INDEX_RESPONSE,
+      payload: {
+        requestId,
+        success: false,
+        error: 'User ID not available'
+      }
+    });
+    return;
+  }
+
+  logger.info(`WS CLEAR_INDEX [${ws.connectionData.connectionId}][${requestId}] Processing clear index request for user ${userId}`);
+
+  try {
+    // Import Pinecone service
+    const pineconeService = await import('./pinecone-service');
+
+    // Get current vector count before deletion for reporting
+    const vectorCount = await pineconeService.getUserNamespaceStats(userId);
+
+    // Delete all vectors for the user
+    await pineconeService.deleteUserVectors(userId);
+
+    logger.info(`WS CLEAR_INDEX [${ws.connectionData.connectionId}][${requestId}] Successfully cleared ${vectorCount} vectors for user ${userId}`);
+
+    // Send success response
+    sendToClient(ws, {
+      type: MessageType.CODEBASE_CLEAR_INDEX_RESPONSE,
+      payload: {
+        requestId,
+        success: true,
+        deletedVectorCount: vectorCount
+      }
+    });
+
+  } catch (error) {
+    logger.error(`WS CLEAR_INDEX [${ws.connectionData.connectionId}][${requestId}] Error during clear index:`, error);
+    sendToClient(ws, {
+      type: MessageType.CODEBASE_CLEAR_INDEX_RESPONSE,
+      payload: {
+        requestId,
+        success: false,
+        error: error instanceof Error ? error.message : 'Clear index failed'
       }
     });
   }

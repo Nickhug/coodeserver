@@ -11,37 +11,37 @@ export enum MessageType {
   // Connection messages
   CONNECT_SUCCESS = 'connect_success',
   CONNECT_ERROR = 'connect_error',
-  
+
   // Authentication messages
   AUTHENTICATE = 'authenticate',
   AUTH_SUCCESS = 'auth_success',
   AUTH_FAILURE = 'auth_failure',
-  
+
   // Keep-alive messages
   PING = 'ping',
   PONG = 'pong',
-  
+
   // Provider discovery messages
   PROVIDER_LIST = 'provider_list',
   PROVIDER_MODELS = 'provider_models',
-  
+
   // Provider interaction messages
   PROVIDER_REQUEST = 'provider_request',
   PROVIDER_RESPONSE = 'provider_response',
   PROVIDER_ERROR = 'provider_error',
-  
+
   // Streaming messages
   PROVIDER_STREAM_START = 'provider_stream_start',
   PROVIDER_STREAM_CHUNK = 'provider_stream_chunk',
   PROVIDER_STREAM_END = 'provider_stream_end',
-  
+
   // Tool messages
   TOOL_EXECUTION_RESULT = 'tool_execution_result',
-  
+
   // User data messages
   USER_DATA_REQUEST = 'user_data_request',
   USER_DATA_RESPONSE = 'user_data_response',
-  
+
   // Codebase indexing messages
   CODEBASE_INDEX_REQUEST = 'codebase_index_request',
   CODEBASE_INDEX_RESPONSE = 'codebase_index_response',
@@ -52,7 +52,9 @@ export enum MessageType {
   CODEBASE_EMBEDDING_PROGRESS = 'codebase_embedding_progress',
   CODEBASE_SEARCH_REQUEST = 'codebase_search_request',
   CODEBASE_SEARCH_RESPONSE = 'codebase_search_response',
-  
+  CODEBASE_CLEAR_INDEX_REQUEST = 'codebase_clear_index_request',
+  CODEBASE_CLEAR_INDEX_RESPONSE = 'codebase_clear_index_response',
+
   // General error
   ERROR = 'error'
 }
@@ -362,6 +364,27 @@ export interface CodebaseSearchResponsePayload {
     highlights?: string[];
   }>;
   error?: string;
+  stats?: {
+    vectorCount: number;
+    namespace: string;
+  };
+}
+
+/**
+ * Codebase clear index request payload
+ */
+export interface CodebaseClearIndexRequestPayload {
+  requestId: string;
+}
+
+/**
+ * Codebase clear index response payload
+ */
+export interface CodebaseClearIndexResponsePayload {
+  requestId: string;
+  success: boolean;
+  error?: string;
+  deletedVectorCount?: number;
 }
 
 /**
@@ -372,4 +395,6 @@ export type CodebaseEmbeddingResponseMessage = ServerMessage & { payload: Codeba
 export type CodebaseEmbeddingBatchRequestMessage = ClientMessage & { payload: CodebaseEmbeddingBatchRequestPayload };
 export type CodebaseEmbeddingBatchResponseMessage = ServerMessage & { payload: CodebaseEmbeddingBatchResponsePayload };
 export type CodebaseSearchRequestMessage = ClientMessage & { payload: CodebaseSearchRequestPayload };
-export type CodebaseSearchResponseMessage = ServerMessage & { payload: CodebaseSearchResponsePayload }; 
+export type CodebaseSearchResponseMessage = ServerMessage & { payload: CodebaseSearchResponsePayload };
+export type CodebaseClearIndexRequestMessage = ClientMessage & { payload: CodebaseClearIndexRequestPayload };
+export type CodebaseClearIndexResponseMessage = ServerMessage & { payload: CodebaseClearIndexResponsePayload };
