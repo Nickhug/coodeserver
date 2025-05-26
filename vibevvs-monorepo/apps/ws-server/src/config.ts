@@ -34,13 +34,10 @@ export const config = {
   groqApiKey: process.env.GROQ_API_KEY || '',
   mistralApiKey: process.env.MISTRAL_API_KEY || '',
   
-  // R2 Storage Configuration
-  r2AccountId: process.env.R2_ACCOUNT_ID || '',
-  r2AccessKeyId: process.env.R2_ACCESS_KEY_ID || '',
-  r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
-  r2ApiToken: process.env.R2_API_TOKEN || '',
-  r2BucketName: process.env.R2_BUCKET_NAME || 'coodestorage',
-  r2Endpoint: process.env.R2_ENDPOINT || '',
+  // Pinecone Configuration
+  pineconeApiKey: process.env.PINECONE_API_KEY || '',
+  pineconeIndexName: process.env.PINECONE_INDEX_NAME || 'coode-codebase',
+  pineconeNamespace: process.env.PINECONE_NAMESPACE || 'default',
   
   // Embedding Configuration
   embeddingModel: process.env.EMBEDDING_MODEL || 'text-embedding-004',
@@ -96,9 +93,9 @@ export function validateConfig(): { isValid: boolean; errors: string[]; warnings
     errors.push('Mistral is set as the default provider but MISTRAL_API_KEY is not provided');
   }
 
-  // R2 validation (warnings only, as it's optional)
-  if (!config.r2AccountId || !config.r2AccessKeyId || !config.r2SecretAccessKey || !config.r2Endpoint) {
-    warnings.push('R2 storage is not fully configured. Embedding storage will be disabled.');
+  // Pinecone validation
+  if (!config.pineconeApiKey) {
+    errors.push('Pinecone API key is not provided. Vector search will not work.');
   }
   
   // Embedding configuration validation

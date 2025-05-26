@@ -359,6 +359,20 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
     } else if (messageType === MessageType.CODEBASE_EMBEDDING_BATCH_REQUEST) {
       const chunkCount = clientMessage.payload?.chunks?.length || 0;
       logger.info(`WS MSG [${connectionId}][${requestId}] Codebase embedding batch request for ${chunkCount} chunks`);
+    } else if (messageType === MessageType.CODEBASE_SEARCH_REQUEST) {
+      if (config.authEnabled && !isAuthenticated) {
+        logger.warn(`WS AUTH [${connectionId}] Unauthorized codebase search request rejected`);
+        sendToClient(ws, { 
+          type: MessageType.ERROR, 
+          payload: { 
+            error: 'Authentication required', 
+            code: 'UNAUTHORIZED',
+            requestId: clientMessage.payload?.requestId
+          } 
+        });
+        return;
+      }
+      await handleCodebaseSearchRequest(ws, clientMessage);
     } else {
       logger.debug(`WS MSG [${connectionId}] Received message type: ${messageType}`);
     }
@@ -438,6 +452,20 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
         return;
       }
       await handleCodebaseEmbeddingBatchRequest(ws, clientMessage);
+    } else if (messageType === MessageType.CODEBASE_SEARCH_REQUEST) {
+      if (config.authEnabled && !isAuthenticated) {
+        logger.warn(`WS AUTH [${connectionId}] Unauthorized codebase search request rejected`);
+        sendToClient(ws, { 
+          type: MessageType.ERROR, 
+          payload: { 
+            error: 'Authentication required', 
+            code: 'UNAUTHORIZED',
+            requestId: clientMessage.payload?.requestId
+          } 
+        });
+        return;
+      }
+      await handleCodebaseSearchRequest(ws, clientMessage);
     } else {
       logger.warn(`WS MSG [${connectionId}] Unknown message type: ${messageType}`);
       sendToClient(ws, { 
@@ -2307,6 +2335,91 @@ async function handleCodebaseEmbeddingBatchRequest(ws: WebSocketWithData, messag
           error: error instanceof Error ? error.message : String(error) 
         })),
         tokensUsed: 0
+      }
+    });
+  }
+}
+
+/**
+ * Handle codebase search request
+ */
+async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
+  if (message.type !== MessageType.CODEBASE_SEARCH_REQUEST) {
+    logger.error('Invalid message type passed to handleCodebaseSearchRequest');
+    return;
+  }
+
+  const { query, requestId, options } = message.payload;
+  const userId = ws.connectionData.userId;
+  
+  if (!userId) {
+    logger.error(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] No user ID available for search request`);
+    sendToClient(ws, {
+      type: MessageType.CODEBASE_SEARCH_RESPONSE,
+      payload: {
+        requestId,
+        results: [],
+        error: 'User ID not available'
+      }
+    });
+    return;
+  }
+
+  try {
+    logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Processing search request for query: "${query}"`);
+    
+    // Import embedding service
+    const embeddingService = await import('./embedding-service');
+    
+    // Generate embedding for the query
+    const queryEmbeddingResult = await embeddingService.generateQueryEmbedding(query, userId);
+    
+    if (queryEmbeddingResult.error || !queryEmbeddingResult.embedding || queryEmbeddingResult.embedding.length === 0) {
+      logger.error(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Failed to generate query embedding: ${queryEmbeddingResult.error}`);
+      sendToClient(ws, {
+        type: MessageType.CODEBASE_SEARCH_RESPONSE,
+        payload: {
+          requestId,
+          results: [],
+          error: queryEmbeddingResult.error || 'Failed to generate query embedding'
+        }
+      });
+      return;
+    }
+    
+    // Import Pinecone service
+    const pineconeService = await import('./pinecone-service');
+    
+    // Perform hybrid search (vector + keyword)
+    const searchResults = await pineconeService.hybridSearch(
+      userId,
+      query,
+      queryEmbeddingResult.embedding,
+      {
+        limit: options?.limit || 10,
+        filters: options?.filters
+      }
+    );
+    
+    logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Found ${searchResults.length} results`);
+    
+    // Send response
+    sendToClient(ws, {
+      type: MessageType.CODEBASE_SEARCH_RESPONSE,
+      payload: {
+        requestId,
+        results: searchResults
+      }
+    });
+    
+  } catch (error) {
+    logger.error(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Search error:`, error);
+    sendToClient(ws, {
+      type: MessageType.CODEBASE_SEARCH_RESPONSE,
+      payload: {
+        requestId,
+        results: [],
+        error: error instanceof Error ? error.message : 'Search failed'
       }
     });
   }

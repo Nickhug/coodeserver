@@ -1,9 +1,9 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import logger from '@repo/logger';
 import { config } from './config';
 import * as gemini from '@repo/ai-providers';
 import { CodeChunk } from '@repo/types';
 import crypto from 'crypto';
+import * as pineconeService from './pinecone-service';
 
 // Define EmbeddingResponse locally
 interface EmbeddingResponse {
@@ -11,23 +11,6 @@ interface EmbeddingResponse {
   embedding: number[];
   model: string;
   tokensUsed?: number;
-}
-
-// Initialize S3 client for R2
-let s3Client: S3Client | null = null;
-
-if (config.r2AccountId && config.r2AccessKeyId && config.r2SecretAccessKey && config.r2Endpoint) {
-  s3Client = new S3Client({
-    region: 'auto',
-    endpoint: config.r2Endpoint,
-    credentials: {
-      accessKeyId: config.r2AccessKeyId,
-      secretAccessKey: config.r2SecretAccessKey,
-    },
-  });
-  logger.info('R2 storage client initialized');
-} else {
-  logger.warn('R2 storage not configured, embeddings will not be persisted');
 }
 
 // Configuration
@@ -92,86 +75,6 @@ function generateChunkKey(chunk: CodeChunk): string {
 }
 
 /**
- * Store embedding in R2
- */
-async function storeEmbedding(
-  chunkId: string,
-  embedding: number[],
-  metadata: Record<string, any>
-): Promise<boolean> {
-  if (!s3Client) {
-    logger.warn('R2 storage not configured, skipping storage');
-    return false;
-  }
-  
-  try {
-    const key = `embeddings/${chunkId}.json`;
-    const data = {
-      embedding,
-      metadata,
-      timestamp: new Date().toISOString(),
-    };
-    
-    await s3Client.send(new PutObjectCommand({
-      Bucket: config.r2BucketName,
-      Key: key,
-      Body: JSON.stringify(data),
-      ContentType: 'application/json',
-    }));
-    
-    logger.debug(`Stored embedding for chunk ${chunkId} in R2`);
-    return true;
-  } catch (error) {
-    logger.error(`Failed to store embedding in R2: ${error}`);
-    return false;
-  }
-}
-
-/**
- * Retrieve embedding from R2
- */
-async function getStoredEmbedding(chunkId: string): Promise<number[] | null> {
-  if (!s3Client) {
-    return null;
-  }
-  
-  try {
-    const key = `embeddings/${chunkId}.json`;
-    
-    // Check if object exists
-    try {
-      await s3Client.send(new HeadObjectCommand({
-        Bucket: config.r2BucketName,
-        Key: key,
-      }));
-    } catch (error: any) {
-      if (error.name === 'NotFound') {
-        return null;
-      }
-      throw error;
-    }
-    
-    // Get object
-    const response = await s3Client.send(new GetObjectCommand({
-      Bucket: config.r2BucketName,
-      Key: key,
-    }));
-    
-    if (!response.Body) {
-      return null;
-    }
-    
-    const bodyString = await response.Body.transformToString();
-    const data = JSON.parse(bodyString);
-    
-    return data.embedding;
-  } catch (error) {
-    logger.error(`Failed to retrieve embedding from R2: ${error}`);
-    return null;
-  }
-}
-
-/**
  * Generate embedding for a single code chunk
  */
 export async function generateChunkEmbedding(
@@ -179,18 +82,6 @@ export async function generateChunkEmbedding(
   userId: string
 ): Promise<EmbeddingResponse> {
   const chunkKey = generateChunkKey(chunk);
-  
-  // Check if we have a cached embedding
-  const cachedEmbedding = await getStoredEmbedding(chunkKey);
-  if (cachedEmbedding) {
-    logger.debug(`Using cached embedding for chunk ${chunk.id}`);
-    return {
-      chunkId: chunk.id,
-      embedding: cachedEmbedding,
-      model: EMBEDDING_MODEL,
-      tokensUsed: 0, // No tokens used for cached result
-    };
-  }
   
   // Wait for rate limit
   await rateLimiter.waitForSlot();
@@ -207,14 +98,24 @@ export async function generateChunkEmbedding(
     throw new Error(result.error);
   }
   
-  // Store in R2
-  await storeEmbedding(chunkKey, result.embedding, {
-    chunkId: chunk.id,
-    filePath: chunk.filePath,
-    type: chunk.type,
-    language: chunk.language,
-    userId,
-  });
+  // Store in Pinecone
+  await pineconeService.upsertVectors(userId, [{
+    id: chunkKey,
+    values: result.embedding,
+    metadata: {
+      chunkId: chunk.id,
+      filePath: chunk.filePath,
+      type: chunk.type,
+      language: chunk.language,
+      content: chunk.content,
+      startLine: chunk.startLine,
+      endLine: chunk.endLine,
+      name: chunk.name,
+      ...chunk.metadata,
+      // Add file extension for filtering
+      fileType: chunk.filePath.split('.').pop() || ''
+    }
+  }]);
   
   return {
     chunkId: chunk.id,
@@ -243,23 +144,12 @@ export async function generateBatchEmbeddings(
   for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
     const batch = chunks.slice(i, i + BATCH_SIZE);
     
-    // Check cache and prepare chunks that need embedding
+    // Prepare chunks for embedding
     const chunksToEmbed: Array<{ chunk: CodeChunk; key: string }> = [];
     
     for (const chunk of batch) {
       const chunkKey = generateChunkKey(chunk);
-      const cachedEmbedding = await getStoredEmbedding(chunkKey);
-      
-      if (cachedEmbedding) {
-        embeddings.push({
-          chunkId: chunk.id,
-          embedding: cachedEmbedding,
-          model: EMBEDDING_MODEL,
-          tokensUsed: 0,
-        });
-      } else {
-        chunksToEmbed.push({ chunk, key: chunkKey });
-      }
+      chunksToEmbed.push({ chunk, key: chunkKey });
     }
     
     if (chunksToEmbed.length > 0) {
@@ -282,7 +172,13 @@ export async function generateBatchEmbeddings(
       
       totalTokensUsed += batchResult.totalTokensUsed;
       
-      // Process results
+      // Process results and prepare for Pinecone
+      const vectorsToUpsert: Array<{
+        id: string;
+        values: number[];
+        metadata: Record<string, any>;
+      }> = [];
+      
       for (const embedding of batchResult.embeddings) {
         const item = chunksToEmbed.find(c => c.chunk.id === embedding.id);
         if (!item) continue;
@@ -300,15 +196,30 @@ export async function generateBatchEmbeddings(
             tokensUsed: embedding.tokensUsed,
           });
           
-          // Store in R2
-          await storeEmbedding(item.key, embedding.embedding, {
-            chunkId: item.chunk.id,
-            filePath: item.chunk.filePath,
-            type: item.chunk.type,
-            language: item.chunk.language,
-            userId,
+          // Prepare for Pinecone
+          vectorsToUpsert.push({
+            id: item.key,
+            values: embedding.embedding,
+            metadata: {
+              chunkId: item.chunk.id,
+              filePath: item.chunk.filePath,
+              type: item.chunk.type,
+              language: item.chunk.language,
+              content: item.chunk.content,
+              startLine: item.chunk.startLine,
+              endLine: item.chunk.endLine,
+              name: item.chunk.name,
+              ...item.chunk.metadata,
+              // Add file extension for filtering
+              fileType: item.chunk.filePath.split('.').pop() || ''
+            }
           });
         }
+      }
+      
+      // Upsert to Pinecone
+      if (vectorsToUpsert.length > 0) {
+        await pineconeService.upsertVectors(userId, vectorsToUpsert);
       }
     }
     
@@ -347,7 +258,43 @@ function formatChunkForEmbedding(chunk: CodeChunk): string {
   return formatted;
 }
 
+/**
+ * Generate embedding for a search query
+ */
+export async function generateQueryEmbedding(
+  query: string,
+  userId: string
+): Promise<{
+  embedding: number[];
+  model: string;
+  tokensUsed?: number;
+  error?: string;
+}> {
+  // Wait for rate limit
+  await rateLimiter.waitForSlot();
+  
+  // Generate embedding for the query
+  const result = await gemini.generateEmbedding({
+    apiKey: config.geminiApiKey,
+    content: query,
+    model: EMBEDDING_MODEL,
+    apiVersion: EMBEDDING_API_VERSION,
+  });
+  
+  if (result.error) {
+    logger.error(`Failed to generate query embedding for query "${query}": ${result.error}`);
+    return { embedding: [], model: EMBEDDING_MODEL, tokensUsed: 0, error: result.error };
+  }
+  
+  return {
+    embedding: result.embedding,
+    model: result.model,
+    tokensUsed: result.tokensUsed,
+  };
+}
+
 export default {
   generateChunkEmbedding,
   generateBatchEmbeddings,
+  generateQueryEmbedding,
 }; 
