@@ -16,27 +16,25 @@ interface EmbeddingResponse {
 // Configuration
 const EMBEDDING_MODEL = config.embeddingModel || 'text-embedding-004';
 const EMBEDDING_API_VERSION = (config.embeddingApiVersion || 'v1alpha') as 'v1alpha' | 'v1beta'; // Use v1alpha for experimental models
-const RATE_LIMIT = config.embeddingRateLimit || 10; // RPM (Requests Per Minute)
 const BATCH_SIZE = config.embeddingBatchSize || 3; // Chunks per batch, aligned with Gemini API limits
 
 class EmbeddingRateLimiter {
   private requests: number;
   private resetTime: number;
   private lastRequestTime: number;
-  private minDelayBetweenRequests: number;
 
   constructor() {
     this.requests = 0;
     this.resetTime = Date.now() + 60000; // 1 minute from now
     this.lastRequestTime = 0;
-    // Calculate delay based on the configured RATE_LIMIT
-    this.minDelayBetweenRequests = 60000 / (config.embeddingRateLimit || 10); 
 
     logger.info(
-      `EmbeddingRateLimiter initialized: ` +
-        `Rate Limit: ${config.embeddingRateLimit || 10} RPM, ` +
-        `Min Delay: ${this.minDelayBetweenRequests / 1000}s`
+      `EmbeddingRateLimiter initialized: Will use dynamic rate limit from config.`
     );
+  }
+
+  private getMinDelayBetweenRequests(): number {
+    return 60000 / (config.embeddingRateLimit || 10); // Default to 10 RPM if config is somehow not set
   }
 
   async checkLimit(): Promise<boolean> {
@@ -46,30 +44,53 @@ class EmbeddingRateLimiter {
       this.resetTime = now + 60000;
     }
     
-    if (this.requests >= RATE_LIMIT) {
+    if (this.requests >= (config.embeddingRateLimit || 10)) {
       return false;
     }
     
     // Check minimum delay between requests
     const timeSinceLastRequest = now - this.lastRequestTime;
-    if (timeSinceLastRequest < this.minDelayBetweenRequests) {
+    if (timeSinceLastRequest < this.getMinDelayBetweenRequests()) {
       return false;
     }
     
-    this.requests++;
-    this.lastRequestTime = now;
+    // If we are here, it means we can make a request.
+    // We only increment requests and update lastRequestTime if we are actually *making* a request,
+    // not just checking. So, this logic will be moved to where a request is actually made or slot is taken.
     return true;
+  }
+
+  // Call this method *before* making an actual API call to consume a slot.
+  private consumeSlot(): void {
+    this.requests++;
+    this.lastRequestTime = Date.now();
   }
   
   async waitForSlot(): Promise<void> {
-    while (!(await this.checkLimit())) {
-      const now = Date.now();
-      const waitTime = Math.max(
-        this.resetTime - now,
-        this.minDelayBetweenRequests - (now - this.lastRequestTime)
-      );
-      logger.info(`Rate limit (${config.embeddingRateLimit || 10} RPM): waiting ${Math.ceil(waitTime/1000)}s before next request (${this.requests}/${config.embeddingRateLimit || 10} used)`);
-      await new Promise(resolve => setTimeout(resolve, Math.min(waitTime + 100, 15000))); // Max 15s wait
+    while (true) {
+        const now = Date.now();
+        let currentRateLimit = config.embeddingRateLimit || 10;
+        let minDelay = 60000 / currentRateLimit;
+
+        if (now > this.resetTime) {
+            this.requests = 0;
+            this.resetTime = now + 60000;
+        }
+
+        if (this.requests < currentRateLimit) {
+            const timeSinceLastRequest = now - this.lastRequestTime;
+            if (timeSinceLastRequest >= minDelay) {
+                this.consumeSlot(); // Consume the slot as we are granting it
+                return; // Slot available
+            }
+        }
+
+        const waitTimeForReset = this.resetTime - now;
+        const waitForMinDelay = minDelay - (now - this.lastRequestTime);
+        const waitTime = Math.max(0, Math.min(waitTimeForReset, waitForMinDelay)); // Ensure non-negative wait time
+        
+        logger.info(`Rate limit (${currentRateLimit} RPM): waiting ${Math.ceil(waitTime/1000)}s before next request (${this.requests}/${currentRateLimit} used)`);
+        await new Promise(resolve => setTimeout(resolve, Math.min(waitTime + 100, 15000))); // Max 15s wait, add 100ms buffer
     }
   }
 }
