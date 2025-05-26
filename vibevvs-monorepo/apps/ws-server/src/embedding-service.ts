@@ -16,15 +16,15 @@ interface EmbeddingResponse {
 // Configuration
 const EMBEDDING_MODEL = config.embeddingModel || 'text-embedding-004';
 const EMBEDDING_API_VERSION = (config.embeddingApiVersion || 'v1alpha') as 'v1alpha' | 'v1beta'; // Use v1alpha for experimental models
-const RATE_LIMIT = config.embeddingRateLimit || 15; // Increased from 10 to 15 requests per minute
-const BATCH_SIZE = 5; // embeddings per batch
+const RATE_LIMIT = config.embeddingRateLimit || 5; // Default to 5 requests per minute for free tier
+const BATCH_SIZE = 3; // Reduced batch size for slower rate limits
 
-// Rate limiting with more reasonable approach
+// Rate limiting optimized for very slow rates (5 RPM)
 const rateLimiter = {
   requests: 0,
-  resetTime: Date.now() + 65000, // 1.5 minute window
+  resetTime: Date.now() + 60000, // 1 minute window
   lastRequestTime: 0,
-  minDelayBetweenRequests: 12005, // Reduced from 6 seconds to 4 seconds (15 per minute)
+  minDelayBetweenRequests: Math.ceil(60000 / RATE_LIMIT), // 12 seconds for 5 RPM
   
   async checkLimit(): Promise<boolean> {
     const now = Date.now();
@@ -55,8 +55,8 @@ const rateLimiter = {
         this.resetTime - now,
         this.minDelayBetweenRequests - (now - this.lastRequestTime)
       );
-      logger.info(`Rate limit: waiting ${waitTime}ms before next request (${this.requests}/${RATE_LIMIT} used)`);
-      await new Promise(resolve => setTimeout(resolve, Math.min(waitTime + 100, 8000))); // Reduced max wait from 10s to 8s
+      logger.info(`Rate limit (${RATE_LIMIT} RPM): waiting ${Math.ceil(waitTime/1000)}s before next request (${this.requests}/${RATE_LIMIT} used)`);
+      await new Promise(resolve => setTimeout(resolve, Math.min(waitTime + 100, 15000))); // Max 15s wait
     }
   }
 };
