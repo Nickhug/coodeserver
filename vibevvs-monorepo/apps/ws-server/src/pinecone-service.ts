@@ -1,11 +1,15 @@
-import { Pinecone } from '@pinecone-database/pinecone';
+import { Pinecone, Index, IndexStatsDescription } from '@pinecone-database/pinecone';
 import logger from '@repo/logger';
 import { config } from './config';
 import { CodeChunk } from '@repo/types';
 
+// Define a base metadata type that Pinecone's Index type expects
+export type PineconeRecordMetadata = Record<string, string | number | boolean | string[]>;
+
 // Initialize Pinecone client
 let pineconeClient: Pinecone | null = null;
-let pineconeIndex: any = null;
+let pineconeIndex: Index<PineconeRecordMetadata> | null = null;
+let initializationPromise: Promise<void> | null = null;
 
 // Debug logging for API key
 logger.info(`Pinecone configuration check:`);
@@ -48,9 +52,22 @@ export { getUserNamespace };
 
 // Initialize index connection
 async function initializeIndex(): Promise<void> {
-  if (!pineconeClient) {
-    logger.error('Pinecone client not initialized - check API key configuration');
-    throw new Error('Pinecone client not initialized');
+  // If initialization is already in progress, wait for it to complete
+  if (initializationPromise) {
+    logger.debug('Initialization already in progress, awaiting completion...');
+    await initializationPromise;
+    // After awaiting, if pineconeIndex is now valid, we can return.
+    // This handles cases where another call completed initialization successfully.
+    if (pineconeIndex) {
+      try {
+        await pineconeIndex.describeIndexStats(); // Quick test
+        logger.debug('Pinecone index is already initialized and valid after awaiting promise.');
+        return;
+      } catch (e) {
+        logger.warn('Pinecone index became invalid after awaiting promise, will re-initialize.', e);
+        pineconeIndex = null; // Force re-initialization
+      }
+    }
   }
 
   // If index is already initialized and working, skip
@@ -58,80 +75,86 @@ async function initializeIndex(): Promise<void> {
     try {
       // Test the connection to make sure it's still valid
       await pineconeIndex.describeIndexStats();
-      return; // Index is working fine
+      logger.debug('Pinecone index already initialized and valid.');
+      return; 
     } catch (error) {
-      logger.warn('Existing Pinecone index connection failed, reinitializing...', error);
-      // Reset the index reference so we can reinitialize
-      pineconeIndex = null;
+      logger.warn('Existing Pinecone index connection test failed, reinitializing...', error);
+      pineconeIndex = null; // Reset the index reference to force reinitialization
     }
   }
 
-  try {
-    logger.info('Initializing Pinecone index connection...');
-
-    // Check if index exists, if not create it
-    const indexes = await pineconeClient.listIndexes();
-    const indexExists = indexes.indexes?.some(idx => idx.name === config.pineconeIndexName);
-
-    if (!indexExists) {
-      logger.info(`Creating Pinecone serverless index for multitenancy: ${config.pineconeIndexName}`);
-      try {
-        await pineconeClient.createIndex({
-          name: config.pineconeIndexName,
-          dimension: 3072, // Gemini text-embedding-004 dimension (3072 for gemini-embedding-001)
-          metric: 'cosine',
-          spec: {
-            serverless: {
-              cloud: 'aws',
-              region: 'us-east-1'
-            }
-          }
-        });
-
-        // Wait for index to be ready
-        logger.info('Waiting for serverless index to be ready...');
-        await new Promise(resolve => setTimeout(resolve, 15000)); // Increased wait time
-        logger.info('Serverless index should be ready now');
-      } catch (createError: any) {
-        if (createError.message?.includes('already exists')) {
-          logger.info('Index already exists, continuing...');
-        } else {
-          logger.error('Failed to create Pinecone index:', createError);
-          throw createError;
-        }
-      }
-    } else {
-      logger.info(`Pinecone index ${config.pineconeIndexName} already exists`);
-
-      // Check if existing index has correct dimensions
-      try {
-        const tempIndex = pineconeClient.index(config.pineconeIndexName);
-        const stats = await tempIndex.describeIndexStats();
-
-        // Check if the index has the wrong dimensions
-        if (stats.dimension && stats.dimension !== 3072) {
-          logger.error(`Index ${config.pineconeIndexName} has wrong dimensions: ${stats.dimension} (expected 3072)`);
-          logger.error('You need to delete the existing index and let the system recreate it with correct dimensions');
-          throw new Error(`Index dimension mismatch: found ${stats.dimension}, expected 3072. Please delete the index in Pinecone console.`);
-        }
-
-        logger.info(`Index dimensions verified: ${stats.dimension || 'unknown'}`);
-      } catch (statsError: any) {
-        if (statsError.message?.includes('dimension mismatch')) {
-          throw statsError; // Re-throw dimension errors
-        }
-        logger.warn('Could not verify index dimensions, proceeding anyway:', statsError.message);
-      }
+  // Start new initialization
+  initializationPromise = (async () => {
+    if (!pineconeClient) {
+      logger.error('Pinecone client not initialized - check API key configuration');
+      throw new Error('Pinecone client not initialized');
     }
 
-    // Connect to the index
-    pineconeIndex = pineconeClient.index(config.pineconeIndexName);
-
-    // Test the connection
     try {
-      const testStats = await pineconeIndex.describeIndexStats();
+      logger.info('Starting new Pinecone index initialization...');
+
+      // Check if index exists, if not create it
+      const indexes = await pineconeClient.listIndexes();
+      const indexExists = indexes.indexes?.some(idx => idx.name === config.pineconeIndexName);
+
+      if (!indexExists) {
+        logger.info(`Creating Pinecone serverless index for multitenancy: ${config.pineconeIndexName}`);
+        try {
+          await pineconeClient.createIndex({
+            name: config.pineconeIndexName,
+            dimension: 3072, // Gemini text-embedding-004 dimension (3072 for gemini-embedding-001)
+            metric: 'cosine',
+            spec: {
+              serverless: {
+                cloud: 'aws',
+                region: 'us-east-1'
+              }
+            }
+          });
+
+          // Wait for index to be ready
+          logger.info('Waiting for serverless index to be ready...');
+          await new Promise(resolve => setTimeout(resolve, 15000)); // Increased wait time
+          logger.info('Serverless index should be ready now');
+        } catch (createError: any) {
+          if (createError.message?.includes('already exists')) {
+            logger.info('Index already exists, continuing...');
+          } else {
+            logger.error('Failed to create Pinecone index:', createError);
+            throw createError;
+          }
+        }
+      } else {
+        logger.info(`Pinecone index ${config.pineconeIndexName} already exists`);
+
+        // Check if existing index has correct dimensions
+        try {
+          const tempIndex = pineconeClient.index(config.pineconeIndexName);
+          const stats = await tempIndex.describeIndexStats();
+
+          // Check if the index has the wrong dimensions
+          if (stats.dimension && stats.dimension !== 3072) {
+            logger.error(`Index ${config.pineconeIndexName} has wrong dimensions: ${stats.dimension} (expected 3072)`);
+            logger.error('You need to delete the existing index and let the system recreate it with correct dimensions');
+            throw new Error(`Index dimension mismatch: found ${stats.dimension}, expected 3072. Please delete the index in Pinecone console.`);
+          }
+
+          logger.info(`Index dimensions verified: ${stats.dimension || 'unknown'}`);
+        } catch (statsError: any) {
+          if (statsError.message?.includes('dimension mismatch')) {
+            throw statsError; // Re-throw dimension errors
+          }
+          logger.warn('Could not verify index dimensions, proceeding anyway:', statsError.message);
+        }
+      }
+
+      // Connect to the index
+      pineconeIndex = pineconeClient.index(config.pineconeIndexName);
+
+      // Test the connection
+      const testStats: IndexStatsDescription = await pineconeIndex.describeIndexStats();
       logger.info(`Connected to Pinecone serverless index: ${config.pineconeIndexName}`);
-      logger.info(`Index stats: ${testStats.totalVectorCount || 0} total vectors, ${Object.keys(testStats.namespaces || {}).length} namespaces`);
+      logger.info(`Index stats: ${testStats.totalRecordCount || 0} total vectors, ${Object.keys(testStats.namespaces || {}).length} namespaces`);
       if (testStats.namespaces && Object.keys(testStats.namespaces).length > 0) {
         logger.info(`Existing namespaces: ${Object.keys(testStats.namespaces).join(', ')}`);
       }
@@ -141,23 +164,14 @@ async function initializeIndex(): Promise<void> {
       pineconeIndex = null; // Reset on failure
       throw testError;
     }
+  })().finally(() => {
+    // Reset the promise once initialization is complete (either success or failure)
+    // This allows for future re-initialization attempts if needed.
+    logger.debug(`Initialization attempt finished. Resetting initializationPromise.`);
+    initializationPromise = null;
+  });
 
-  } catch (error: any) {
-    logger.error('Failed to initialize Pinecone index:', error);
-    // Reset state on any error
-    pineconeIndex = null;
-
-    // Provide helpful error messages
-    if (error.message?.includes('API key')) {
-      logger.error('Pinecone API key issue - check your PINECONE_API_KEY environment variable');
-    } else if (error.message?.includes('dimension')) {
-      logger.error('Index dimension mismatch - delete the existing index to recreate with correct dimensions');
-    } else if (error.message?.includes('not found')) {
-      logger.error('Pinecone index not found - will attempt to create on next try');
-    }
-
-    throw error;
-  }
+  await initializationPromise; // Wait for the current initialization to complete
 }
 
 interface VectorSearchResult {
@@ -221,7 +235,7 @@ export async function upsertVectors(
         logger.debug(`Attempting immediate fetch for ID ${firstIdInBatch} from namespace ${userNamespace} post-upsert.`);
         try {
           const fetchResult = await pineconeIndex.namespace(userNamespace).fetch([firstIdInBatch]);
-          if (fetchResult && fetchResult.vectors && Object.keys(fetchResult.vectors).length > 0) {
+          if (fetchResult && fetchResult.records && Object.keys(fetchResult.records).length > 0) {
             logger.info(`IMMEDIATE FETCH SUCCEEDED for ID ${firstIdInBatch} in namespace ${userNamespace}. Vector found.`);
           } else {
             logger.warn(`IMMEDIATE FETCH FAILED or EMPTY for ID ${firstIdInBatch} in namespace ${userNamespace}. Vector not found immediately.`);
@@ -305,7 +319,7 @@ export async function searchUserCodebase(
             type: match.metadata.type as any,
             language: match.metadata.language as string,
             name: match.metadata.name as string,
-            metadata: match.metadata.metadata || {}
+            metadata: match.metadata.metadata as any || {}
           };
 
           vectorResults.push({
@@ -542,29 +556,22 @@ export async function getUserNamespaceStats(userId: string): Promise<{
   const userNamespace = getUserNamespace(userId);
 
   try {
-    // Use describeNamespace as per Pinecone documentation for serverless indexes
-    const namespaceSummary = await pineconeIndex.describeNamespace(userNamespace);
-    logger.info(`Namespace summary for ${userNamespace} (user: ${userId}): ${JSON.stringify(namespaceSummary)}`);
+    // Revert to using describeIndexStats() and extract the specific namespace data
+    const allStats: IndexStatsDescription = await pineconeIndex.describeIndexStats();
+    const namespaceData = allStats.namespaces && allStats.namespaces[userNamespace];
+    const recordCount = namespaceData ? namespaceData.recordCount : 0;
 
+    logger.info(`Namespace stats for ${userNamespace} (user: ${userId}): ${recordCount} records. Full stats: ${JSON.stringify(allStats.namespaces)}`);
+    
     return {
-      namespace: userNamespace, // or namespaceSummary.name if preferred
+      namespace: userNamespace,
       userId,
-      recordCount: namespaceSummary.recordCount || 0 // Ensure recordCount is a number, default to 0
+      recordCount: recordCount || 0 
     };
   } catch (error: any) {
-    // Handle cases where the namespace might not exist (e.g., new user)
-    if (error.name === 'PineconeNotFoundError' ||
-        (error.message &&
-          (error.message.includes('NamespaceNotExistsError') ||
-           error.message.toLowerCase().includes('not found') ||
-           error.message.toLowerCase().includes('does not exist'))
-        ) || (error.status && error.status === 404)
-       ) {
-      logger.info(`Namespace ${userNamespace} does not exist or is empty for user ${userId}. Returning 0 vectors. Error: ${error.message}`);
-      return { namespace: userNamespace, userId, recordCount: 0 };
-    }
-    logger.error(`Error getting namespace stats for user ${userId} (namespace ${userNamespace}). Error: ${error.message}`, error);
-    throw error; // Re-throw other unexpected errors
+    // This catch block might now be less relevant if describeIndexStats itself doesn't throw for missing namespaces often
+    logger.error(`Error getting full index stats (for user ${userId}, namespace ${userNamespace}). Error: ${error.message}`, error);
+    throw error; 
   }
 }
 
@@ -616,7 +623,7 @@ export async function listTenantNamespaces(): Promise<Array<{
           tenants.push({
             namespace,
             userId: userMatch[1],
-            vectorCount: (namespaceStats as any).recordCount || 0 // Use recordCount here
+            vectorCount: namespaceStats.recordCount || 0 // Use recordCount from IndexNamespaceStats
           });
         }
       }
