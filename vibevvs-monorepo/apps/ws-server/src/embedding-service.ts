@@ -16,15 +16,15 @@ interface EmbeddingResponse {
 // Configuration
 const EMBEDDING_MODEL = config.embeddingModel || 'text-embedding-004';
 const EMBEDDING_API_VERSION = (config.embeddingApiVersion || 'v1alpha') as 'v1alpha' | 'v1beta'; // Use v1alpha for experimental models
-const RATE_LIMIT = config.embeddingRateLimit || 10; // requests per minute
+const RATE_LIMIT = config.embeddingRateLimit || 15; // Increased from 10 to 15 requests per minute
 const BATCH_SIZE = 5; // embeddings per batch
 
-// Rate limiting with more conservative approach
+// Rate limiting with more reasonable approach
 const rateLimiter = {
   requests: 0,
-  resetTime: Date.now() + 60000, // 1 minute window
+  resetTime: Date.now() + 65000, // 1.5 minute window
   lastRequestTime: 0,
-  minDelayBetweenRequests: 6000, // 6 seconds between requests (10 per minute)
+  minDelayBetweenRequests: 12005, // Reduced from 6 seconds to 4 seconds (15 per minute)
   
   async checkLimit(): Promise<boolean> {
     const now = Date.now();
@@ -55,8 +55,8 @@ const rateLimiter = {
         this.resetTime - now,
         this.minDelayBetweenRequests - (now - this.lastRequestTime)
       );
-      logger.info(`Rate limit: waiting ${waitTime}ms before next request`);
-      await new Promise(resolve => setTimeout(resolve, Math.min(waitTime + 100, 10000))); // Add 100ms buffer
+      logger.info(`Rate limit: waiting ${waitTime}ms before next request (${this.requests}/${RATE_LIMIT} used)`);
+      await new Promise(resolve => setTimeout(resolve, Math.min(waitTime + 100, 8000))); // Reduced max wait from 10s to 8s
     }
   }
 };
@@ -130,19 +130,28 @@ export async function generateChunkEmbedding(
  */
 export async function generateBatchEmbeddings(
   chunks: CodeChunk[],
-  userId: string
+  userId: string,
+  onProgress?: (progress: { completed: number; total: number; currentBatch: number; totalBatches: number }) => void
 ): Promise<{
   embeddings: EmbeddingResponse[];
   errors: Array<{ chunkId: string; error: string }>;
   totalTokensUsed: number;
+  successfullyStored: number;
 }> {
   const embeddings: EmbeddingResponse[] = [];
   const errors: Array<{ chunkId: string; error: string }> = [];
   let totalTokensUsed = 0;
+  let successfullyStored = 0;
+  
+  const totalBatches = Math.ceil(chunks.length / BATCH_SIZE);
+  logger.info(`Starting batch embedding for ${chunks.length} chunks in ${totalBatches} batches for user ${userId}`);
   
   // Process chunks in batches
   for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
+    const currentBatch = Math.floor(i / BATCH_SIZE) + 1;
     const batch = chunks.slice(i, i + BATCH_SIZE);
+    
+    logger.info(`Processing batch ${currentBatch}/${totalBatches} (${batch.length} chunks)`);
     
     // Prepare chunks for embedding
     const chunksToEmbed: Array<{ chunk: CodeChunk; key: string }> = [];
@@ -153,84 +162,123 @@ export async function generateBatchEmbeddings(
     }
     
     if (chunksToEmbed.length > 0) {
-      // Wait for rate limit
-      await rateLimiter.waitForSlot();
-      
-      // Generate embeddings for uncached chunks
-      const contents = chunksToEmbed.map(item => ({
-        id: item.chunk.id,
-        content: formatChunkForEmbedding(item.chunk),
-      }));
-      
-      const batchResult = await gemini.generateBatchEmbeddings({
-        apiKey: config.geminiApiKey,
-        contents,
-        model: EMBEDDING_MODEL,
-        batchSize: BATCH_SIZE,
-        apiVersion: EMBEDDING_API_VERSION,
-      });
-      
-      totalTokensUsed += batchResult.totalTokensUsed;
-      
-      // Process results and prepare for Pinecone
-      const vectorsToUpsert: Array<{
-        id: string;
-        values: number[];
-        metadata: Record<string, any>;
-      }> = [];
-      
-      for (const embedding of batchResult.embeddings) {
-        const item = chunksToEmbed.find(c => c.chunk.id === embedding.id);
-        if (!item) continue;
+      try {
+        // Wait for rate limit
+        await rateLimiter.waitForSlot();
         
-        if (embedding.error) {
-          errors.push({
-            chunkId: embedding.id,
-            error: embedding.error,
-          });
-        } else {
-          embeddings.push({
-            chunkId: embedding.id,
-            embedding: embedding.embedding,
-            model: EMBEDDING_MODEL,
-            tokensUsed: embedding.tokensUsed,
-          });
+        // Generate embeddings for uncached chunks
+        const contents = chunksToEmbed.map(item => ({
+          id: item.chunk.id,
+          content: formatChunkForEmbedding(item.chunk),
+        }));
+        
+        const batchResult = await gemini.generateBatchEmbeddings({
+          apiKey: config.geminiApiKey,
+          contents,
+          model: EMBEDDING_MODEL,
+          batchSize: BATCH_SIZE,
+          apiVersion: EMBEDDING_API_VERSION,
+        });
+        
+        totalTokensUsed += batchResult.totalTokensUsed;
+        
+        // Process results and prepare for Pinecone
+        const vectorsToUpsert: Array<{
+          id: string;
+          values: number[];
+          metadata: Record<string, any>;
+        }> = [];
+        
+        for (const embedding of batchResult.embeddings) {
+          const item = chunksToEmbed.find(c => c.chunk.id === embedding.id);
+          if (!item) continue;
           
-          // Prepare for Pinecone
-          vectorsToUpsert.push({
-            id: item.key,
-            values: embedding.embedding,
-            metadata: {
-              chunkId: item.chunk.id,
-              filePath: item.chunk.filePath,
-              type: item.chunk.type,
-              language: item.chunk.language,
-              content: item.chunk.content,
-              startLine: item.chunk.startLine,
-              endLine: item.chunk.endLine,
-              name: item.chunk.name,
-              ...item.chunk.metadata,
-              // Add file extension for filtering
-              fileType: item.chunk.filePath.split('.').pop() || ''
-            }
+          if (embedding.error) {
+            errors.push({
+              chunkId: embedding.id,
+              error: embedding.error,
+            });
+          } else {
+            embeddings.push({
+              chunkId: embedding.id,
+              embedding: embedding.embedding,
+              model: EMBEDDING_MODEL,
+              tokensUsed: embedding.tokensUsed,
+            });
+            
+            // Prepare for Pinecone
+            vectorsToUpsert.push({
+              id: item.key,
+              values: embedding.embedding,
+              metadata: {
+                chunkId: item.chunk.id,
+                filePath: item.chunk.filePath,
+                type: item.chunk.type,
+                language: item.chunk.language,
+                content: item.chunk.content,
+                startLine: item.chunk.startLine,
+                endLine: item.chunk.endLine,
+                name: item.chunk.name,
+                ...item.chunk.metadata,
+                // Add file extension for filtering
+                fileType: item.chunk.filePath.split('.').pop() || ''
+              }
+            });
+          }
+        }
+        
+        // Upsert to Pinecone and track successful storage
+        if (vectorsToUpsert.length > 0) {
+          try {
+            await pineconeService.upsertVectors(userId, vectorsToUpsert);
+            successfullyStored += vectorsToUpsert.length;
+            logger.info(`Successfully stored ${vectorsToUpsert.length} vectors in Pinecone for batch ${currentBatch}`);
+          } catch (pineconeError) {
+            logger.error(`Failed to store vectors in Pinecone for batch ${currentBatch}:`, pineconeError);
+            // Add errors for all vectors that failed to store
+            vectorsToUpsert.forEach(vector => {
+              const chunkId = vector.metadata.chunkId;
+              errors.push({
+                chunkId,
+                error: `Failed to store in Pinecone: ${pineconeError instanceof Error ? pineconeError.message : String(pineconeError)}`
+              });
+            });
+          }
+        }
+        
+        // Report progress
+        const completed = Math.min(i + BATCH_SIZE, chunks.length);
+        if (onProgress) {
+          onProgress({
+            completed,
+            total: chunks.length,
+            currentBatch,
+            totalBatches
           });
         }
-      }
-      
-      // Upsert to Pinecone
-      if (vectorsToUpsert.length > 0) {
-        await pineconeService.upsertVectors(userId, vectorsToUpsert);
+        
+        logger.info(`Batch ${currentBatch}/${totalBatches} complete: ${completed}/${chunks.length} chunks processed, ${successfullyStored} stored in Pinecone`);
+        
+      } catch (batchError) {
+        logger.error(`Error processing batch ${currentBatch}:`, batchError);
+        // Add errors for all chunks in this batch
+        chunksToEmbed.forEach(item => {
+          errors.push({
+            chunkId: item.chunk.id,
+            error: `Batch processing failed: ${batchError instanceof Error ? batchError.message : String(batchError)}`
+          });
+        });
       }
     }
-    
-    // Log progress
-    logger.info(`Processed embedding batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(chunks.length / BATCH_SIZE)}`);
   }
+  
+  logger.info(`Batch embedding complete: ${embeddings.length} successful, ${errors.length} errors, ${successfullyStored} stored in Pinecone, ${totalTokensUsed} tokens used`);
   
   return {
     embeddings,
     errors,
     totalTokensUsed,
+    successfullyStored
   };
 }
 

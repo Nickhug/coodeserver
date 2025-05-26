@@ -2277,10 +2277,7 @@ async function handleCodebaseEmbeddingRequest(ws: WebSocketWithData, message: Cl
       }
     });
     
-    // Log usage
-    if (result.tokensUsed && result.tokensUsed > 0) {
-      logUsage(userId, 'gemini', config.embeddingModel, result.tokensUsed);
-    }
+    // Note: Not logging usage for embedding operations as these are for indexing, not chat
   } catch (error) {
     logger.error(`Error generating embedding for chunk ${chunk.id}:`, error);
     sendToClient(ws, {
@@ -2316,7 +2313,8 @@ async function handleCodebaseEmbeddingBatchRequest(ws: WebSocketWithData, messag
         batchId,
         embeddings: [],
         errors: chunks.map((chunk: any) => ({ chunkId: chunk.id, error: 'User ID not available' })),
-        tokensUsed: 0
+        tokensUsed: 0,
+        successfullyStored: 0
       }
     });
     return;
@@ -2328,10 +2326,24 @@ async function handleCodebaseEmbeddingBatchRequest(ws: WebSocketWithData, messag
     // Import embedding service
     const embeddingService = await import('./embedding-service');
     
-    // Generate embeddings
-    const result = await embeddingService.generateBatchEmbeddings(chunks, userId);
+    // Generate embeddings with progress tracking
+    const result = await embeddingService.generateBatchEmbeddings(chunks, userId, (progress) => {
+      // Send progress updates to client
+      sendToClient(ws, {
+        type: MessageType.CODEBASE_EMBEDDING_PROGRESS,
+        payload: {
+          requestId,
+          batchId,
+          completed: progress.completed,
+          total: progress.total,
+          currentBatch: progress.currentBatch,
+          totalBatches: progress.totalBatches,
+          percentage: Math.round((progress.completed / progress.total) * 100)
+        }
+      });
+    });
     
-    // Send response
+    // Send final response
     sendToClient(ws, {
       type: MessageType.CODEBASE_EMBEDDING_BATCH_RESPONSE,
       payload: {
@@ -2339,14 +2351,15 @@ async function handleCodebaseEmbeddingBatchRequest(ws: WebSocketWithData, messag
         batchId,
         embeddings: result.embeddings,
         errors: result.errors,
-        tokensUsed: result.totalTokensUsed
+        tokensUsed: result.totalTokensUsed,
+        successfullyStored: result.successfullyStored
       }
     });
     
-    // Log usage
-    if (result.totalTokensUsed && result.totalTokensUsed > 0) {
-      logUsage(userId, 'gemini', config.embeddingModel, result.totalTokensUsed);
-    }
+    // Note: Not logging usage for embedding operations as these are for indexing, not chat
+    
+    logger.info(`Batch embedding completed for user ${userId}: ${result.embeddings.length} successful, ${result.errors.length} errors, ${result.successfullyStored} stored in Pinecone`);
+    
   } catch (error) {
     logger.error(`Error generating batch embeddings:`, error);
     sendToClient(ws, {
@@ -2359,7 +2372,8 @@ async function handleCodebaseEmbeddingBatchRequest(ws: WebSocketWithData, messag
           chunkId: chunk.id, 
           error: error instanceof Error ? error.message : String(error) 
         })),
-        tokensUsed: 0
+        tokensUsed: 0,
+        successfullyStored: 0
       }
     });
   }
@@ -2391,6 +2405,33 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
   }
 
   try {
+    // Handle special stats query
+    if (query === '__GET_STATS__') {
+      logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Processing stats request for user ${userId}`);
+      
+      // Import Pinecone service
+      const pineconeService = await import('./pinecone-service');
+      
+      // Get real user vector count from Pinecone
+      const vectorCount = await pineconeService.getUserVectorCount(userId);
+      
+      logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] User ${userId} has ${vectorCount} vectors in Pinecone`);
+      
+      // Send response with stats
+      sendToClient(ws, {
+        type: MessageType.CODEBASE_SEARCH_RESPONSE,
+        payload: {
+          requestId,
+          results: [],
+          stats: {
+            vectorCount,
+            namespace: pineconeService.getUserNamespace(userId)
+          }
+        }
+      });
+      return;
+    }
+    
     logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Processing search request for query: "${query}"`);
     
     // Import embedding service

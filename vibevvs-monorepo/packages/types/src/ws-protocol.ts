@@ -49,6 +49,7 @@ export enum MessageType {
   CODEBASE_EMBEDDING_RESPONSE = 'codebase_embedding_response',
   CODEBASE_EMBEDDING_BATCH_REQUEST = 'codebase_embedding_batch_request',
   CODEBASE_EMBEDDING_BATCH_RESPONSE = 'codebase_embedding_batch_response',
+  CODEBASE_EMBEDDING_PROGRESS = 'codebase_embedding_progress',
   CODEBASE_SEARCH_REQUEST = 'codebase_search_request',
   CODEBASE_SEARCH_RESPONSE = 'codebase_search_response',
   

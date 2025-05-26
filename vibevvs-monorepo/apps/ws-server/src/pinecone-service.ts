@@ -525,6 +525,20 @@ export async function getUserNamespaceStats(userId: string): Promise<any> {
 }
 
 /**
+ * Get the actual count of vectors stored for a user
+ * This is useful for progress calculation and UI display
+ */
+export async function getUserVectorCount(userId: string): Promise<number> {
+  try {
+    const stats = await getUserNamespaceStats(userId);
+    return stats.totalVectorCount || 0;
+  } catch (error) {
+    logger.debug(`Could not get vector count for user ${userId}:`, error);
+    return 0;
+  }
+}
+
+/**
  * List all tenant namespaces in the index
  * Useful for admin operations and monitoring
  */
