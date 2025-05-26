@@ -40,7 +40,7 @@ export const config = {
   pineconeNamespace: process.env.PINECONE_NAMESPACE || 'default',
   
   // Embedding Configuration
-  embeddingModel: process.env.EMBEDDING_MODEL || 'text-embedding-004',
+  embeddingModel: process.env.EMBEDDING_MODEL || 'gemini-embedding-exp-03-07',
   embeddingApiVersion: process.env.EMBEDDING_API_VERSION || 'v1alpha',
   embeddingBatchSize: process.env.EMBEDDING_BATCH_SIZE ? parseInt(process.env.EMBEDDING_BATCH_SIZE, 10) : 5,
   embeddingRateLimit: parseInt(process.env.EMBEDDING_RATE_LIMIT || '5', 10),

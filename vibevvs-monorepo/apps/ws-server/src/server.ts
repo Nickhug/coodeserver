@@ -2406,15 +2406,12 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
 
   try {
     // Handle special stats query
-    if (query === '__GET_STATS__') {
+    if (query === "__GET_STATS__") {
       logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Processing stats request for user ${userId}`);
-      
-      // Import Pinecone service
-      const pineconeService = await import('./pinecone-service');
-      
-      // Get real user vector count from Pinecone
-      const vectorCount = await pineconeService.getUserVectorCount(userId);
-      
+      // TEMPORARY DELAY FOR DEBUGGING EVENTUAL CONSISTENCY - REMOVED
+      // await new Promise(resolve => setTimeout(resolve, 20000)); 
+      const pineconeService2 = await import('./pinecone-service');
+      const vectorCount = await pineconeService2.getUserVectorCount(userId);
       logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] User ${userId} has ${vectorCount} vectors in Pinecone`);
       
       // Send response with stats
@@ -2425,7 +2422,7 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
           results: [],
           stats: {
             vectorCount,
-            namespace: pineconeService.getUserNamespace(userId)
+            namespace: pineconeService2.getUserNamespace(userId)
           }
         }
       });

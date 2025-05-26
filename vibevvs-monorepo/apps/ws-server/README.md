@@ -46,13 +46,6 @@ MISTRAL_API_KEY=your_mistral_api_key
 SUPABASE_URL=https://your-project-id.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
 
-# R2 Storage (for embeddings)
-R2_ACCOUNT_ID=8827adc914c41497b0f7872db271c031
-R2_ACCESS_KEY_ID=813fb9d1a6e306ea34f049dc9b2cce07
-R2_SECRET_ACCESS_KEY=5d412083ea54466869667c4d08d6a20017dd7ec529f8f15f46f3c261a6389f46
-R2_BUCKET_NAME=coodestorage
-R2_ENDPOINT=https://8827adc914c41497b0f7872db271c031.r2.cloudflarestorage.com
-
 # Embedding Configuration
 EMBEDDING_MODEL=text-embedding-004
 EMBEDDING_API_VERSION=v1alpha

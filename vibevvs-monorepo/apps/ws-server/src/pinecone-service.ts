@@ -127,6 +127,9 @@ async function initializeIndex(): Promise<void> {
       const testStats = await pineconeIndex.describeIndexStats();
       logger.info(`Connected to Pinecone serverless index: ${config.pineconeIndexName}`);
       logger.info(`Index stats: ${testStats.totalVectorCount || 0} total vectors, ${Object.keys(testStats.namespaces || {}).length} namespaces`);
+      if (testStats.namespaces && Object.keys(testStats.namespaces).length > 0) {
+        logger.info(`Existing namespaces: ${Object.keys(testStats.namespaces).join(', ')}`);
+      }
       logger.info('Multitenancy enabled: Each user gets their own namespace for data isolation');
     } catch (testError: any) {
       logger.error('Failed to test Pinecone index connection:', testError);
@@ -206,6 +209,23 @@ export async function upsertVectors(
       const batch = vectorsForNamespace.slice(i, i + batchSize);
       await pineconeIndex.namespace(userNamespace).upsert(batch);
       logger.debug(`Upserted batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(vectorsForNamespace.length / batchSize)} to namespace ${userNamespace}`);
+
+      // ---- START IMMEDIATE FETCH DEBUG ----
+      if (batch.length > 0) {
+        const firstIdInBatch = batch[0].id;
+        logger.debug(`Attempting immediate fetch for ID ${firstIdInBatch} from namespace ${userNamespace} post-upsert.`);
+        try {
+          const fetchResult = await pineconeIndex.namespace(userNamespace).fetch([firstIdInBatch]);
+          if (fetchResult && fetchResult.vectors && Object.keys(fetchResult.vectors).length > 0) {
+            logger.info(`IMMEDIATE FETCH SUCCEEDED for ID ${firstIdInBatch} in namespace ${userNamespace}. Vector found.`);
+          } else {
+            logger.warn(`IMMEDIATE FETCH FAILED or EMPTY for ID ${firstIdInBatch} in namespace ${userNamespace}. Vector not found immediately.`);
+          }
+        } catch (fetchError: any) {
+          logger.error(`IMMEDIATE FETCH ERROR for ID ${firstIdInBatch} in namespace ${userNamespace}: ${fetchError.message}`);
+        }
+      }
+      // ---- END IMMEDIATE FETCH DEBUG ----
     }
     
     logger.info(`Successfully upserted ${vectors.length} vectors for user ${userId} in namespace ${userNamespace}`);
@@ -502,25 +522,44 @@ export async function getIndexStats(): Promise<any> {
 /**
  * Get user-specific namespace statistics
  */
-export async function getUserNamespaceStats(userId: string): Promise<any> {
+export async function getUserNamespaceStats(userId: string): Promise<{
+  namespace: string;
+  userId: string;
+  recordCount?: number; // Changed from 'any' to a more specific type
+}> {
   await initializeIndex();
   
   if (!pineconeIndex) {
+    logger.error('Pinecone index not initialized, cannot get namespace stats for user ${userId}.');
     throw new Error('Pinecone index not initialized');
   }
   
   const userNamespace = getUserNamespace(userId);
   
   try {
-    const stats = await pineconeIndex.namespace(userNamespace).describeIndexStats();
+    // Use describeNamespace as per Pinecone documentation for serverless indexes
+    const namespaceSummary = await pineconeIndex.describeNamespace(userNamespace);
+    logger.info(`Namespace summary for ${userNamespace} (user: ${userId}): ${JSON.stringify(namespaceSummary)}`);
+    
     return {
-      ...stats,
-      namespace: userNamespace,
-      userId
+      namespace: userNamespace, // or namespaceSummary.name if preferred
+      userId,
+      recordCount: namespaceSummary.recordCount || 0 // Ensure recordCount is a number, default to 0
     };
-  } catch (error) {
-    logger.error(`Error getting namespace stats for user ${userId}:`, error);
-    throw error;
+  } catch (error: any) {
+    // Handle cases where the namespace might not exist (e.g., new user)
+    if (error.name === 'PineconeNotFoundError' || 
+        (error.message && 
+          (error.message.includes('NamespaceNotExistsError') || 
+           error.message.toLowerCase().includes('not found') ||
+           error.message.toLowerCase().includes('does not exist'))
+        ) || (error.status && error.status === 404)
+       ) {
+      logger.info(`Namespace ${userNamespace} does not exist or is empty for user ${userId}. Returning 0 vectors. Error: ${error.message}`);
+      return { namespace: userNamespace, userId, recordCount: 0 };
+    }
+    logger.error(`Error getting namespace stats for user ${userId} (namespace ${userNamespace}). Error: ${error.message}`, error);
+    throw error; // Re-throw other unexpected errors
   }
 }
 
@@ -531,10 +570,13 @@ export async function getUserNamespaceStats(userId: string): Promise<any> {
 export async function getUserVectorCount(userId: string): Promise<number> {
   try {
     const stats = await getUserNamespaceStats(userId);
-    return stats.totalVectorCount || 0;
+    // Ensure we handle cases where recordCount might be undefined or null, defaulting to 0
+    return Number(stats.recordCount) || 0;
   } catch (error) {
-    logger.debug(`Could not get vector count for user ${userId}:`, error);
-    return 0;
+    // Most errors, including non-existent namespace, are handled in getUserNamespaceStats.
+    // This catch is for other potential issues during the process.
+    logger.warn(`Could not get vector count for user ${userId} due to an error: ${(error as Error).message}`);
+    return 0; // Default to 0 on any error
   }
 }
 
@@ -569,7 +611,7 @@ export async function listTenantNamespaces(): Promise<Array<{
           tenants.push({
             namespace,
             userId: userMatch[1],
-            vectorCount: (namespaceStats as any).vectorCount || 0
+            vectorCount: (namespaceStats as any).recordCount || 0 // Use recordCount here
           });
         }
       }
@@ -589,7 +631,7 @@ export async function listTenantNamespaces(): Promise<Array<{
 export async function tenantExists(userId: string): Promise<boolean> {
   try {
     const stats = await getUserNamespaceStats(userId);
-    return stats.totalVectorCount > 0;
+    return (stats.recordCount || 0) > 0; // Check recordCount here
   } catch (error) {
     logger.debug(`Tenant check failed for user ${userId}:`, error);
     return false;
