@@ -13,7 +13,7 @@ logger.info(`- API Key present: ${config.pineconeApiKey ? 'YES' : 'NO'}`);
 logger.info(`- API Key length: ${config.pineconeApiKey ? config.pineconeApiKey.length : 0}`);
 logger.info(`- API Key prefix: ${config.pineconeApiKey ? config.pineconeApiKey.substring(0, 8) + '...' : 'N/A'}`);
 logger.info(`- Index Name: ${config.pineconeIndexName}`);
-logger.info(`- Namespace: ${config.pineconeNamespace}`);
+logger.info(`- Base Namespace: ${config.pineconeNamespace}`);
 
 if (config.pineconeApiKey) {
   try {
@@ -28,17 +28,48 @@ if (config.pineconeApiKey) {
   logger.warn('Pinecone API key not configured, vector search will not work');
 }
 
+/**
+ * Generate user-specific namespace for multitenancy
+ * Format: "user-{userId}" or "user-{userId}-{baseNamespace}" if base namespace is provided
+ */
+function getUserNamespace(userId: string): string {
+  // Use user-specific namespace for true multitenancy
+  const baseNamespace = config.pineconeNamespace;
+  if (baseNamespace && baseNamespace !== 'default') {
+    return `user-${userId}-${baseNamespace}`;
+  }
+  return `user-${userId}`;
+}
+
 // Initialize index connection
 async function initializeIndex(): Promise<void> {
-  if (!pineconeClient || pineconeIndex) return;
+  if (!pineconeClient) {
+    logger.error('Pinecone client not initialized - check API key configuration');
+    throw new Error('Pinecone client not initialized');
+  }
+  
+  // If index is already initialized and working, skip
+  if (pineconeIndex) {
+    try {
+      // Test the connection to make sure it's still valid
+      await pineconeIndex.describeIndexStats();
+      return; // Index is working fine
+    } catch (error) {
+      logger.warn('Existing Pinecone index connection failed, reinitializing...', error);
+      // Reset the index reference so we can reinitialize
+      pineconeIndex = null;
+    }
+  }
   
   try {
+    logger.info('Initializing Pinecone index connection...');
+    
     // Check if index exists, if not create it
     const indexes = await pineconeClient.listIndexes();
     const indexExists = indexes.indexes?.some(idx => idx.name === config.pineconeIndexName);
     
     if (!indexExists) {
-      logger.info(`Creating Pinecone index: ${config.pineconeIndexName}`);
+      logger.info(`Creating Pinecone serverless index for multitenancy: ${config.pineconeIndexName}`);
       try {
         await pineconeClient.createIndex({
           name: config.pineconeIndexName,
@@ -53,22 +84,70 @@ async function initializeIndex(): Promise<void> {
         });
         
         // Wait for index to be ready
-        logger.info('Waiting for index to be ready...');
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        logger.info('Index should be ready now');
+        logger.info('Waiting for serverless index to be ready...');
+        await new Promise(resolve => setTimeout(resolve, 15000)); // Increased wait time
+        logger.info('Serverless index should be ready now');
       } catch (createError: any) {
         if (createError.message?.includes('already exists')) {
           logger.info('Index already exists, continuing...');
         } else {
+          logger.error('Failed to create Pinecone index:', createError);
           throw createError;
         }
       }
+    } else {
+      logger.info(`Pinecone index ${config.pineconeIndexName} already exists`);
+      
+      // Check if existing index has correct dimensions
+      try {
+        const tempIndex = pineconeClient.index(config.pineconeIndexName);
+        const stats = await tempIndex.describeIndexStats();
+        
+        // Check if the index has the wrong dimensions
+        if (stats.dimension && stats.dimension !== 3072) {
+          logger.error(`Index ${config.pineconeIndexName} has wrong dimensions: ${stats.dimension} (expected 3072)`);
+          logger.error('You need to delete the existing index and let the system recreate it with correct dimensions');
+          throw new Error(`Index dimension mismatch: found ${stats.dimension}, expected 3072. Please delete the index in Pinecone console.`);
+        }
+        
+        logger.info(`Index dimensions verified: ${stats.dimension || 'unknown'}`);
+      } catch (statsError: any) {
+        if (statsError.message?.includes('dimension mismatch')) {
+          throw statsError; // Re-throw dimension errors
+        }
+        logger.warn('Could not verify index dimensions, proceeding anyway:', statsError.message);
+      }
     }
     
+    // Connect to the index
     pineconeIndex = pineconeClient.index(config.pineconeIndexName);
-    logger.info(`Connected to Pinecone index: ${config.pineconeIndexName}`);
-  } catch (error) {
+    
+    // Test the connection
+    try {
+      const testStats = await pineconeIndex.describeIndexStats();
+      logger.info(`Connected to Pinecone serverless index: ${config.pineconeIndexName}`);
+      logger.info(`Index stats: ${testStats.totalVectorCount || 0} total vectors, ${Object.keys(testStats.namespaces || {}).length} namespaces`);
+      logger.info('Multitenancy enabled: Each user gets their own namespace for data isolation');
+    } catch (testError: any) {
+      logger.error('Failed to test Pinecone index connection:', testError);
+      pineconeIndex = null; // Reset on failure
+      throw testError;
+    }
+    
+  } catch (error: any) {
     logger.error('Failed to initialize Pinecone index:', error);
+    // Reset state on any error
+    pineconeIndex = null;
+    
+    // Provide helpful error messages
+    if (error.message?.includes('API key')) {
+      logger.error('Pinecone API key issue - check your PINECONE_API_KEY environment variable');
+    } else if (error.message?.includes('dimension')) {
+      logger.error('Index dimension mismatch - delete the existing index to recreate with correct dimensions');
+    } else if (error.message?.includes('not found')) {
+      logger.error('Pinecone index not found - will attempt to create on next try');
+    }
+    
     throw error;
   }
 }
@@ -89,7 +168,7 @@ interface SearchOptions {
 }
 
 /**
- * Upsert vectors to Pinecone
+ * Upsert vectors to Pinecone using user-specific namespace for multitenancy
  */
 export async function upsertVectors(
   userId: string,
@@ -106,32 +185,38 @@ export async function upsertVectors(
   }
   
   try {
-    // Add userId to metadata for each vector
-    const vectorsWithUserId = vectors.map(v => ({
+    // Get user-specific namespace for multitenancy
+    const userNamespace = getUserNamespace(userId);
+    
+    // Remove userId from metadata since namespace provides isolation
+    const vectorsForNamespace = vectors.map(v => ({
       ...v,
       metadata: {
         ...v.metadata,
-        userId
+        // Keep userId in metadata for backwards compatibility and debugging
+        userId,
+        // Add tenant info for additional context
+        tenant: userNamespace
       }
     }));
     
-    // Upsert in batches of 100
+    // Upsert in batches of 100 to user's dedicated namespace
     const batchSize = 100;
-    for (let i = 0; i < vectorsWithUserId.length; i += batchSize) {
-      const batch = vectorsWithUserId.slice(i, i + batchSize);
-      await pineconeIndex.namespace(config.pineconeNamespace).upsert(batch);
-      logger.debug(`Upserted batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(vectorsWithUserId.length / batchSize)} to Pinecone`);
+    for (let i = 0; i < vectorsForNamespace.length; i += batchSize) {
+      const batch = vectorsForNamespace.slice(i, i + batchSize);
+      await pineconeIndex.namespace(userNamespace).upsert(batch);
+      logger.debug(`Upserted batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(vectorsForNamespace.length / batchSize)} to namespace ${userNamespace}`);
     }
     
-    logger.info(`Successfully upserted ${vectors.length} vectors for user ${userId}`);
+    logger.info(`Successfully upserted ${vectors.length} vectors for user ${userId} in namespace ${userNamespace}`);
   } catch (error) {
-    logger.error(`Error upserting vectors to Pinecone:`, error);
+    logger.error(`Error upserting vectors to Pinecone for user ${userId}:`, error);
     throw error;
   }
 }
 
 /**
- * Search user's codebase using vector similarity
+ * Search user's codebase using vector similarity in their dedicated namespace
  */
 export async function searchUserCodebase(
   userId: string,
@@ -146,12 +231,11 @@ export async function searchUserCodebase(
   }
   
   const limit = options.limit || 10;
+  const userNamespace = getUserNamespace(userId);
   
   try {
-    // Build filter
-    const filter: any = {
-      userId: { $eq: userId }
-    };
+    // Build filter for additional filtering within the user's namespace
+    const filter: any = {};
     
     if (options.filters) {
       const { fileTypes, paths, languages } = options.filters;
@@ -172,11 +256,11 @@ export async function searchUserCodebase(
       }
     }
     
-    // Query Pinecone
-    const queryResponse = await pineconeIndex.namespace(config.pineconeNamespace).query({
+    // Query Pinecone in user's dedicated namespace
+    const queryResponse = await pineconeIndex.namespace(userNamespace).query({
       vector: queryEmbedding,
       topK: limit * 2, // Get more results for hybrid search
-      filter,
+      filter: Object.keys(filter).length > 0 ? filter : undefined,
       includeMetadata: true,
       includeValues: false
     });
@@ -208,11 +292,11 @@ export async function searchUserCodebase(
       }
     }
     
-    logger.info(`Vector search completed: found ${vectorResults.length} results for user ${userId}`);
+    logger.info(`Vector search completed: found ${vectorResults.length} results for user ${userId} in namespace ${userNamespace}`);
     return vectorResults;
     
   } catch (error) {
-    logger.error(`Error performing vector search for user ${userId}:`, error);
+    logger.error(`Error performing vector search for user ${userId} in namespace ${userNamespace}:`, error);
     return [];
   }
 }
@@ -226,7 +310,7 @@ export async function hybridSearch(
   queryEmbedding: number[],
   options: SearchOptions = {}
 ): Promise<VectorSearchResult[]> {
-  // Get vector search results
+  // Get vector search results from user's dedicated namespace
   const vectorResults = await searchUserCodebase(userId, queryEmbedding, {
     ...options,
     limit: (options.limit || 10) * 3 // Get more results for re-ranking
@@ -249,7 +333,8 @@ export async function hybridSearch(
     .sort((a, b) => b.combinedScore - a.combinedScore)
     .slice(0, options.limit || 10);
   
-  logger.info(`Hybrid search completed: returning ${finalResults.length} results for user ${userId}`);
+  const userNamespace = getUserNamespace(userId);
+  logger.info(`Hybrid search completed: returning ${finalResults.length} results for user ${userId} from namespace ${userNamespace}`);
   return finalResults;
 }
 
@@ -330,7 +415,7 @@ function tokenize(text: string): string[] {
 }
 
 /**
- * Delete vectors for a specific file
+ * Delete vectors for a specific file in user's namespace
  */
 export async function deleteFileVectors(
   userId: string,
@@ -342,13 +427,14 @@ export async function deleteFileVectors(
     throw new Error('Pinecone index not initialized');
   }
   
+  const userNamespace = getUserNamespace(userId);
+  
   try {
-    // Query to find all vectors for this file
-    const queryResponse = await pineconeIndex.namespace(config.pineconeNamespace).query({
+    // Query to find all vectors for this file in user's namespace
+    const queryResponse = await pineconeIndex.namespace(userNamespace).query({
       vector: new Array(3072).fill(0), // Dummy vector
       topK: 10000,
       filter: {
-        userId: { $eq: userId },
         filePath: { $eq: filePath }
       },
       includeValues: false
@@ -357,17 +443,39 @@ export async function deleteFileVectors(
     if (queryResponse.matches && queryResponse.matches.length > 0) {
       const ids = queryResponse.matches.map((match: any) => match.id);
       
-      // Delete in batches
+      // Delete in batches from user's namespace
       const batchSize = 1000;
       for (let i = 0; i < ids.length; i += batchSize) {
         const batch = ids.slice(i, i + batchSize);
-        await pineconeIndex.namespace(config.pineconeNamespace).deleteMany(batch);
+        await pineconeIndex.namespace(userNamespace).deleteMany(batch);
       }
       
-      logger.info(`Deleted ${ids.length} vectors for file ${filePath}`);
+      logger.info(`Deleted ${ids.length} vectors for file ${filePath} from user ${userId} namespace ${userNamespace}`);
     }
   } catch (error) {
-    logger.error(`Error deleting vectors for file ${filePath}:`, error);
+    logger.error(`Error deleting vectors for file ${filePath} from user ${userId} namespace ${userNamespace}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Delete all vectors for a user (tenant offboarding)
+ */
+export async function deleteUserVectors(userId: string): Promise<void> {
+  await initializeIndex();
+  
+  if (!pineconeIndex) {
+    throw new Error('Pinecone index not initialized');
+  }
+  
+  const userNamespace = getUserNamespace(userId);
+  
+  try {
+    // Delete all vectors in the user's namespace (tenant offboarding)
+    await pineconeIndex.namespace(userNamespace).deleteAll();
+    logger.info(`Successfully deleted all vectors for user ${userId} from namespace ${userNamespace} (tenant offboarded)`);
+  } catch (error) {
+    logger.error(`Error deleting all vectors for user ${userId} from namespace ${userNamespace}:`, error);
     throw error;
   }
 }
@@ -391,9 +499,88 @@ export async function getIndexStats(): Promise<any> {
   }
 }
 
-// Alias for backward compatibility
-const searchVectors = searchUserCodebase;
-const deleteUserVectors = async (userId: string) => {
-  // TODO: Implement full user deletion if needed
-  logger.warn('deleteUserVectors not fully implemented');
-}; 
+/**
+ * Get user-specific namespace statistics
+ */
+export async function getUserNamespaceStats(userId: string): Promise<any> {
+  await initializeIndex();
+  
+  if (!pineconeIndex) {
+    throw new Error('Pinecone index not initialized');
+  }
+  
+  const userNamespace = getUserNamespace(userId);
+  
+  try {
+    const stats = await pineconeIndex.namespace(userNamespace).describeIndexStats();
+    return {
+      ...stats,
+      namespace: userNamespace,
+      userId
+    };
+  } catch (error) {
+    logger.error(`Error getting namespace stats for user ${userId}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * List all tenant namespaces in the index
+ * Useful for admin operations and monitoring
+ */
+export async function listTenantNamespaces(): Promise<Array<{
+  namespace: string;
+  userId: string;
+  vectorCount: number;
+}>> {
+  await initializeIndex();
+  
+  if (!pineconeIndex) {
+    throw new Error('Pinecone index not initialized');
+  }
+  
+  try {
+    const stats = await pineconeIndex.describeIndexStats();
+    const tenants: Array<{
+      namespace: string;
+      userId: string;
+      vectorCount: number;
+    }> = [];
+    
+    if (stats.namespaces) {
+      for (const [namespace, namespaceStats] of Object.entries(stats.namespaces)) {
+        // Extract userId from namespace (format: "user-{userId}" or "user-{userId}-{baseNamespace}")
+        const userMatch = namespace.match(/^user-([^-]+)/);
+        if (userMatch) {
+          tenants.push({
+            namespace,
+            userId: userMatch[1],
+            vectorCount: (namespaceStats as any).vectorCount || 0
+          });
+        }
+      }
+    }
+    
+    logger.info(`Found ${tenants.length} tenant namespaces in index`);
+    return tenants;
+  } catch (error) {
+    logger.error('Error listing tenant namespaces:', error);
+    throw error;
+  }
+}
+
+/**
+ * Check if a user has any vectors stored (tenant exists)
+ */
+export async function tenantExists(userId: string): Promise<boolean> {
+  try {
+    const stats = await getUserNamespaceStats(userId);
+    return stats.totalVectorCount > 0;
+  } catch (error) {
+    logger.debug(`Tenant check failed for user ${userId}:`, error);
+    return false;
+  }
+}
+
+// Export getUserNamespace utility function
+export { getUserNamespace }; 
