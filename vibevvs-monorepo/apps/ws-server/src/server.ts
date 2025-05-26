@@ -3,7 +3,7 @@ import http from 'http';
 import { WebSocket, WebSocketServer } from 'ws';
 import { v4 as uuidv4 } from 'uuid';
 import cors from 'cors';
-import { config } from './config';
+import { config, validateConfig } from './config';
 import logger from '@repo/logger';
 import { verifyToken, getDbUserByClerkId } from '@repo/auth';
 import { MessageType, ClientMessage, ServerMessage } from '@repo/types';
@@ -764,6 +764,31 @@ export function setupHttpRoutes(server: http.Server): void {
  * Start the WebSocket server
  */
 export function startWebSocketServer(): http.Server {
+  // Validate configuration first
+  const configValidation = validateConfig();
+  
+  logger.info('=== Server Configuration Validation ===');
+  logger.info(`Configuration valid: ${configValidation.isValid}`);
+  
+  if (configValidation.errors.length > 0) {
+    logger.error('Configuration errors:');
+    configValidation.errors.forEach((error: string) => logger.error(`  - ${error}`));
+  }
+  
+  if (configValidation.warnings.length > 0) {
+    logger.warn('Configuration warnings:');
+    configValidation.warnings.forEach((warning: string) => logger.warn(`  - ${warning}`));
+  }
+  
+  // Log environment variables for debugging (without exposing full keys)
+  logger.info('=== Environment Variables Check ===');
+  logger.info(`NODE_ENV: ${process.env.NODE_ENV || 'not set'}`);
+  logger.info(`PINECONE_API_KEY: ${process.env.PINECONE_API_KEY ? 'SET (' + process.env.PINECONE_API_KEY.length + ' chars)' : 'NOT SET'}`);
+  logger.info(`GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? 'SET (' + process.env.GEMINI_API_KEY.length + ' chars)' : 'NOT SET'}`);
+  logger.info(`PINECONE_INDEX_NAME: ${process.env.PINECONE_INDEX_NAME || 'not set (using default)'}`);
+  logger.info(`PINECONE_NAMESPACE: ${process.env.PINECONE_NAMESPACE || 'not set (using default)'}`);
+  logger.info('=====================================');
+  
   // Set up the HTTP server
   const server = setupServer();
   

@@ -7,6 +7,14 @@ import { CodeChunk } from '@repo/types';
 let pineconeClient: Pinecone | null = null;
 let pineconeIndex: any = null;
 
+// Debug logging for API key
+logger.info(`Pinecone configuration check:`);
+logger.info(`- API Key present: ${config.pineconeApiKey ? 'YES' : 'NO'}`);
+logger.info(`- API Key length: ${config.pineconeApiKey ? config.pineconeApiKey.length : 0}`);
+logger.info(`- API Key prefix: ${config.pineconeApiKey ? config.pineconeApiKey.substring(0, 8) + '...' : 'N/A'}`);
+logger.info(`- Index Name: ${config.pineconeIndexName}`);
+logger.info(`- Namespace: ${config.pineconeNamespace}`);
+
 if (config.pineconeApiKey) {
   try {
     pineconeClient = new Pinecone({
@@ -31,20 +39,30 @@ async function initializeIndex(): Promise<void> {
     
     if (!indexExists) {
       logger.info(`Creating Pinecone index: ${config.pineconeIndexName}`);
-      await pineconeClient.createIndex({
-        name: config.pineconeIndexName,
-        dimension: 768, // Gemini text-embedding-004 dimension
-        metric: 'cosine',
-        spec: {
-          serverless: {
-            cloud: 'aws',
-            region: 'us-east-1'
+      try {
+        await pineconeClient.createIndex({
+          name: config.pineconeIndexName,
+          dimension: 3072, // Gemini text-embedding-004 dimension (3072 for gemini-embedding-001)
+          metric: 'cosine',
+          spec: {
+            serverless: {
+              cloud: 'aws',
+              region: 'us-east-1'
+            }
           }
+        });
+        
+        // Wait for index to be ready
+        logger.info('Waiting for index to be ready...');
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        logger.info('Index should be ready now');
+      } catch (createError: any) {
+        if (createError.message?.includes('already exists')) {
+          logger.info('Index already exists, continuing...');
+        } else {
+          throw createError;
         }
-      });
-      
-      // Wait for index to be ready
-      await new Promise(resolve => setTimeout(resolve, 10000));
+      }
     }
     
     pineconeIndex = pineconeClient.index(config.pineconeIndexName);
@@ -327,7 +345,7 @@ export async function deleteFileVectors(
   try {
     // Query to find all vectors for this file
     const queryResponse = await pineconeIndex.namespace(config.pineconeNamespace).query({
-      vector: new Array(768).fill(0), // Dummy vector
+      vector: new Array(3072).fill(0), // Dummy vector
       topK: 10000,
       filter: {
         userId: { $eq: userId },
