@@ -513,9 +513,18 @@ export async function deleteUserVectors(userId: string): Promise<void> {
     // Delete all vectors in the user's namespace (tenant offboarding)
     await pineconeIndex.namespace(userNamespace).deleteAll();
     logger.info(`Successfully deleted all vectors for user ${userId} from namespace ${userNamespace} (tenant offboarded)`);
-  } catch (error) {
-    logger.error(`Error deleting all vectors for user ${userId} from namespace ${userNamespace}:`, error);
-    throw error;
+  } catch (error: any) {
+    // Check if the error is a Pinecone 404 or similar "not found" error
+    // This is a common scenario if the namespace didn't exist or was already empty.
+    // Pinecone specific error checking might be needed here depending on their SDK.
+    // For now, we check for a message that implies not found or a status code if available.
+    // Example: error.status === 404 or error.message.includes('not found')
+    if (error && (error.status === 404 || (error.message && error.message.toLowerCase().includes('namespace not found')) || (error.body && typeof error.body === 'string' && error.body.toLowerCase().includes('could not find namespace')))) {
+      logger.info(`Attempted to delete namespace ${userNamespace} for user ${userId}, but it was not found or already empty. Considered successful.`);
+    } else {
+      logger.error(`Error deleting all vectors for user ${userId} from namespace ${userNamespace}:`, error);
+      throw error;
+    }
   }
 }
 

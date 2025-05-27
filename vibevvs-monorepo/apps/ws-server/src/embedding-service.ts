@@ -123,14 +123,6 @@ export async function generateChunkEmbedding(
   // Wait for a slot if rate limited
   await embeddingRateLimiter.waitForSlot();
 
-  // Record the request (even if it fails, to count against the rate limit)
-  const canRequest = await embeddingRateLimiter.checkLimit();
-  if (!canRequest) {
-    // This should ideally not happen if waitForSlot is effective, but as a safeguard:
-    logger.warn(`Rate limit exceeded after waiting for chunk ${chunk.id}, aborting embedding.`);
-    throw new Error('Rate limit exceeded');
-  }
-  
   // Generate new embedding
   const result = await gemini.generateEmbedding({
     apiKey: config.geminiApiKey,
@@ -201,8 +193,7 @@ export async function generateBatchEmbeddings(
   const totalBatches = Math.ceil(chunks.length / BATCH_SIZE);
   logger.info(`Starting batch embedding for ${chunks.length} chunks in ${totalBatches} batches for user ${userId}`);
   
-  // Wait for a slot before starting any batch processing
-  await embeddingRateLimiter.waitForSlot();
+  // await embeddingRateLimiter.waitForSlot(); // Removed from here
   
   let currentFileForProgress: string | undefined = undefined;
   let overallProcessedChunks = 0;
@@ -242,14 +233,9 @@ export async function generateBatchEmbeddings(
     
     if (chunksToEmbed.length > 0) {
       try {
-        // Check rate limit before each batch request
-        const canRequest = await embeddingRateLimiter.checkLimit();
-        if (!canRequest) {
-          logger.warn(`Rate limit hit during batch ${currentBatchNumber}, skipping remaining chunks in this batch.`);
-          batch.forEach(c => errors.push({ chunkId: c.id, error: 'Rate limit hit, batch skipped' }));
-          continue;
-        }
-        
+        // ADDED: Wait for slot before each actual batch API call
+        await embeddingRateLimiter.waitForSlot();
+
         // Generate embeddings for uncached chunks
         const contents = chunksToEmbed.map(item => ({
           id: item.chunk.id,
@@ -444,13 +430,6 @@ export async function generateQueryEmbedding(
   // Wait for a slot if rate limited
   await embeddingRateLimiter.waitForSlot();
 
-  // Record the request
-  const canRequest = await embeddingRateLimiter.checkLimit();
-  if (!canRequest) {
-    logger.warn(`Rate limit exceeded for query embedding, aborting.`);
-    return { embedding: [], model: EMBEDDING_MODEL, tokensUsed: 0, error: 'Rate limit exceeded' };
-  }
-  
   // Generate embedding for the query
   const result = await gemini.generateEmbedding({
     apiKey: config.geminiApiKey,
