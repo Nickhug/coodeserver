@@ -1,3 +1,6 @@
+// Copyright (c) COODE AI EDITOR. All rights reserved.
+// Licensed under the MIT License. See License.txt in the project root for license information.
+
 import logger from '@repo/logger';
 import { config } from './config';
 import * as gemini from '@repo/ai-providers';
@@ -144,7 +147,6 @@ export async function generateChunkEmbedding(
       filePath: chunk.filePath,
       type: chunk.type,
       language: chunk.language,
-      content: chunk.content,
       startLine: chunk.startLine,
       endLine: chunk.endLine,
       name: chunk.name,
@@ -285,7 +287,6 @@ export async function generateBatchEmbeddings(
                 filePath: item.chunk.filePath,
                 type: item.chunk.type,
                 language: item.chunk.language,
-                content: item.chunk.content,
                 startLine: item.chunk.startLine,
                 endLine: item.chunk.endLine,
                 name: item.chunk.name,
