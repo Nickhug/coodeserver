@@ -33,16 +33,24 @@ if (config.pineconeApiKey) {
 }
 
 /**
- * Generate user-specific namespace for multitenancy
+ * Generate user-specific namespace for efficient vector storage
  * Format: "user-{userId}" or "user-{userId}-{baseNamespace}" if base namespace is provided
+ * 
+ * @param userId The user ID
+ * @param workspaceId The workspace ID (not used in namespace anymore, but kept for backward compatibility)
+ * @returns A properly formatted namespace string for Pinecone
  */
-function getUserNamespace(userId: string): string {
-  // Use user-specific namespace for true multitenancy
-  const baseNamespace = config.pineconeNamespace;
-  if (baseNamespace && baseNamespace !== 'default') {
-    return `user-${userId}-${baseNamespace}`;
+function getUserNamespace(userId: string, workspaceId?: string): string {
+  if (!userId) {
+    throw new Error('User ID is required for namespace generation');
   }
-  return `user-${userId}`;
+  
+  // Base namespace from config
+  const baseNamespace = config.pineconeNamespace;
+  
+  // Always use a single namespace per user (workspaceId will be used in metadata filters)
+  const namespace = `user-${userId}`;
+  return baseNamespace ? `${namespace}-${baseNamespace}` : namespace;
 }
 
 /**
@@ -182,15 +190,15 @@ interface VectorSearchResult {
 
 interface SearchOptions {
   limit?: number;
-  filters?: {
-    fileTypes?: string[];
-    paths?: string[];
-    languages?: string[];
-  };
+  filters?: any;
+  workspaceId?: string; // Optional workspace ID for namespace isolation
 }
 
 /**
  * Upsert vectors to Pinecone using user-specific namespace for multitenancy
+ * @param userId The user ID for namespace isolation
+ * @param vectors Array of vectors to upsert
+ * @param workspaceId Optional workspace ID to store in metadata for filtering
  */
 export async function upsertVectors(
   userId: string,
@@ -198,7 +206,8 @@ export async function upsertVectors(
     id: string;
     values: number[];
     metadata: Record<string, any>;
-  }>
+  }>,
+  workspaceId?: string
 ): Promise<void> {
   await initializeIndex();
 
@@ -210,13 +219,15 @@ export async function upsertVectors(
     // Get user-specific namespace for multitenancy
     const userNamespace = getUserNamespace(userId);
 
-    // Remove userId from metadata since namespace provides isolation
+    // Add workspaceId to metadata for filtering within the user's namespace
     const vectorsForNamespace = vectors.map(v => ({
       ...v,
       metadata: {
         ...v.metadata,
         // Keep userId in metadata for backwards compatibility and debugging
         userId,
+        // Add workspaceId for filtering vectors by workspace
+        workspaceId: workspaceId || 'default',
         // Add tenant info for additional context
         tenant: userNamespace
       }
@@ -273,8 +284,16 @@ export async function searchUserCodebase(
   const userNamespace = getUserNamespace(userId);
 
   try {
+    // Always use the user's single namespace, regardless of workspace
+    const namespace = getUserNamespace(userId);
+    
     // Build filter for additional filtering within the user's namespace
     const filter: any = {};
+    
+    // If workspaceId is provided, add it to the filter
+    if (options.workspaceId) {
+      filter.workspaceId = options.workspaceId;
+    }
 
     if (options.filters) {
       const { fileTypes, paths, languages } = options.filters;
@@ -289,21 +308,21 @@ export async function searchUserCodebase(
           filePath: { $contains: path }
         }));
       }
-
+      
       if (languages && languages.length > 0) {
         filter.language = { $in: languages };
       }
     }
-
+    
     // Query Pinecone in user's dedicated namespace
-    const queryResponse = await pineconeIndex.namespace(userNamespace).query({
+    const queryResponse = await pineconeIndex.namespace(namespace).query({
       vector: queryEmbedding,
-      topK: limit * 2, // Get more results for hybrid search
+      topK: limit,
       filter: Object.keys(filter).length > 0 ? filter : undefined,
       includeMetadata: true,
       includeValues: false
     });
-
+    
     // Convert results to our format
     const vectorResults: VectorSearchResult[] = [];
 
@@ -331,11 +350,12 @@ export async function searchUserCodebase(
       }
     }
 
-    logger.info(`Vector search completed: found ${vectorResults.length} results for user ${userId} in namespace ${userNamespace}`);
+    logger.info(`Vector search completed: found ${vectorResults.length} results for user ${userId} in namespace ${namespace}`);
     return vectorResults;
 
-  } catch (error) {
-    logger.error(`Error performing vector search for user ${userId} in namespace ${userNamespace}:`, error);
+  } catch (error: any) {
+    const namespace = getUserNamespace(userId, options.workspaceId);
+    logger.error(`Error performing vector search for user ${userId} in namespace ${namespace}: ${error?.message}`, error);
     return [];
   }
 }
@@ -349,10 +369,11 @@ export async function hybridSearch(
   queryEmbedding: number[],
   options: SearchOptions = {}
 ): Promise<VectorSearchResult[]> {
-  // Get vector search results from user's dedicated namespace
+  // Get vector search results from user's dedicated namespace (with workspace isolation if specified)
   const vectorResults = await searchUserCodebase(userId, queryEmbedding, {
     ...options,
-    limit: (options.limit || 10) * 3 // Get more results for re-ranking
+    limit: (options.limit || 10) * 3, // Get more results for re-ranking
+    workspaceId: options.workspaceId // Pass workspaceId for namespace isolation
   });
 
   if (vectorResults.length === 0) {
@@ -455,10 +476,14 @@ function tokenize(text: string): string[] {
 
 /**
  * Delete vectors for a specific file in user's namespace
+ * @param userId The user ID
+ * @param filePath The file path to delete vectors for
+ * @param workspaceId Optional workspace ID to filter by
  */
 export async function deleteFileVectors(
   userId: string,
-  filePath: string
+  filePath: string,
+  workspaceId?: string
 ): Promise<void> {
   await initializeIndex();
 
@@ -470,12 +495,20 @@ export async function deleteFileVectors(
 
   try {
     // Query to find all vectors for this file in user's namespace
+    // Build the filter with file path and optional workspace ID
+    const filter: any = {
+      filePath: { $eq: filePath }
+    };
+    
+    // Add workspaceId filter if provided
+    if (workspaceId) {
+      filter.workspaceId = workspaceId;
+    }
+    
     const queryResponse = await pineconeIndex.namespace(userNamespace).query({
       vector: new Array(3072).fill(0), // Dummy vector
       topK: 10000,
-      filter: {
-        filePath: { $eq: filePath }
-      },
+      filter,
       includeValues: false
     });
 
@@ -498,28 +531,59 @@ export async function deleteFileVectors(
 }
 
 /**
- * Delete all vectors for a user (tenant offboarding)
+ * Delete all vectors for a user's workspace
+ * 
+ * @param userId - The user ID
+ * @param workspaceId - Optional workspace ID. If provided, only vectors for this workspace will be deleted.
+ *                     If not provided, all vectors for the user will be deleted (legacy behavior)
  */
-export async function deleteUserVectors(userId: string): Promise<void> {
+export async function deleteUserVectors(userId: string, workspaceId?: string): Promise<void> {
   await initializeIndex();
 
   if (!pineconeIndex) {
     throw new Error('Pinecone index not initialized');
   }
 
+  // Always use the single user namespace
   const userNamespace = getUserNamespace(userId);
 
   try {
-    // Delete all vectors in the user's namespace (tenant offboarding)
-    await pineconeIndex.namespace(userNamespace).deleteAll();
-    logger.info(`Successfully deleted all vectors for user ${userId} from namespace ${userNamespace} (tenant offboarded)`);
+    if (workspaceId) {
+      // If workspaceId is provided, only delete vectors for that workspace using metadata filtering
+      // First query to find all vectors for this workspace
+      const queryResponse = await pineconeIndex.namespace(userNamespace).query({
+        vector: new Array(3072).fill(0), // Dummy vector
+        topK: 10000, // Retrieve as many as possible
+        filter: {
+          workspaceId: { $eq: workspaceId }
+        },
+        includeValues: false
+      });
+
+      if (queryResponse.matches && queryResponse.matches.length > 0) {
+        const ids = queryResponse.matches.map((match: any) => match.id);
+
+        // Delete in batches
+        const batchSize = 1000;
+        for (let i = 0; i < ids.length; i += batchSize) {
+          const batch = ids.slice(i, i + batchSize);
+          await pineconeIndex.namespace(userNamespace).deleteMany(batch);
+        }
+
+        logger.info(`Successfully deleted ${ids.length} vectors for user ${userId}, workspace ${workspaceId} from namespace ${userNamespace}`);
+      } else {
+        logger.info(`No vectors found for user ${userId}, workspace ${workspaceId} in namespace ${userNamespace}`);
+      }
+    } else {
+      // If no workspaceId, delete all vectors for this user (entire namespace)
+      await pineconeIndex.namespace(userNamespace).deleteAll();
+      logger.info(`Successfully deleted all vectors for user ${userId} from namespace ${userNamespace}`);
+    }
   } catch (error: any) {
     // Check if the error is a Pinecone 404 or similar "not found" error
-    // This is a common scenario if the namespace didn't exist or was already empty.
-    // Pinecone specific error checking might be needed here depending on their SDK.
-    // For now, we check for a message that implies not found or a status code if available.
-    // Example: error.status === 404 or error.message.includes('not found')
-    if (error && (error.status === 404 || (error.message && error.message.toLowerCase().includes('namespace not found')) || (error.body && typeof error.body === 'string' && error.body.toLowerCase().includes('could not find namespace')))) {
+    if (error && (error.status === 404 || 
+        (error.message && error.message.toLowerCase().includes('namespace not found')) || 
+        (error.body && typeof error.body === 'string' && error.body.toLowerCase().includes('could not find namespace')))) {
       logger.info(`Attempted to delete namespace ${userNamespace} for user ${userId}, but it was not found or already empty. Considered successful.`);
     } else {
       logger.error(`Error deleting all vectors for user ${userId} from namespace ${userNamespace}:`, error);
@@ -531,55 +595,64 @@ export async function deleteUserVectors(userId: string): Promise<void> {
 /**
  * Get index statistics
  */
-export async function getIndexStats(): Promise<any> {
+export async function getIndexStats(): Promise<IndexStatsDescription> {
+  // Initialize index if needed
   await initializeIndex();
 
   if (!pineconeIndex) {
-    throw new Error('Pinecone index not initialized');
+    throw new Error('Pinecone index not initialized, cannot get stats');
   }
 
   try {
     const stats = await pineconeIndex.describeIndexStats();
+    logger.info(`Index stats: ${stats.totalRecordCount || 0} total vectors, ${Object.keys(stats.namespaces || {}).length} namespaces`);
     return stats;
   } catch (error) {
     logger.error('Error getting index stats:', error);
     throw error;
   }
 }
-
 /**
- * Get user-specific namespace statistics
+ * Get namespace statistics for a specific user and/or workspace
+ * 
+ * @param userId - The user ID
+ * @param workspaceId - Optional workspace ID to get stats for a specific workspace
+ * @returns The number of vectors in the namespace
  */
-export async function getUserNamespaceStats(userId: string): Promise<{
-  namespace: string;
-  userId: string;
-  recordCount?: number; // Changed from 'any' to a more specific type
-}> {
+export async function getUserNamespaceStats(userId: string, workspaceId?: string): Promise<number> {
   await initializeIndex();
 
   if (!pineconeIndex) {
-    logger.error('Pinecone index not initialized, cannot get namespace stats for user ${userId}.');
-    throw new Error('Pinecone index not initialized');
+    return 0;
   }
 
-  const userNamespace = getUserNamespace(userId);
-
   try {
-    // Revert to using describeIndexStats() and extract the specific namespace data
-    const allStats: IndexStatsDescription = await pineconeIndex.describeIndexStats();
-    const namespaceData = allStats.namespaces && allStats.namespaces[userNamespace];
-    const recordCount = namespaceData ? namespaceData.recordCount : 0;
-
-    logger.info(`Namespace stats for ${userNamespace} (user: ${userId}): ${recordCount} records. Full stats: ${JSON.stringify(allStats.namespaces)}`);
+    // Get the single user namespace
+    const namespace = getUserNamespace(userId);
     
-    return {
-      namespace: userNamespace,
-      userId,
-      recordCount: recordCount || 0 
-    };
+    if (workspaceId) {
+      // If workspaceId is provided, we need to count vectors with that specific workspaceId in metadata
+      // First query to count vectors for this workspace
+      const queryResponse = await pineconeIndex.namespace(namespace).query({
+        vector: new Array(3072).fill(0), // Dummy vector
+        topK: 10000, // Maximum allowed by Pinecone
+        filter: {
+          workspaceId: { $eq: workspaceId }
+        },
+        includeValues: false
+      });
+
+      const count = queryResponse.matches?.length || 0;
+      return count;
+    } else {
+      // If no workspaceId, get stats for the entire namespace
+      const allStats = await pineconeIndex.describeIndexStats();
+      const namespaceData = allStats.namespaces?.[namespace];
+      return namespaceData ? namespaceData.recordCount : 0;
+    }
   } catch (error: any) {
-    // This catch block might now be less relevant if describeIndexStats itself doesn't throw for missing namespaces often
-    logger.error(`Error getting full index stats (for user ${userId}, namespace ${userNamespace}). Error: ${error.message}`, error);
+    const namespace = getUserNamespace(userId, workspaceId);
+    logger.error(`Error getting full index stats (for user ${userId}, namespace ${namespace}). Error: ${error?.message || 'Unknown error'}`, error);
     throw error; 
   }
 }
@@ -588,15 +661,15 @@ export async function getUserNamespaceStats(userId: string): Promise<{
  * Get the actual count of vectors stored for a user
  * This is useful for progress calculation and UI display
  */
-export async function getUserVectorCount(userId: string): Promise<number> {
+export async function getUserVectorCount(userId: string, workspaceId?: string): Promise<number> {
   try {
-    const stats = await getUserNamespaceStats(userId);
-    // Ensure we handle cases where recordCount might be undefined or null, defaulting to 0
-    return Number(stats.recordCount) || 0;
-  } catch (error) {
+    // getUserNamespaceStats directly returns the vector count as a number
+    const vectorCount = await getUserNamespaceStats(userId, workspaceId);
+    return vectorCount;
+  } catch (error: any) {
     // Most errors, including non-existent namespace, are handled in getUserNamespaceStats.
     // This catch is for other potential issues during the process.
-    logger.warn(`Could not get vector count for user ${userId} due to an error: ${(error as Error).message}`);
+    logger.warn(`Could not get vector count for user ${userId}${workspaceId ? `, workspace ${workspaceId}` : ''} due to an error: ${(error as Error).message}`);
     return 0; // Default to 0 on any error
   }
 }
@@ -632,7 +705,7 @@ export async function listTenantNamespaces(): Promise<Array<{
           tenants.push({
             namespace,
             userId: userMatch[1],
-            vectorCount: namespaceStats.recordCount || 0 // Use recordCount from IndexNamespaceStats
+            vectorCount: typeof namespaceStats === 'number' ? namespaceStats : (namespaceStats.recordCount || 0) // Handle both formats
           });
         }
       }
@@ -651,11 +724,68 @@ export async function listTenantNamespaces(): Promise<Array<{
  */
 export async function tenantExists(userId: string): Promise<boolean> {
   try {
-    const stats = await getUserNamespaceStats(userId);
-    return (stats.recordCount || 0) > 0; // Check recordCount here
+    const vectorCount = await getUserNamespaceStats(userId);
+    return vectorCount > 0; // Just check the number directly
   } catch (error) {
     logger.debug(`Tenant check failed for user ${userId}:`, error);
     return false;
+  }
+}
+
+/**
+ * Clean up inactive workspaces for a user, keeping only the active workspace
+ * This is more efficient than using separate namespaces per workspace
+ * 
+ * @param userId - The user ID
+ * @param activeWorkspaceId - The active workspace ID to keep
+ * @returns Number of vectors deleted from inactive workspaces
+ */
+export async function cleanupInactiveWorkspaces(userId: string, activeWorkspaceId: string): Promise<number> {
+  await initializeIndex();
+
+  if (!pineconeIndex) {
+    throw new Error('Pinecone index not initialized');
+  }
+
+  // Always use the single user namespace
+  const userNamespace = getUserNamespace(userId);
+
+  try {
+    // First query to find all vectors with different workspaceId values
+    const queryResponse = await pineconeIndex.namespace(userNamespace).query({
+      vector: new Array(3072).fill(0), // Dummy vector
+      topK: 10000, // Maximum allowed in a single query
+      filter: {
+        $and: [
+          { workspaceId: { $exists: true } },
+          { workspaceId: { $ne: activeWorkspaceId } }
+        ]
+      },
+      includeValues: false
+    });
+
+    if (queryResponse.matches && queryResponse.matches.length > 0) {
+      const ids = queryResponse.matches.map((match: any) => match.id);
+
+      // Delete in batches
+      const batchSize = 1000;
+      let deletedCount = 0;
+      
+      for (let i = 0; i < ids.length; i += batchSize) {
+        const batch = ids.slice(i, i + batchSize);
+        await pineconeIndex.namespace(userNamespace).deleteMany(batch);
+        deletedCount += batch.length;
+      }
+      
+      logger.info(`Cleaned up ${deletedCount} vectors from inactive workspaces for user ${userId}, keeping only active workspace ${activeWorkspaceId}`);
+      return deletedCount;
+    } else {
+      logger.info(`No inactive workspace vectors found for user ${userId}. Only active workspace ${activeWorkspaceId} exists.`);
+      return 0;
+    }
+  } catch (error: any) {
+    logger.error(`Error cleaning up inactive workspaces for user ${userId}:`, error);
+    throw error;
   }
 }
 

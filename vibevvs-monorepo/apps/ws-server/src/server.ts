@@ -468,7 +468,7 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
       await handleCodebaseSearchRequest(ws, clientMessage);
     } else if (messageType === MessageType.CODEBASE_CLEAR_INDEX_REQUEST) {
       if (config.authEnabled && !isAuthenticated) {
-        logger.warn(`WS AUTH [${connectionId}] Unauthorized codebase clear index request rejected`);
+        logger.warn(`WS AUTH [${connectionId}] Unauthorized clear index request rejected`);
         sendToClient(ws, {
           type: MessageType.ERROR,
           payload: {
@@ -480,6 +480,7 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
         return;
       }
       await handleCodebaseClearIndexRequest(ws, clientMessage);
+
     } else {
       logger.warn(`WS MSG [${connectionId}] Unknown message type: ${messageType}`);
       sendToClient(ws, {
@@ -2408,7 +2409,7 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
     return;
   }
 
-  const { query, requestId, options } = message.payload;
+  const { query, requestId, options, workspaceId } = message.payload;
   const userId = ws.connectionData.userId;
 
   if (!userId) {
@@ -2431,8 +2432,13 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
       // TEMPORARY DELAY FOR DEBUGGING EVENTUAL CONSISTENCY - REMOVED
       // await new Promise(resolve => setTimeout(resolve, 20000));
       const pineconeService2 = await import('./pinecone-service');
-      const vectorCount = await pineconeService2.getUserVectorCount(userId);
-      logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] User ${userId} has ${vectorCount} vectors in Pinecone`);
+      const vectorCount = await pineconeService2.getUserVectorCount(userId, workspaceId);
+      
+      if (workspaceId) {
+        logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] User ${userId}, workspace ${workspaceId} has ${vectorCount} vectors in Pinecone`);
+      } else {
+        logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] User ${userId} (legacy mode without workspace) has ${vectorCount} vectors in Pinecone`);
+      }
 
       // Send response with stats
       sendToClient(ws, {
@@ -2442,7 +2448,7 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
           results: [],
           stats: {
             vectorCount,
-            namespace: pineconeService2.getUserNamespace(userId)
+            namespace: pineconeService2.getUserNamespace(userId, workspaceId)
           }
         }
       });
@@ -2473,14 +2479,15 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
     // Import Pinecone service
     const pineconeService = await import('./pinecone-service');
 
-    // Perform hybrid search (vector + keyword)
+    // Perform hybrid search (vector + keyword) with workspace-specific namespace
     const searchResults = await pineconeService.hybridSearch(
       userId,
       query,
       queryEmbeddingResult.embedding,
       {
         limit: options?.limit || 10,
-        filters: options?.filters
+        filters: options?.filters,
+        workspaceId: workspaceId // Pass the workspace ID to use the right namespace
       }
     );
 
@@ -2517,7 +2524,7 @@ async function handleCodebaseClearIndexRequest(ws: WebSocketWithData, message: C
     return;
   }
 
-  const { requestId } = message.payload;
+  const { requestId, workspaceId } = message.payload;
   const userId = ws.connectionData.userId;
 
   if (!userId) {
@@ -2527,33 +2534,53 @@ async function handleCodebaseClearIndexRequest(ws: WebSocketWithData, message: C
       payload: {
         requestId,
         success: false,
-        error: 'User ID not available'
+        error: 'User ID not available',
+        workspaceId
       }
     });
     return;
   }
 
-  logger.info(`WS CLEAR_INDEX [${ws.connectionData.connectionId}][${requestId}] Processing clear index request for user ${userId}`);
+  // Log whether this is workspace-specific or legacy user-level clear request
+  if (workspaceId) {
+    logger.info(`WS CLEAR_INDEX [${ws.connectionData.connectionId}][${requestId}] Processing workspace-specific clear index request for user ${userId}, workspace ${workspaceId}`);
+  } else {
+    logger.warn(`WS CLEAR_INDEX [${ws.connectionData.connectionId}][${requestId}] Processing legacy clear index request for user ${userId} without workspace ID`);
+  }
 
   try {
     // Import Pinecone service
     const pineconeService = await import('./pinecone-service');
 
     // Get current vector count before deletion for reporting
-    const vectorCount = await pineconeService.getUserNamespaceStats(userId);
+    const vectorCount = await pineconeService.getUserNamespaceStats(userId, workspaceId);
 
-    // Delete all vectors for the user
-    await pineconeService.deleteUserVectors(userId);
+    let deletedCount = 0;
+    
+    // Check if cleanupInactiveWorkspaces function exists
+    if (workspaceId && typeof pineconeService.cleanupInactiveWorkspaces === 'function') {
+      // If workspaceId is provided, use it to clean up all OTHER workspaces (inactive ones)
+      logger.info(`WS CLEAR_INDEX [${ws.connectionData.connectionId}][${requestId}] Cleaning up inactive workspaces for user ${userId}, keeping only active workspace ${workspaceId}`);
+      try {
+        deletedCount = await pineconeService.cleanupInactiveWorkspaces(userId, workspaceId);
+        logger.info(`WS CLEAR_INDEX [${ws.connectionData.connectionId}][${requestId}] Successfully cleaned up ${deletedCount} vectors from inactive workspaces for user ${userId}`);
+      } catch (cleanupError) {
+        logger.error(`WS CLEAR_INDEX [${ws.connectionData.connectionId}][${requestId}] Error cleaning up inactive workspaces:`, cleanupError);
+      }
+    } else {
+      // Legacy behavior: just delete the vectors for the specified workspace
+      await pineconeService.deleteUserVectors(userId, workspaceId);
+      logger.info(`WS CLEAR_INDEX [${ws.connectionData.connectionId}][${requestId}] Successfully cleared ${vectorCount} vectors for user ${userId}${workspaceId ? `, workspace ${workspaceId}` : ''}`);
+    }
 
-    logger.info(`WS CLEAR_INDEX [${ws.connectionData.connectionId}][${requestId}] Successfully cleared ${vectorCount} vectors for user ${userId}`);
-
-    // Send success response
     sendToClient(ws, {
       type: MessageType.CODEBASE_CLEAR_INDEX_RESPONSE,
       payload: {
         requestId,
         success: true,
-        deletedVectorCount: vectorCount
+        deletedVectorCount: workspaceId ? deletedCount : vectorCount,
+        workspaceId,
+        cleanedUpInactiveWorkspaces: workspaceId ? true : false
       }
     });
 
