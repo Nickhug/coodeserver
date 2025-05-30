@@ -2428,17 +2428,13 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
   try {
     // Handle special stats query
     if (query === "__GET_STATS__") {
-      logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Processing stats request for user ${userId}`);
-      // TEMPORARY DELAY FOR DEBUGGING EVENTUAL CONSISTENCY - REMOVED
-      // await new Promise(resolve => setTimeout(resolve, 20000));
+      // Use debug level logging for stats requests to avoid excessive logs
+      logger.debug(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Processing stats request for user ${userId}`);
       const pineconeService2 = await import('./pinecone-service');
       const vectorCount = await pineconeService2.getUserVectorCount(userId, workspaceId);
       
-      if (workspaceId) {
-        logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] User ${userId}, workspace ${workspaceId} has ${vectorCount} vectors in Pinecone`);
-      } else {
-        logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] User ${userId} (legacy mode without workspace) has ${vectorCount} vectors in Pinecone`);
-      }
+      // Log at debug level only
+      logger.debug(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] User ${userId} has ${vectorCount} vectors in Pinecone ${workspaceId ? `for workspace ${workspaceId}` : ''}`);
 
       // Send response with stats
       sendToClient(ws, {

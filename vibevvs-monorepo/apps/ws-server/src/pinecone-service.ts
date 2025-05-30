@@ -1,3 +1,6 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) COODE AI EDITOR. All rights reserved.
+ *--------------------------------------------------------------------------------------------*/
 import { Pinecone, Index, IndexStatsDescription } from '@pinecone-database/pinecone';
 import logger from '@repo/logger';
 import { config } from './config';
@@ -592,26 +595,6 @@ export async function deleteUserVectors(userId: string, workspaceId?: string): P
   }
 }
 
-/**
- * Get index statistics
- */
-export async function getIndexStats(): Promise<IndexStatsDescription> {
-  // Initialize index if needed
-  await initializeIndex();
-
-  if (!pineconeIndex) {
-    throw new Error('Pinecone index not initialized, cannot get stats');
-  }
-
-  try {
-    const stats = await pineconeIndex.describeIndexStats();
-    logger.info(`Index stats: ${stats.totalRecordCount || 0} total vectors, ${Object.keys(stats.namespaces || {}).length} namespaces`);
-    return stats;
-  } catch (error) {
-    logger.error('Error getting index stats:', error);
-    throw error;
-  }
-}
 /**
  * Get namespace statistics for a specific user and/or workspace
  * 
