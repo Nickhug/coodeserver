@@ -37,7 +37,11 @@ class EmbeddingRateLimiter {
   }
 
   private getMinDelayBetweenRequests(): number {
-    return 60000 / (config.embeddingRateLimit || 10); // Default to 10 RPM if config is somehow not set
+    let effectiveRateLimit = config.embeddingRateLimit || 10;
+    if (effectiveRateLimit === 10) {
+      effectiveRateLimit = 9; // Temporary adjustment for 10 RPM -> 9 RPM
+    }
+    return 60000 / effectiveRateLimit;
   }
 
   async checkLimit(): Promise<boolean> {
@@ -46,8 +50,13 @@ class EmbeddingRateLimiter {
       this.requests = 0;
       this.resetTime = now + 60000;
     }
-    
-    if (this.requests >= (config.embeddingRateLimit || 10)) {
+
+    let configuredRateLimitCheck = config.embeddingRateLimit || 10;
+    let effectiveRateLimitCheck = configuredRateLimitCheck;
+    if (configuredRateLimitCheck === 10) {
+      effectiveRateLimitCheck = 9; // Temporary adjustment
+    }
+    if (this.requests >= effectiveRateLimitCheck) {
       return false;
     }
     
@@ -72,7 +81,14 @@ class EmbeddingRateLimiter {
   async waitForSlot(): Promise<void> {
     while (true) {
         const now = Date.now();
-        let currentRateLimit = config.embeddingRateLimit || 10;
+        let configuredRateLimit = config.embeddingRateLimit || 10;
+        let currentRateLimit = configuredRateLimit;
+        let temporaryAdjustmentActive = false;
+
+        if (configuredRateLimit === 10) {
+          currentRateLimit = 9; // Temporary adjustment for 10 RPM -> 9 RPM
+          temporaryAdjustmentActive = true;
+        }
         let minDelay = 60000 / currentRateLimit;
 
         if (now > this.resetTime) {
@@ -92,7 +108,10 @@ class EmbeddingRateLimiter {
         const waitForMinDelay = minDelay - (now - this.lastRequestTime);
         const waitTime = Math.max(0, Math.min(waitTimeForReset, waitForMinDelay)); // Ensure non-negative wait time
         
-        logger.info(`Rate limit (${currentRateLimit} RPM): waiting ${Math.ceil(waitTime/1000)}s before next request (${this.requests}/${currentRateLimit} used)`);
+        const logMessage = temporaryAdjustmentActive 
+          ? `Rate limit (temp. adjusted to ${currentRateLimit} RPM from ${configuredRateLimit} RPM): waiting ${Math.ceil(waitTime/1000)}s before next request (${this.requests}/${currentRateLimit} used)`
+          : `Rate limit (${currentRateLimit} RPM): waiting ${Math.ceil(waitTime/1000)}s before next request (${this.requests}/${currentRateLimit} used)`;
+        logger.info(logMessage);
         await new Promise(resolve => setTimeout(resolve, Math.min(waitTime + 100, 15000))); // Max 15s wait, add 100ms buffer
     }
   }
