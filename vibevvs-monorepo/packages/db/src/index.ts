@@ -136,10 +136,20 @@ export async function storeAuthToken(token: string, clerkId: string, expiresAt: 
   }
 }
 
+// NEW TYPE DEFINITIONS FOR AUTH TOKEN VERIFICATION
+export type AuthTokenVerificationSuccess = { userId: string };
+export type AuthTokenVerificationError = {
+  errorCode: 'TOKEN_NOT_FOUND' | 'TOKEN_EXPIRED' | 'USER_NOT_FOUND' | 'DATABASE_ERROR';
+  errorMessage: string;
+  details?: any; // For additional error details if needed, like the raw DB error message
+};
+export type AuthTokenVerificationResult = AuthTokenVerificationSuccess | AuthTokenVerificationError;
+
 /**
- * Verify and consume an authentication token
+ * Verify and consume an authentication token.
+ * Returns a result object indicating success (with userId) or failure (with error code and message).
  */
-export async function verifyAndConsumeAuthToken(token: string): Promise<{ userId: string } | null> {
+export async function verifyAndConsumeAuthToken(token: string): Promise<AuthTokenVerificationResult> {
   try {
     // Find the token in the database
     const { data: tokenData, error: tokenError } = await supabase
@@ -147,53 +157,61 @@ export async function verifyAndConsumeAuthToken(token: string): Promise<{ userId
       .select('*')
       .eq('token', token)
       .single();
-    
+
     if (tokenError || !tokenData) {
-      logger.error('[verifyAndConsumeAuthToken] Token not found or error:', tokenError);
-      return null;
+      const msg = 'Token not found in database.';
+      logger.error(`[verifyAndConsumeAuthToken] ${msg}`, { tokenPrefix: token ? token.substring(0, 8) + '...' : 'undefined/empty', dbError: tokenError?.message });
+      return { errorCode: 'TOKEN_NOT_FOUND', errorMessage: msg, details: tokenError?.message };
     }
-    
-    const tokenObj = tokenData as AuthToken;
-    
+
+    const tokenObj = tokenData as AuthToken; // AuthToken interface should be defined elsewhere in this file
+
     // Check if token is expired
     const expiresAt = new Date(tokenObj.expires_at);
     if (expiresAt < new Date()) {
-      logger.warn('[verifyAndConsumeAuthToken] Token expired at', expiresAt);
-      
-      // Clean up expired token
-      await supabase
-        .from('auth_tokens')
-        .delete()
-        .eq('id', tokenObj.id);
-      
-      return null;
+      const msg = `Token expired at ${expiresAt.toISOString()}`;
+      logger.warn(`[verifyAndConsumeAuthToken] ${msg}`, { tokenId: tokenObj.id });
+
+      // Attempt to clean up expired token
+      try {
+        const { error: deleteError } = await supabase
+          .from('auth_tokens')
+          .delete()
+          .eq('id', tokenObj.id);
+        if (deleteError) {
+          logger.error(`[verifyAndConsumeAuthToken] Failed to delete expired token ${tokenObj.id}`, { dbError: deleteError.message });
+        } else {
+          logger.info(`[verifyAndConsumeAuthToken] Deleted expired token ${tokenObj.id}`);
+        }
+      } catch (deleteCatchError) {
+        // Log and continue, as failure to delete shouldn't prevent returning TOKEN_EXPIRED
+        logger.error(`[verifyAndConsumeAuthToken] Exception during deletion of expired token ${tokenObj.id}`, deleteCatchError);
+      }
+      return { errorCode: 'TOKEN_EXPIRED', errorMessage: msg };
     }
-    
-    // Get the clerk_id from the user_id
+
+    // Get the clerk_id from the user_id associated with the token
     const { data: userData, error: userError } = await supabase
       .from('users')
       .select('clerk_id')
       .eq('id', tokenObj.user_id)
       .single();
-    
-    if (userError || !userData) {
-      logger.error('[verifyAndConsumeAuthToken] User not found:', userError);
-      return null;
+
+    if (userError || !userData || !userData.clerk_id) {
+      const msg = 'User not found or clerk_id missing for the user associated with the token.';
+      logger.error(`[verifyAndConsumeAuthToken] ${msg}`, { tokenId: tokenObj.id, userId: tokenObj.user_id, dbError: userError?.message });
+      return { errorCode: 'USER_NOT_FOUND', errorMessage: msg, details: userError?.message };
     }
-    
-    const clerkId = userData.clerk_id;
-    logger.info(`[verifyAndConsumeAuthToken] Token found for clerk user: ${clerkId}`);
-    
-    // Delete the token to prevent reuse (one-time use)
-    await supabase
-      .from('auth_tokens')
-      .delete()
-      .eq('id', tokenObj.id);
-    
-    return { userId: clerkId };
+
+    // Token is valid, not expired, and user found
+    logger.info(`[verifyAndConsumeAuthToken] Token verified successfully for user (clerk_id): ${userData.clerk_id}`);
+    return { userId: userData.clerk_id }; // This is AuthTokenVerificationSuccess
+
   } catch (error) {
-    logger.error('[verifyAndConsumeAuthToken] Unexpected error:', error);
-    return null;
+    const msg = 'An unexpected error occurred during token verification.';
+    const errDetails = error instanceof Error ? error.message : String(error);
+    logger.error(`[verifyAndConsumeAuthToken] ${msg}`, { error: errDetails, tokenPrefix: token ? token.substring(0, 8) + '...' : 'undefined/empty' });
+    return { errorCode: 'DATABASE_ERROR', errorMessage: msg, details: errDetails };
   }
 }
 

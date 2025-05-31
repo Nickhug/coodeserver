@@ -8,7 +8,14 @@ import logger from '@repo/logger';
 import { verifyToken, getDbUserByClerkId } from '@repo/auth';
 import { MessageType, ClientMessage, ServerMessage } from '@repo/types';
 import * as gemini from '@repo/ai-providers';
-import { logUsage, verifyAndConsumeAuthToken, getUserByClerkId } from '@repo/db';
+import {
+  getUserByClerkId,
+  verifyAndConsumeAuthToken,
+  storeAuthToken,
+  logUsage,
+  type AuthTokenVerificationResult,
+  type AuthTokenVerificationError
+} from '@repo/db';
 import { LLMResponse } from '@repo/ai-providers';
 
 /**
@@ -862,20 +869,27 @@ async function handleAuthentication(ws: WebSocketWithData, message: ClientMessag
     logger.info(`Authenticating connection ${connectionId} with token`);
 
     // Use our shared DB package to verify and consume the token
-    const verificationResult = await verifyAndConsumeAuthToken(token);
+    const verificationResult: AuthTokenVerificationResult = await verifyAndConsumeAuthToken(token);
 
-    if (!verificationResult) {
-      logger.warn(`Authentication failed for ${connectionId}: Invalid token`);
+    // Check if verificationResult is an error (i.e., it's an AuthTokenVerificationError)
+    if ('errorCode' in verificationResult) {
+      const errorResult = verificationResult as AuthTokenVerificationError; // Type assertion for easier access
+      logger.warn(`Authentication failed for ${connectionId}: ${errorResult.errorMessage}`, { 
+        code: errorResult.errorCode, 
+        details: errorResult.details 
+      });
       sendToClient(ws, {
         type: MessageType.AUTH_FAILURE,
         payload: {
-          error: 'Invalid authentication token',
-          code: 'INVALID_TOKEN'
+          error: errorResult.errorMessage || 'Invalid authentication token',
+          code: errorResult.errorCode || 'INVALID_TOKEN',
+          message: typeof errorResult.details === 'string' ? errorResult.details : undefined // Pass db error message if it's a string
         }
       });
       return;
     }
 
+    // If we reach here, verificationResult is AuthTokenVerificationSuccess (which has userId)
     const userId = verificationResult.userId;
 
     // Set connection as authenticated
