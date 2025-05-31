@@ -97,8 +97,8 @@ async function handleAuthRequest(request: NextRequest) {
     // Generate a token for VVS
     const token = generateToken();
     
-    // Store the token with a 5-minute expiry
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    // Store the token with a 30-day expiry for persistent WebSocket connections
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     const storedToken = await storeAuthToken(token, userId, expiresAt);
     
     if (!storedToken) {
