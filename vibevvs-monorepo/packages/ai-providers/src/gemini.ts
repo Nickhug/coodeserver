@@ -61,39 +61,39 @@ export function getModelConfig(model: string): GeminiModelConfig {
     },
     'gemini-2.0-flash': {
       contextWindow: 128000,
-      maxOutputTokens: 8192,
+      maxOutputTokens: 50000,
       tokenMultiplier: 1.0
     },
     'gemini-1.5-flash': {
       contextWindow: 128000, 
-      maxOutputTokens: 8192,
+      maxOutputTokens: 50000,
       tokenMultiplier: 1.0
     },
     'gemini-1.5-pro': {
       contextWindow: 1000000,
-      maxOutputTokens: 8192,
+      maxOutputTokens: 50000,
       tokenMultiplier: 1.0
     },
     'gemini-1.5-flash-8b': {
       contextWindow: 128000,
-      maxOutputTokens: 8192,
+      maxOutputTokens: 50000,
       tokenMultiplier: 1.0
     },
     'gemini-pro': {
       contextWindow: 30720,
-      maxOutputTokens: 2048,
+      maxOutputTokens: 50000,
       tokenMultiplier: 1.0
     },
     'gemini-pro-vision': {
       contextWindow: 16385,
-      maxOutputTokens: 2048,
+      maxOutputTokens: 50000,
       tokenMultiplier: 1.0
     }
   };
 
   return modelConfigMap[model as GeminiModelName] || {
     contextWindow: 30720,
-    maxOutputTokens: 2048,
+    maxOutputTokens: 50000,
     tokenMultiplier: 1.0
   };
 }
