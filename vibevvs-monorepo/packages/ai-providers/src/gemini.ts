@@ -377,33 +377,98 @@ export async function sendStreamingRequest(
       // If we have tools and a chatMode, explicitly tell the model what mode it's in
       if (tools && tools.length > 0 && chatMode) {
         logger.info(`Adding chatMode (${chatMode}) context to streaming system message`);
-        enhancedSystemMessage = `${systemMessage}\n\nIMPORTANT: You are currently in ${chatMode} mode and have access to the tools provided. In agent mode, you SHOULD use all available tools including file creation and editing tools.`;
+        // Include specific tool names in the system message
+        const toolNames = tools.map(t => t.name).join(', ');
+        enhancedSystemMessage = `${systemMessage}\n\nIMPORTANT: You are currently in ${chatMode} mode and have access to the following tools: ${toolNames}. In agent mode, you SHOULD use all available tools including file creation and editing tools. The create_ai_comment tool allows you to create comments in the code.`;
       }
       
       requestBody.contents[0].parts[0].text = `${enhancedSystemMessage}\n\n${prompt}`;
       logger.info(`Added system message to streaming request, total prompt length: ${requestBody.contents[0].parts[0].text.length}`);
     }
-    
+
     // Add tools if present
     if (tools && Array.isArray(tools) && tools.length > 0) {
-      requestBody.tools = tools.map(tool => ({
-        functionDeclarations: [{
-          name: tool.name,
-          description: tool.description,
-          parameters: {
-            type: 'OBJECT',
-            properties: tool.parameters || {}
+      requestBody.tools = tools.map(tool => {
+        // Extract required parameters (assuming all are required for now)
+        const requiredParams = Object.keys(tool.parameters || {});
+        
+        // Format parameters to match Gemini's expected structure
+        const formattedProperties: Record<string, any> = {};
+        
+        // Only process if parameters exist
+        if (tool.parameters) {
+          for (const [key, paramValue] of Object.entries(tool.parameters)) {
+            // Safe type assertion as we know the structure
+            const param = paramValue as { description?: string };
+            
+            // Determine parameter type - default to STRING if not specified
+            let paramType = 'STRING';
+            
+            // Check if parameter description contains type hint
+            const description = param.description || '';
+            if (description.toLowerCase().includes('array') || description.includes('[]')) {
+              paramType = 'ARRAY';
+            } else if (description.toLowerCase().includes('number') || 
+                      description.toLowerCase().includes('integer') || 
+                      description.includes('count')) {
+              paramType = 'NUMBER';
+            } else if (description.toLowerCase().includes('boolean') || 
+                      description.toLowerCase().includes('true/false')) {
+              paramType = 'BOOLEAN';
+            }
+            
+            // Create properly formatted parameter
+            formattedProperties[key] = {
+              type: paramType,
+              description: param.description || ''
+            };
+            
+            // Add items property for arrays
+            if (paramType === 'ARRAY') {
+              formattedProperties[key].items = { type: 'STRING' };
+            }
           }
-        }]
-      }));
-      
+        }
+
+        // Return properly formatted tool declaration
+        return {
+          functionDeclarations: [{
+            name: tool.name,
+            description: tool.description,
+            parameters: {
+              type: 'OBJECT',
+              properties: formattedProperties,
+              required: requiredParams
+            }
+          }]
+        };
+      });
+
+      // Log formatted tools with more detail
       logger.info(`Added ${tools.length} tools to streaming request: ${tools.map(t => t.name).join(', ')}`);
+      // Add debug logging for the first tool to verify format
+      if (tools.length > 0) {
+        logger.debug(`Example tool format: ${JSON.stringify(requestBody.tools[0], null, 2)}`);
+      }
       
-      // If we have a chatMode, log it
-      if (chatMode) {
-        logger.info(`Streaming request includes chatMode: ${chatMode}`);
+      // Add toolConfig for function calling when in agent mode
+      if (chatMode === 'agent') {
+        requestBody.toolConfig = {
+          functionCallingConfig: {
+            // In agent mode, set to 'auto' to allow the model to decide when to use tools
+            // This encourages tool usage without forcing it
+            mode: 'auto'
+          }
+        };
+        logger.info('Added function calling config for agent mode');
       }
     }
+
+    // If we have a chatMode, log it
+    if (chatMode) {
+      logger.info(`Streaming request includes chatMode: ${chatMode}`);
+    }
+
     
     // Direct API call to v1beta endpoint with API key in URL
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
