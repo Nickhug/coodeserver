@@ -220,53 +220,82 @@ interface SearchOptions {
  * @param indexName The name of the Pinecone index with integrated embedding model
  * @param records Array of text records to upsert (Pinecone will generate embeddings)
  */
+import axios from 'axios'; // Import axios for direct API calls
+
+// ... (keep existing imports and config)
+
 export async function upsertTextRecords(
   indexName: string,
   records: Array<PineconeTextRecord>
 ): Promise<void> {
-  // Initialize Pinecone client
-  await initializeIndex(); // Ensures pineconeClient is available
+  await initializeIndex(); // Ensures pineconeClient is initialized
   if (!pineconeClient) {
-    throw new Error('Pinecone client not initialized');
+    throw new Error('Pinecone client not initialized for fetching index details.');
+  }
+  if (!config.pineconeApiKey) {
+    throw new Error('Pinecone API key not configured.');
   }
 
-  // Get the target index and namespace
-  const pineconeIndex = pineconeClient.index(indexName);
-  const namespace = pineconeIndex.namespace('__default__'); // Using default namespace for web-documents-v1
+  const namespace = '__default__'; // Using default namespace for web-documents-v1
 
   try {
-    logger.info(`Upserting ${records.length} text records to index ${indexName}, namespace '__default__', using integrated embedding model.`);
+    // Get the host for the index
+    const indexDescription = await pineconeClient.describeIndex(indexName);
+    if (!indexDescription || !indexDescription.host) {
+      throw new Error(`Could not retrieve host for index ${indexName}. Description: ${JSON.stringify(indexDescription)}`);
+    }
+    const host = indexDescription.host;
+    const apiUrl = `https://${host}/records/namespaces/${namespace}/upsert`;
 
-    const batchSize = 50; // Pinecone recommends batching upserts
+    logger.info(`Upserting ${records.length} text records to index ${indexName} (host: ${host}), namespace '${namespace}' via direct API call.`);
+
+    const batchSize = 50; // Adjust batch size as needed for direct API calls
     for (let i = 0; i < records.length; i += batchSize) {
       const batch = records.slice(i, i + batchSize);
 
       if (i === 0 && batch.length > 0) {
         const firstRecord = batch[0];
-        logger.info(`First record to upsert (example): _id: ${firstRecord.id}, chunk_text length: ${firstRecord.chunk_text.length}, metadata keys: ${Object.keys(firstRecord.metadata).join(', ')}`);
+        logger.info(`First record in batch to upsert (example): _id: ${firstRecord.id}, chunk_text length: ${firstRecord.chunk_text.length}, metadata keys: ${Object.keys(firstRecord.metadata).join(', ')}`);
       }
 
-      // Transform records to match Pinecone's expected structure for text embedding:
-      // - _id field (mapping from our 'id')
-      // - chunk_text field (as specified in index's fieldMap)
-      // - All other metadata fields spread at the top level
-      // - NO 'values' field
-      const recordsToUpsert = batch.map(record => ({
-        _id: record.id, // Map to _id as per Pinecone documentation examples
+      const recordsForApi = batch.map(record => ({
+        _id: record.id,
         chunk_text: record.chunk_text,
-        ...record.metadata // Spread other metadata properties as top-level fields
+        ...record.metadata
       }));
 
-      // @ts-ignore - The method signature for upsert on a namespace might vary or not be perfectly typed in all SDK versions for this specific structure.
-      // However, this aligns with the documented JS examples for text upsert with integrated embeddings.
-      await namespace.upsert(recordsToUpsert);
-      logger.info(`Batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(records.length / batchSize)} upserted to ${indexName}, namespace '__default__'.`);
+      // Convert the batch of records to NDJSON format
+      const ndjsonBody = recordsForApi.map(record => JSON.stringify(record)).join('\n');
+
+      try {
+        await axios.post(apiUrl, ndjsonBody, {
+          headers: {
+            'Api-Key': config.pineconeApiKey,
+            'Content-Type': 'application/x-ndjson',
+            'Accept': 'application/json' // Optional: specify what response format we accept
+          }
+        });
+        logger.info(`Batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(records.length / batchSize)} successfully upserted to ${indexName}, namespace '${namespace}'.`);
+      } catch (apiError: any) {
+        let errorMessage = `Direct API call failed for batch ${Math.floor(i / batchSize) + 1}`;
+        if (axios.isAxiosError(apiError) && apiError.response) {
+          errorMessage += `: ${apiError.response.status} ${apiError.response.statusText} - ${JSON.stringify(apiError.response.data)}`;
+        } else {
+          errorMessage += `: ${(apiError as Error).message}`;
+        }
+        logger.error(errorMessage, apiError);
+        throw new Error(errorMessage);
+      }
     }
 
-    logger.info(`Successfully upserted ${records.length} text records to index ${indexName}, namespace '__default__'.`);
+    logger.info(`Successfully initiated upsert for ${records.length} text records to index ${indexName}, namespace '${namespace}' via direct API.`);
   } catch (error) {
-    logger.error(`Error upserting text records to index ${indexName}, namespace '__default__':`, error);
-    throw new Error(`Failed to upsert text records: ${(error as Error).message}`);
+    logger.error(`Error in upsertTextRecords (direct API) for index ${indexName}, namespace '${namespace}':`, error);
+    // Ensure the re-thrown error is a standard Error object
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error(`Failed to upsert text records via direct API: ${String(error)}`);
   }
 }
 
