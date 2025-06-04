@@ -17,17 +17,11 @@ let initializationPromise: Promise<void> | null = null;
 // Define type for text-based vector records (for integrated embedding model)
 export type PineconeTextRecord = {
   id: string;
-  text: string; // Text content that Pinecone will convert to embeddings
+  chunk_text: string; // Text content that Pinecone will convert to embeddings, matching field_map
   metadata: PineconeRecordMetadata;
 };
 
-// Define the type for Pinecone record with text field
-type PineconeRecordWithText = {
-  id: string;
-  metadata: PineconeRecordMetadata;
-  values?: number[];
-  text: string; // Special field used by Pinecone for text-to-embedding conversion
-};
+// PineconeRecordWithChunkText type is no longer needed, direct mapping will be used.
 
 // Debug logging for API key
 logger.info(`Pinecone configuration check:`);
@@ -244,32 +238,31 @@ export async function upsertTextRecords(
     for (let i = 0; i < records.length; i += batchSize) {
       const batch = records.slice(i, i + batchSize);
       
-      // Log the first record's text length and ID for debugging
+      // Log the first record's chunk_text length and ID for debugging
       if (i === 0 && batch.length > 0) {
         const firstRecord = batch[0];
-        logger.info(`First record ID: ${firstRecord.id}, text length: ${firstRecord.text.length}`);
+        logger.info(`First record ID: ${firstRecord.id}, chunk_text length: ${firstRecord.chunk_text.length}`);
       }
       
-      // Process records in smaller sub-batches to avoid any errors
-      // Using the @pinecone-database/pinecone SDK's ability to handle text records
-      const subBatchSize = 10;
+      // Process records in smaller sub-batches
+      const subBatchSize = 100; // Pinecone can handle up to 100 vectors per request, or 1MB metadata
       for (let j = 0; j < batch.length; j += subBatchSize) {
         const subBatch = batch.slice(j, j + subBatchSize);
         
-        // Convert our text records to the format expected by Pinecone
-        // When the SDK detects a text field, it will use Pinecone's integrated text embedding 
-        const pineconeRecords = subBatch.map(record => {
-          return {
-            id: record.id,
-            metadata: record.metadata,
-            // We omit the 'values' field and supply 'text' instead
-            // This signals Pinecone to use its integrated text embedding
-            text: record.text
-          } as any; // Use 'any' to bypass TypeScript's strict checking - the Pinecone SDK supports this structure
-        });
+        // Transform records for Pinecone: 'chunk_text' goes into metadata, 'values' is empty.
+        // This structure is for Pinecone's integrated embedding feature.
+        const recordsToUpsert = subBatch.map(record => ({
+          id: record.id,
+          values: [], // Empty array signals Pinecone to generate embeddings.
+          metadata: {
+            ...record.metadata, // Spread original metadata
+            chunk_text: record.chunk_text // The text field Pinecone's field_map uses.
+          }
+        }));
 
         // Upsert each sub-batch
-        await pineconeIndex.upsert(pineconeRecords);
+        // The type of recordsToUpsert will be PineconeRecord<MetadataWithChunkText>[]
+        await pineconeIndex.upsert(recordsToUpsert);
       }
     }
     

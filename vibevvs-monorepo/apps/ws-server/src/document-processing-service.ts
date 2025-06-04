@@ -215,23 +215,22 @@ export async function storeDocumentChunks(
         });
         
         // Prepare records for Pinecone with integrated embedding model
-        // Instead of providing embeddings, we provide the text content
-        // Pinecone will generate embeddings using its integrated model
+        // Pinecone will generate embeddings using its integrated model from the 'chunk_text' field.
+        // This field name must match the 'field_map' configuration of the 'web-documents-v1' index.
         const records = chunks.map(chunk => ({
-            // Generate a unique ID for the vector that encodes both the URL and chunk index
-            // This ensures we can lookup vectors directly by URL
             id: `${chunk.url}_chunk_${chunk.chunkIndex}`,
-            // No embedding values - Pinecone will generate them from text
             metadata: {
                 documentId: chunk.documentId, // This is now the URL itself
                 chunkIndex: chunk.chunkIndex,
                 url: chunk.url, // Include full URL in metadata for easy filtering
                 title: chunk.title,
-                content: chunk.content.substring(0, 1000), // Truncate content for metadata
+                // Keep a truncated version of content in metadata for quick previews if needed
+                original_content_preview: chunk.content.substring(0, 200),
                 timestamp: new Date().toISOString() // Add timestamp for version tracking
             },
-            // This is the text field that Pinecone will use to generate embeddings
-            text: chunk.content
+            // This field contains the raw text for Pinecone to embed.
+            // The name 'chunk_text' is based on the user-provided example and common Pinecone practice.
+            chunk_text: chunk.content
         }));
         
         // Upsert records to Pinecone index
