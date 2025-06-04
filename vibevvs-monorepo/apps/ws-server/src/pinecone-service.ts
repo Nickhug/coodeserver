@@ -224,15 +224,18 @@ export async function upsertTextRecords(
   indexName: string,
   records: Array<PineconeTextRecord>
 ): Promise<void> {
-  // Initialize Pinecone client and get the specific index
-  await initializeIndex(); // Ensures pineconeClient and potentially a default pineconeIndex are available
+  // Initialize Pinecone client
+  await initializeIndex(); // Ensures pineconeClient is available
   if (!pineconeClient) {
     throw new Error('Pinecone client not initialized');
   }
-  const currentIndex = pineconeClient.index(indexName);
+
+  // Get the target index and namespace
+  const pineconeIndex = pineconeClient.index(indexName);
+  const namespace = pineconeIndex.namespace('__default__'); // Using default namespace for web-documents-v1
 
   try {
-    logger.info(`Upserting ${records.length} text records to index ${indexName} using integrated embedding model.`);
+    logger.info(`Upserting ${records.length} text records to index ${indexName}, namespace '__default__', using integrated embedding model.`);
 
     const batchSize = 50; // Pinecone recommends batching upserts
     for (let i = 0; i < records.length; i += batchSize) {
@@ -240,31 +243,29 @@ export async function upsertTextRecords(
 
       if (i === 0 && batch.length > 0) {
         const firstRecord = batch[0];
-        logger.info(`First record ID: ${firstRecord.id}, chunk_text length: ${firstRecord.chunk_text.length}, metadata keys: ${Object.keys(firstRecord.metadata).join(', ')}`);
+        logger.info(`First record to upsert (example): _id: ${firstRecord.id}, chunk_text length: ${firstRecord.chunk_text.length}, metadata keys: ${Object.keys(firstRecord.metadata).join(', ')}`);
       }
 
-      // Transform records for pineconeIndex.upsert() with integrated embeddings:
-      // - 'id' remains as is.
-      // - 'values' is an empty array [].
-      // - 'chunk_text' (source for embedding) goes into 'metadata'.
-      // - Other original metadata is preserved within 'metadata'.
+      // Transform records to match Pinecone's expected structure for text embedding:
+      // - _id field (mapping from our 'id')
+      // - chunk_text field (as specified in index's fieldMap)
+      // - All other metadata fields spread at the top level
+      // - NO 'values' field
       const recordsToUpsert = batch.map(record => ({
-        id: record.id,
-        values: [], // Signal Pinecone to generate embeddings
-        metadata: {
-          ...record.metadata, // Spread original metadata
-          chunk_text: record.chunk_text // Add chunk_text for Pinecone's model
-                                        // This field name must match index's field_map
-        }
+        _id: record.id, // Map to _id as per Pinecone documentation examples
+        chunk_text: record.chunk_text,
+        ...record.metadata // Spread other metadata properties as top-level fields
       }));
 
-      await currentIndex.upsert(recordsToUpsert);
-      logger.info(`Batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(records.length / batchSize)} upserted to ${indexName}.`);
+      // @ts-ignore - The method signature for upsert on a namespace might vary or not be perfectly typed in all SDK versions for this specific structure.
+      // However, this aligns with the documented JS examples for text upsert with integrated embeddings.
+      await namespace.upsert(recordsToUpsert);
+      logger.info(`Batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(records.length / batchSize)} upserted to ${indexName}, namespace '__default__'.`);
     }
 
-    logger.info(`Successfully upserted ${records.length} text records to index ${indexName}.`);
+    logger.info(`Successfully upserted ${records.length} text records to index ${indexName}, namespace '__default__'.`);
   } catch (error) {
-    logger.error(`Error upserting text records to index ${indexName}:`, error);
+    logger.error(`Error upserting text records to index ${indexName}, namespace '__default__':`, error);
     throw new Error(`Failed to upsert text records: ${(error as Error).message}`);
   }
 }
