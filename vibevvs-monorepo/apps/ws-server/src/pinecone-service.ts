@@ -236,7 +236,7 @@ export async function upsertTextRecords(
     throw new Error('Pinecone API key not configured.');
   }
 
-  const namespace = '__default__'; // Using default namespace for web-documents-v1
+  const namespace = ''; // Using an empty string to target the default namespace
 
   try {
     // Get the host for the index
