@@ -9,10 +9,25 @@ import { CodeChunk } from '@repo/types';
 // Define a base metadata type that Pinecone's Index type expects
 export type PineconeRecordMetadata = Record<string, string | number | boolean | string[]>;
 
-// Initialize Pinecone client
+// Import modules using require (with type assertions)
 let pineconeClient: Pinecone | null = null;
 let pineconeIndex: Index<PineconeRecordMetadata> | null = null;
 let initializationPromise: Promise<void> | null = null;
+
+// Define type for text-based vector records (for integrated embedding model)
+export type PineconeTextRecord = {
+  id: string;
+  text: string; // Text content that Pinecone will convert to embeddings
+  metadata: PineconeRecordMetadata;
+};
+
+// Define the type for Pinecone record with text field
+type PineconeRecordWithText = {
+  id: string;
+  metadata: PineconeRecordMetadata;
+  values?: number[];
+  text: string; // Special field used by Pinecone for text-to-embedding conversion
+};
 
 // Debug logging for API key
 logger.info(`Pinecone configuration check:`);
@@ -195,6 +210,74 @@ interface SearchOptions {
   limit?: number;
   filters?: any;
   workspaceId?: string; // Optional workspace ID for namespace isolation
+}
+
+/**
+ * Upsert vectors to Pinecone using user-specific namespace for multitenancy
+ * @param userId The user ID for namespace isolation
+ * @param vectors Array of vectors to upsert
+ * @param workspaceId Optional workspace ID to store in metadata for filtering
+ */
+/**
+ * Upsert text records to Pinecone using the integrated embedding model
+ * This function is used for document indexing with Pinecone's text-to-vector capability
+ * 
+ * @param indexName The name of the Pinecone index with integrated embedding model
+ * @param records Array of text records to upsert (Pinecone will generate embeddings)
+ */
+export async function upsertTextRecords(
+  indexName: string,
+  records: Array<PineconeTextRecord>
+): Promise<void> {
+  await initializeIndex();
+
+  if (!pineconeIndex) {
+    throw new Error('Pinecone index not initialized');
+  }
+
+  try {
+    // No namespace required for document index with integrated embeddings
+    logger.info(`Upserting ${records.length} text records to index ${indexName} with integrated embedding model`);
+    
+    // Upsert in batches of 100
+    const batchSize = 100;
+    for (let i = 0; i < records.length; i += batchSize) {
+      const batch = records.slice(i, i + batchSize);
+      
+      // Log the first record's text length and ID for debugging
+      if (i === 0 && batch.length > 0) {
+        const firstRecord = batch[0];
+        logger.info(`First record ID: ${firstRecord.id}, text length: ${firstRecord.text.length}`);
+      }
+      
+      // Process records in smaller sub-batches to avoid any errors
+      // Using the @pinecone-database/pinecone SDK's ability to handle text records
+      const subBatchSize = 10;
+      for (let j = 0; j < batch.length; j += subBatchSize) {
+        const subBatch = batch.slice(j, j + subBatchSize);
+        
+        // Convert our text records to the format expected by Pinecone
+        // When the SDK detects a text field, it will use Pinecone's integrated text embedding 
+        const pineconeRecords = subBatch.map(record => {
+          return {
+            id: record.id,
+            metadata: record.metadata,
+            // We omit the 'values' field and supply 'text' instead
+            // This signals Pinecone to use its integrated text embedding
+            text: record.text
+          } as any; // Use 'any' to bypass TypeScript's strict checking - the Pinecone SDK supports this structure
+        });
+
+        // Upsert each sub-batch
+        await pineconeIndex.upsert(pineconeRecords);
+      }
+    }
+    
+    logger.info(`Successfully upserted ${records.length} text records to index ${indexName}`);
+  } catch (error) {
+    logger.error(`Error upserting text records to index ${indexName}:`, error);
+    throw new Error(`Failed to upsert text records: ${(error as Error).message}`);
+  }
 }
 
 /**

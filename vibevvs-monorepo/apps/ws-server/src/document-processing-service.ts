@@ -5,20 +5,13 @@
 
 import logger from '@repo/logger';
 import { config } from './config';
-import * as gemini from '@repo/ai-providers';
 import * as pineconeService from './pinecone-service';
-import crypto from 'crypto';
+import axios from 'axios';
 
 // Define types for the required modules
-type ScraperApiClient = {
-  get: (url: string, options?: any) => Promise<string>;
-  post: (url: string, options?: any) => Promise<string>;
-  put: (url: string, options?: any) => Promise<string>;
-  delete: (url: string, options?: any) => Promise<string>;
-};
 
-// Document namespace for Pinecone
-const DOCUMENT_NAMESPACE = 'web-documents-v1';
+// Pinecone index for web documents - this is an INDEX, not a namespace
+const DOCUMENTS_INDEX = 'web-documents-v1';
 
 // Configuration
 const CHUNK_SIZE = 1000; // Characters per chunk
@@ -63,10 +56,18 @@ export interface IndexingProgress {
 }
 
 /**
- * Generate a deterministic document ID from URL
+ * Get document ID from URL (use URL directly as ID)
+ * 
+ * @param url The URL to use as document ID
+ * @returns Normalized URL string to use as document ID
  */
-function generateDocumentId(url: string): string {
-    return crypto.createHash('md5').update(url).digest('hex');
+export function getDocumentId(url: string): string {
+    // Normalize URL by trimming whitespace
+    const normalizedUrl = url.trim();
+    
+    // Use the normalized URL directly as the document ID
+    // This makes it easy to look up documents by URL and simplifies the architecture
+    return normalizedUrl;
 }
 
 /**
@@ -74,10 +75,11 @@ function generateDocumentId(url: string): string {
  */
 export async function isDocumentIndexed(userId: string, url: string): Promise<boolean> {
     try {
-        const documentId = generateDocumentId(url);
+        const documentId = getDocumentId(url);
         
-        // Query Pinecone for document metadata using global namespace
-        const result = await pineconeService.fetchMetadataByIds(DOCUMENT_NAMESPACE, [documentId]);
+        // Query Pinecone for document metadata using the document index
+        // Note: No namespace is needed since we're using the index's integrated embedding model
+        const result = await pineconeService.fetchMetadataByIds(DOCUMENTS_INDEX, [documentId]);
         return result.length > 0;
     } catch (error) {
         logger.error('Error checking if document is indexed:', error);
@@ -96,14 +98,21 @@ export async function scrapeWebContent(url: string, progressCallback: (progress:
             status: IndexingStatus.Scraping
         });
 
-        // Initialize scraperapi client with API key from config
-        const scraperClient = require('scraperapi-sdk')(config.scraperApiKey) as ScraperApiClient;
-        
-        // Use rendering for JavaScript-heavy sites
-        const markdownContent = await scraperClient.get(url, { render: true, output_format: 'markdown' });
+        // Use ScraperAPI directly with axios based on their documentation
+        const response = await axios.get('https://api.scraperapi.com/', {
+            params: {
+                api_key: config.scraperApiKey,
+                url: url,
+                render: true,
+                output_format: 'markdown'
+            }
+        });
 
-        if (!markdownContent) {
-            throw new Error('Failed to extract content from URL using Markdown output');
+        // Extract markdown content from response
+        const markdownContent = response.data;
+
+        if (!markdownContent || typeof markdownContent !== 'string') {
+            throw new Error('Failed to extract markdown content from URL');
         }
 
         // For now, we assume the title might be harder to get from pure markdown. We can refine this.
@@ -155,7 +164,7 @@ export function chunkDocumentContent(content: string, documentId: string, url: s
             const end = Math.min(start + CHUNK_SIZE, contentLength);
             
             chunks.push({
-                id: `${documentId}-chunk-${i}`,
+                id: `${url}_chunk_${i}`,
                 documentId,
                 content: cleanContent.substring(start, end),
                 chunkIndex: i,
@@ -168,7 +177,7 @@ export function chunkDocumentContent(content: string, documentId: string, url: s
         if (numFullChunks === 0 || (numFullChunks * effectiveChunkSize < contentLength)) {
             const start = numFullChunks * effectiveChunkSize;
             chunks.push({
-                id: `${documentId}-chunk-${numFullChunks}`,
+                id: `${url}_chunk_${numFullChunks}`,
                 documentId,
                 content: cleanContent.substring(start),
                 chunkIndex: numFullChunks,
@@ -185,76 +194,19 @@ export function chunkDocumentContent(content: string, documentId: string, url: s
 }
 
 /**
- * Generate embeddings for document chunks
- */
-export async function generateEmbeddings(chunks: DocumentChunk[], progressCallback: (progress: IndexingProgress) => void): Promise<Array<{ chunk: DocumentChunk, embedding: number[] }>> {
-    try {
-        const results: Array<{ chunk: DocumentChunk, embedding: number[] }> = [];
-        const url = chunks[0]?.url;
-        
-        // Update status to processing
-        progressCallback({
-            url,
-            status: IndexingStatus.Processing
-        });
-        
-        // Process chunks in batches to avoid rate limits
-        const batchSize = 5;
-        const batches = Math.ceil(chunks.length / batchSize);
-        
-        for (let i = 0; i < batches; i++) {
-            const batchStart = i * batchSize;
-            const batchEnd = Math.min(batchStart + batchSize, chunks.length);
-            const batch = chunks.slice(batchStart, batchEnd);
-            
-            // Generate embeddings using Gemini
-            const embedPromises = batch.map(async (chunk) => {
-                const result = await gemini.generateEmbedding({
-                    apiKey: config.geminiApiKey,
-                    content: chunk.content,
-                    model: config.embeddingModel,
-                    apiVersion: (config.embeddingApiVersion === 'v1alpha' || config.embeddingApiVersion === 'v1beta') ? 
-                        config.embeddingApiVersion : 'v1alpha'
-                });
-                return {
-                    chunk,
-                    embedding: result.embedding,
-                };
-            });
-            
-            const batchResults = await Promise.all(embedPromises);
-            results.push(...batchResults);
-            
-            // Update progress
-            const progress = Math.round(((i + 1) * batchSize / chunks.length) * 100);
-            progressCallback({
-                url,
-                status: IndexingStatus.Processing,
-                progress: Math.min(progress, 100)
-            });
-        }
-        
-        return results;
-    } catch (error) {
-        logger.error('Error generating embeddings:', error);
-        throw new Error(`Failed to generate embeddings: ${(error as Error).message}`);
-    }
-}
-
-/**
  * Store document chunks in Pinecone
  */
 export async function storeDocumentChunks(
     userId: string,
-    chunksWithEmbeddings: Array<{ chunk: DocumentChunk, embedding: number[] }>,
+    chunks: Array<DocumentChunk>,
     progressCallback: (progress: IndexingProgress) => void
 ): Promise<void> {
     try {
-        if (chunksWithEmbeddings.length === 0) {
+        if (chunks.length === 0) {
             throw new Error('No chunks to store');
         }
         
-        const url = chunksWithEmbeddings[0].chunk.url;
+        const url = chunks[0].url;
         
         // Update status to indexing
         progressCallback({
@@ -262,21 +214,28 @@ export async function storeDocumentChunks(
             status: IndexingStatus.Indexing
         });
         
-        // Prepare vectors for Pinecone
-        const vectors = chunksWithEmbeddings.map(({ chunk, embedding }) => ({
-            id: chunk.id,
-            values: embedding,
+        // Prepare records for Pinecone with integrated embedding model
+        // Instead of providing embeddings, we provide the text content
+        // Pinecone will generate embeddings using its integrated model
+        const records = chunks.map(chunk => ({
+            // Generate a unique ID for the vector that encodes both the URL and chunk index
+            // This ensures we can lookup vectors directly by URL
+            id: `${chunk.url}_chunk_${chunk.chunkIndex}`,
+            // No embedding values - Pinecone will generate them from text
             metadata: {
-                documentId: chunk.documentId,
+                documentId: chunk.documentId, // This is now the URL itself
                 chunkIndex: chunk.chunkIndex,
-                url: chunk.url,
+                url: chunk.url, // Include full URL in metadata for easy filtering
                 title: chunk.title,
-                content: chunk.content.substring(0, 1000) // Truncate content for metadata
-            }
+                content: chunk.content.substring(0, 1000), // Truncate content for metadata
+                timestamp: new Date().toISOString() // Add timestamp for version tracking
+            },
+            // This is the text field that Pinecone will use to generate embeddings
+            text: chunk.content
         }));
         
-        // Upsert vectors to Pinecone
-        await pineconeService.upsertVectors(DOCUMENT_NAMESPACE, vectors);
+        // Upsert records to Pinecone index
+        await pineconeService.upsertTextRecords(DOCUMENTS_INDEX, records);
         
         // Update progress to complete
         progressCallback({
@@ -305,8 +264,8 @@ export async function indexDocument(
             throw new Error('Invalid URL');
         }
         
-        // Generate document ID
-        const documentId = generateDocumentId(url);
+        // Get document ID (using URL directly)
+        const documentId = getDocumentId(url);
         
         // Check if document already exists
         const isExisting = await isDocumentIndexed(userId, url);
@@ -320,11 +279,8 @@ export async function indexDocument(
         // Split content into chunks
         const chunks = chunkDocumentContent(content, documentId, url, title);
         
-        // Generate embeddings for chunks
-        const chunksWithEmbeddings = await generateEmbeddings(chunks, progressCallback);
-        
-        // Store chunks in Pinecone
-        await storeDocumentChunks(userId, chunksWithEmbeddings, progressCallback);
+        // Store chunks directly in Pinecone (it will use integrated embedding model)
+        await storeDocumentChunks(userId, chunks, progressCallback);
         
         // Return indexed document info
         const indexedDocument: IndexedDocument = {
