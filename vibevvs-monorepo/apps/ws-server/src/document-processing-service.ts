@@ -10,14 +10,12 @@ import * as pineconeService from './pinecone-service';
 import crypto from 'crypto';
 
 // Define types for the required modules
-type ScraperApiSdk = {
-  createClient: (apiKey: string) => {
-    get: (url: string, options?: any) => Promise<string>;
-  };
+type ScraperApiClient = {
+  get: (url: string, options?: any) => Promise<string>;
+  post: (url: string, options?: any) => Promise<string>;
+  put: (url: string, options?: any) => Promise<string>;
+  delete: (url: string, options?: any) => Promise<string>;
 };
-
-// Import modules using require (with type assertions)
-const scraperapi = require('scraperapi-sdk') as ScraperApiSdk;
 
 // Document namespace for Pinecone
 const DOCUMENT_NAMESPACE = 'web-documents-v1';
@@ -77,10 +75,9 @@ function generateDocumentId(url: string): string {
 export async function isDocumentIndexed(userId: string, url: string): Promise<boolean> {
     try {
         const documentId = generateDocumentId(url);
-        const namespace = `${userId}-${DOCUMENT_NAMESPACE}`;
         
-        // Query Pinecone for document metadata
-        const result = await pineconeService.fetchMetadataByIds(namespace, [documentId]);
+        // Query Pinecone for document metadata using global namespace
+        const result = await pineconeService.fetchMetadataByIds(DOCUMENT_NAMESPACE, [documentId]);
         return result.length > 0;
     } catch (error) {
         logger.error('Error checking if document is indexed:', error);
@@ -100,7 +97,7 @@ export async function scrapeWebContent(url: string, progressCallback: (progress:
         });
 
         // Initialize scraperapi client with API key from config
-        const scraperClient = scraperapi.createClient(config.scraperApiKey);
+        const scraperClient = require('scraperapi-sdk')(config.scraperApiKey) as ScraperApiClient;
         
         // Use rendering for JavaScript-heavy sites
         const markdownContent = await scraperClient.get(url, { render: true, output_format: 'markdown' });

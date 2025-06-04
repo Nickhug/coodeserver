@@ -1,5 +1,5 @@
 declare module 'scraperapi-sdk' {
-  function createClient(apiKey: string): {
+  function scraperapiSdk(apiKey: string): {
     get: (url: string, options?: any) => Promise<string>;
     post: (url: string, options?: any) => Promise<string>;
     put: (url: string, options?: any) => Promise<string>;
@@ -7,4 +7,6 @@ declare module 'scraperapi-sdk' {
     head: (url: string, options?: any) => Promise<string>;
     options: (url: string, options?: any) => Promise<string>;
   };
+
+  export = scraperapiSdk;
 }
