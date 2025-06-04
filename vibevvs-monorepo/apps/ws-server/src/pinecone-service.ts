@@ -15,10 +15,11 @@ let pineconeIndex: Index<PineconeRecordMetadata> | null = null;
 let initializationPromise: Promise<void> | null = null;
 
 // Define type for text-based vector records (for integrated embedding model)
+// This is the structure produced by document-processing-service
 export type PineconeTextRecord = {
-  id: string; // We keep this as 'id' for internal consistency but convert to '_id' when sending to Pinecone
-  chunk_text: string; // Top-level field that Pinecone will convert to embeddings
-  metadata: PineconeRecordMetadata; // All metadata fields will be spread at the top level when sent to Pinecone
+  id: string; // Unique ID for the record
+  chunk_text: string; // The raw text content to be embedded by Pinecone
+  metadata: PineconeRecordMetadata; // Other metadata associated with the chunk
 };
 
 // PineconeRecordWithChunkText type is no longer needed, direct mapping will be used.
@@ -223,70 +224,45 @@ export async function upsertTextRecords(
   indexName: string,
   records: Array<PineconeTextRecord>
 ): Promise<void> {
-  // Initialize Pinecone
-  await initializeIndex();
-  
+  // Initialize Pinecone client and get the specific index
+  await initializeIndex(); // Ensures pineconeClient and potentially a default pineconeIndex are available
   if (!pineconeClient) {
     throw new Error('Pinecone client not initialized');
   }
+  const currentIndex = pineconeClient.index(indexName);
 
   try {
-    logger.info(`Upserting ${records.length} text records to index ${indexName} with integrated embedding model`);
-    
-    // Get the index and namespace objects directly from the client
-    // This gives us access to the newer namespace.upsertRecords API
-    const index = pineconeClient.index(indexName);
-    const namespace = index.namespace('__default__'); // Use default namespace
-    
-    // Upsert in batches to avoid sending too much at once
-    const batchSize = 50;
+    logger.info(`Upserting ${records.length} text records to index ${indexName} using integrated embedding model.`);
+
+    const batchSize = 50; // Pinecone recommends batching upserts
     for (let i = 0; i < records.length; i += batchSize) {
       const batch = records.slice(i, i + batchSize);
-      
-      // Log the first record for debugging
+
       if (i === 0 && batch.length > 0) {
         const firstRecord = batch[0];
-        logger.info(`First record ID: ${firstRecord.id}, chunk_text length: ${firstRecord.chunk_text.length}`);
+        logger.info(`First record ID: ${firstRecord.id}, chunk_text length: ${firstRecord.chunk_text.length}, metadata keys: ${Object.keys(firstRecord.metadata).join(', ')}`);
       }
-      
-      // Structure records EXACTLY as shown in the documentation with chunk_text as a top-level field
-      const recordsToUpsert = batch.map(record => {
-        // Start with a new object with _id field (note the underscore)
-        const upsertRecord = {
-          _id: record.id, // Convert 'id' to '_id' as required by Pinecone
-          chunk_text: record.chunk_text, // Text field at top level
-        };
 
-        // Spread all metadata fields directly at the top level (not nested)
-        if (record.metadata) {
-          Object.assign(upsertRecord, record.metadata);
+      // Transform records for pineconeIndex.upsert() with integrated embeddings:
+      // - 'id' remains as is.
+      // - 'values' is an empty array [].
+      // - 'chunk_text' (source for embedding) goes into 'metadata'.
+      // - Other original metadata is preserved within 'metadata'.
+      const recordsToUpsert = batch.map(record => ({
+        id: record.id,
+        values: [], // Signal Pinecone to generate embeddings
+        metadata: {
+          ...record.metadata, // Spread original metadata
+          chunk_text: record.chunk_text // Add chunk_text for Pinecone's model
+                                        // This field name must match index's field_map
         }
-        
-        return upsertRecord;
-      });
+      }));
 
-      try {
-        // Use namespace.upsertRecords as shown in the documentation
-        // @ts-ignore - TypeScript might not know about this method yet
-        await namespace.upsertRecords(recordsToUpsert);
-        logger.info(`Batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(records.length / batchSize)} completed`);
-      } catch (error) {
-        logger.error(`Error in batch ${i}: ${(error as Error).message}`);
-        
-        // If upsertRecords fails, try the lowercase version (SDK version might vary)
-        try {
-          // @ts-ignore - Try lowercase method name
-          await namespace.upsertrecords(recordsToUpsert);
-          logger.info(`Batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(records.length / batchSize)} completed with lowercase method`);
-        } catch (secondError) {
-          // If both attempts fail, try one more approach with the direct REST API
-          logger.error(`Both method attempts failed. Trying direct API access: ${(secondError as Error).message}`);
-          throw secondError;
-        }
-      }
+      await currentIndex.upsert(recordsToUpsert);
+      logger.info(`Batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(records.length / batchSize)} upserted to ${indexName}.`);
     }
-    
-    logger.info(`Successfully upserted ${records.length} text records to index ${indexName}`);
+
+    logger.info(`Successfully upserted ${records.length} text records to index ${indexName}.`);
   } catch (error) {
     logger.error(`Error upserting text records to index ${indexName}:`, error);
     throw new Error(`Failed to upsert text records: ${(error as Error).message}`);

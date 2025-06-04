@@ -14,7 +14,7 @@ import axios from 'axios';
 const DOCUMENTS_INDEX = 'web-documents-v1';
 
 // Configuration
-const CHUNK_SIZE = 1000; // Characters per chunk
+const maxChunkSize = 8000; // Max characters per chunk
 const CHUNK_OVERLAP = 200; // Overlap between chunks for context preservation
 const MAX_CHUNKS_PER_DOCUMENT = 50; // Limit to prevent overly large documents
 
@@ -150,7 +150,7 @@ export function chunkDocumentContent(content: string, documentId: string, url: s
         
         // Calculate number of chunks needed
         const contentLength = cleanContent.length;
-        const effectiveChunkSize = CHUNK_SIZE - CHUNK_OVERLAP;
+        const effectiveChunkSize = maxChunkSize - CHUNK_OVERLAP;
         let numFullChunks = Math.floor(contentLength / effectiveChunkSize);
         
         // Limit number of chunks
@@ -161,7 +161,7 @@ export function chunkDocumentContent(content: string, documentId: string, url: s
         // Generate chunks with overlap
         for (let i = 0; i < numFullChunks; i++) {
             const start = i * effectiveChunkSize;
-            const end = Math.min(start + CHUNK_SIZE, contentLength);
+            const end = Math.min(start + maxChunkSize, contentLength);
             
             chunks.push({
                 id: `${url}_chunk_${i}`,
