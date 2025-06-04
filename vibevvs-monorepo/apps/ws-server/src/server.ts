@@ -354,20 +354,94 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
     // Log based on message type
     if (messageType === MessageType.PING) {
       logger.debug(`WS MSG [${connectionId}] Ping received`);
+      // Immediately respond with PONG to keep connection alive
+      sendToClient(ws, {
+        type: MessageType.PONG,
+        payload: {
+          timestamp: Date.now(),
+          serverTime: new Date().toISOString(),
+          connectionId: connectionId // Echo back the connection ID for verification
+        }
+      });
+    } else if (messageType === MessageType.AUTHENTICATE) {
+      logger.info(`WS MSG [${connectionId}] Authentication request`);
+      await handleAuthentication(ws, clientMessage);
+    } else if (messageType === MessageType.PROVIDER_LIST) {
+      logger.info(`WS MSG [${connectionId}] Provider list request`);
+      await handleProviderList(ws);
+    } else if (messageType === MessageType.PROVIDER_MODELS) {
+      logger.info(`WS MSG [${connectionId}] Provider models request`);
+      await handleProviderModels(ws, clientMessage);
+    } else if (messageType === MessageType.USER_DATA_REQUEST) {
+      logger.info(`WS MSG [${connectionId}][${requestId}] User data request`);
+      await handleUserDataRequest(ws, clientMessage);
     } else if (messageType === MessageType.PROVIDER_REQUEST) {
       const provider = clientMessage.payload?.provider || 'unknown';
       const model = clientMessage.payload?.model || 'unknown';
       logger.info(`WS MSG [${connectionId}][${requestId}] Provider request: ${provider}/${model}, streaming: ${!!clientMessage.payload?.stream}`);
+      if (config.authEnabled && !isAuthenticated) {
+        logger.warn(`WS AUTH [${connectionId}] Unauthorized provider request rejected`);
+        sendToClient(ws, {
+          type: MessageType.PROVIDER_ERROR,
+          payload: {
+            error: 'Authentication required',
+            code: 'UNAUTHORIZED',
+            requestId: clientMessage.payload?.requestId
+          }
+        });
+        return;
+      }
+      await handleProviderRequest(ws, clientMessage);
     } else if (messageType === MessageType.TOOL_EXECUTION_RESULT) {
       const toolName = clientMessage.payload?.toolName || 'unknown';
       const toolId = clientMessage.payload?.toolCallId || 'unknown';
       logger.info(`WS MSG [${connectionId}][${requestId}] Tool execution result: ${toolName}, id: ${toolId}, error: ${!!clientMessage.payload?.isError}`);
+      if (config.authEnabled && !isAuthenticated) {
+        logger.warn(`WS AUTH [${connectionId}] Unauthorized tool execution result rejected`);
+        sendToClient(ws, {
+          type: MessageType.PROVIDER_ERROR,
+          payload: {
+            error: 'Authentication required',
+            code: 'UNAUTHORIZED',
+            requestId: clientMessage.payload?.requestId
+          }
+        });
+        return;
+      }
+      await handleToolExecutionResult(ws, clientMessage);
     } else if (messageType === MessageType.CODEBASE_EMBEDDING_REQUEST) {
       logger.info(`WS MSG [${connectionId}][${requestId}] Codebase embedding request`);
+      if (config.authEnabled && !isAuthenticated) {
+        logger.warn(`WS AUTH [${connectionId}] Unauthorized embedding request rejected`);
+        sendToClient(ws, {
+          type: MessageType.ERROR,
+          payload: {
+            error: 'Authentication required',
+            code: 'UNAUTHORIZED',
+            requestId: clientMessage.payload?.requestId
+          }
+        });
+        return;
+      }
+      await handleCodebaseEmbeddingRequest(ws, clientMessage);
     } else if (messageType === MessageType.CODEBASE_EMBEDDING_BATCH_REQUEST) {
       const chunkCount = clientMessage.payload?.chunks?.length || 0;
       logger.info(`WS MSG [${connectionId}][${requestId}] Codebase embedding batch request for ${chunkCount} chunks`);
+      if (config.authEnabled && !isAuthenticated) {
+        logger.warn(`WS AUTH [${connectionId}] Unauthorized batch embedding request rejected`);
+        sendToClient(ws, {
+          type: MessageType.ERROR,
+          payload: {
+            error: 'Authentication required',
+            code: 'UNAUTHORIZED',
+            requestId: clientMessage.payload?.requestId
+          }
+        });
+        return;
+      }
+      await handleCodebaseEmbeddingBatchRequest(ws, clientMessage);
     } else if (messageType === MessageType.CODEBASE_SEARCH_REQUEST) {
+      logger.info(`WS MSG [${connectionId}][${requestId}] Codebase search request`);
       if (config.authEnabled && !isAuthenticated) {
         logger.warn(`WS AUTH [${connectionId}] Unauthorized codebase search request rejected`);
         sendToClient(ws, {
@@ -382,6 +456,7 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
       }
       await handleCodebaseSearchRequest(ws, clientMessage);
     } else if (messageType === MessageType.CODEBASE_CLEAR_INDEX_REQUEST) {
+      logger.info(`WS MSG [${connectionId}][${requestId}] Codebase clear index request`);
       if (config.authEnabled && !isAuthenticated) {
         logger.warn(`WS AUTH [${connectionId}] Unauthorized clear index request rejected`);
         sendToClient(ws, {
@@ -396,6 +471,7 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
       }
       await handleCodebaseClearIndexRequest(ws, clientMessage);
     } else if (messageType === MessageType.INDEX_DOCUMENT) {
+      logger.info(`WS MSG [${connectionId}][${requestId}] Document indexing request`);
       if (config.authEnabled && !isAuthenticated) {
         logger.warn(`WS AUTH [${connectionId}] Unauthorized document indexing request rejected`);
         sendToClient(ws, {
@@ -424,6 +500,7 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
       
       await handleIndexDocument(ws, userId, clientMessage);
     } else if (messageType === MessageType.REMOVE_DOCUMENT) {
+      logger.info(`WS MSG [${connectionId}][${requestId}] Document removal request`);
       if (config.authEnabled && !isAuthenticated) {
         logger.warn(`WS AUTH [${connectionId}] Unauthorized document removal request rejected`);
         sendToClient(ws, {
