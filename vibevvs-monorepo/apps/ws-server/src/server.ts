@@ -7,6 +7,7 @@ import { config, validateConfig } from './config';
 import logger from '@repo/logger';
 import { verifyToken, getDbUserByClerkId } from '@repo/auth';
 import { MessageType, ClientMessage, ServerMessage } from '@repo/types';
+import * as documentProcessingService from './document-processing-service';
 import * as gemini from '@repo/ai-providers';
 import {
   getUserByClerkId,
@@ -380,99 +381,6 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
         return;
       }
       await handleCodebaseSearchRequest(ws, clientMessage);
-    } else {
-      logger.debug(`WS MSG [${connectionId}] Received message type: ${messageType}`);
-    }
-
-    // Handle message by type
-    if (messageType === MessageType.PING) {
-      // Immediately respond with PONG to keep connection alive
-      // This is critical for client heartbeat mechanism
-      sendToClient(ws, {
-        type: MessageType.PONG,
-        payload: {
-          timestamp: Date.now(),
-          serverTime: new Date().toISOString(),
-          connectionId: connectionId // Echo back the connection ID for verification
-        }
-      });
-    } else if (messageType === MessageType.AUTHENTICATE) {
-      await handleAuthentication(ws, clientMessage);
-    } else if (messageType === MessageType.PROVIDER_LIST) {
-      await handleProviderList(ws);
-    } else if (messageType === MessageType.PROVIDER_MODELS) {
-      await handleProviderModels(ws, clientMessage);
-    } else if (messageType === MessageType.USER_DATA_REQUEST) {
-      await handleUserDataRequest(ws, clientMessage);
-    } else if (messageType === MessageType.PROVIDER_REQUEST) {
-      if (config.authEnabled && !isAuthenticated) {
-        logger.warn(`WS AUTH [${connectionId}] Unauthorized provider request rejected`);
-        sendToClient(ws, {
-          type: MessageType.PROVIDER_ERROR,
-          payload: {
-            error: 'Authentication required',
-            code: 'UNAUTHORIZED'
-          }
-        });
-        return;
-      }
-      await handleProviderRequest(ws, clientMessage);
-    } else if (messageType === MessageType.TOOL_EXECUTION_RESULT) {
-      if (config.authEnabled && !isAuthenticated) {
-        logger.warn(`WS AUTH [${connectionId}] Unauthorized tool execution result rejected`);
-        sendToClient(ws, {
-          type: MessageType.PROVIDER_ERROR,
-          payload: {
-            error: 'Authentication required',
-            code: 'UNAUTHORIZED',
-            requestId: clientMessage.payload?.requestId
-          }
-        });
-        return;
-      }
-      await handleToolExecutionResult(ws, clientMessage);
-    } else if (messageType === MessageType.CODEBASE_EMBEDDING_REQUEST) {
-      if (config.authEnabled && !isAuthenticated) {
-        logger.warn(`WS AUTH [${connectionId}] Unauthorized embedding request rejected`);
-        sendToClient(ws, {
-          type: MessageType.ERROR,
-          payload: {
-            error: 'Authentication required',
-            code: 'UNAUTHORIZED',
-            requestId: clientMessage.payload?.requestId
-          }
-        });
-        return;
-      }
-      await handleCodebaseEmbeddingRequest(ws, clientMessage);
-    } else if (messageType === MessageType.CODEBASE_EMBEDDING_BATCH_REQUEST) {
-      if (config.authEnabled && !isAuthenticated) {
-        logger.warn(`WS AUTH [${connectionId}] Unauthorized batch embedding request rejected`);
-        sendToClient(ws, {
-          type: MessageType.ERROR,
-          payload: {
-            error: 'Authentication required',
-            code: 'UNAUTHORIZED',
-            requestId: clientMessage.payload?.requestId
-          }
-        });
-        return;
-      }
-      await handleCodebaseEmbeddingBatchRequest(ws, clientMessage);
-    } else if (messageType === MessageType.CODEBASE_SEARCH_REQUEST) {
-      if (config.authEnabled && !isAuthenticated) {
-        logger.warn(`WS AUTH [${connectionId}] Unauthorized codebase search request rejected`);
-        sendToClient(ws, {
-          type: MessageType.ERROR,
-          payload: {
-            error: 'Authentication required',
-            code: 'UNAUTHORIZED',
-            requestId: clientMessage.payload?.requestId
-          }
-        });
-        return;
-      }
-      await handleCodebaseSearchRequest(ws, clientMessage);
     } else if (messageType === MessageType.CODEBASE_CLEAR_INDEX_REQUEST) {
       if (config.authEnabled && !isAuthenticated) {
         logger.warn(`WS AUTH [${connectionId}] Unauthorized clear index request rejected`);
@@ -487,7 +395,62 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
         return;
       }
       await handleCodebaseClearIndexRequest(ws, clientMessage);
-
+    } else if (messageType === MessageType.INDEX_DOCUMENT) {
+      if (config.authEnabled && !isAuthenticated) {
+        logger.warn(`WS AUTH [${connectionId}] Unauthorized document indexing request rejected`);
+        sendToClient(ws, {
+          type: MessageType.ERROR,
+          payload: {
+            error: 'Authentication required',
+            code: 'UNAUTHORIZED',
+            requestId: clientMessage.payload?.requestId
+          }
+        });
+        return;
+      }
+      
+      // Ensure we have a userId before proceeding
+      if (!userId) {
+        logger.warn(`WS AUTH [${connectionId}] Document indexing request missing userId`);
+        sendToClient(ws, {
+          type: MessageType.DOCUMENT_INDEX_ERROR,
+          payload: {
+            error: 'User identification required',
+            code: 'UNAUTHORIZED'
+          }
+        });
+        return;
+      }
+      
+      await handleIndexDocument(ws, userId, clientMessage);
+    } else if (messageType === MessageType.REMOVE_DOCUMENT) {
+      if (config.authEnabled && !isAuthenticated) {
+        logger.warn(`WS AUTH [${connectionId}] Unauthorized document removal request rejected`);
+        sendToClient(ws, {
+          type: MessageType.ERROR,
+          payload: {
+            error: 'Authentication required',
+            code: 'UNAUTHORIZED',
+            requestId: clientMessage.payload?.requestId
+          }
+        });
+        return;
+      }
+      
+      // Ensure we have a userId before proceeding
+      if (!userId) {
+        logger.warn(`WS AUTH [${connectionId}] Document removal request missing userId`);
+        sendToClient(ws, {
+          type: MessageType.DOCUMENT_REMOVE_ERROR,
+          payload: {
+            error: 'User identification required',
+            code: 'UNAUTHORIZED'
+          }
+        });
+        return;
+      }
+      
+      await handleRemoveDocument(ws, userId, clientMessage);
     } else {
       logger.warn(`WS MSG [${connectionId}] Unknown message type: ${messageType}`);
       sendToClient(ws, {
@@ -641,6 +604,146 @@ function sendToClient(ws: WebSocketWithData, message: ServerMessage): void {
       `WS ERROR [${connectionId}] Send failed: ${error instanceof Error ? error.message : String(error)}`,
       error
     );
+  }
+}
+
+/**
+ * Track document indexing progress for WebSocket connections
+ */
+const documentIndexingProgress = new Map<string, Map<string, documentProcessingService.IndexingProgress>>();
+
+/**
+ * Send document indexing progress updates to client
+ */
+function sendDocumentProgress(ws: WebSocketWithData, progress: documentProcessingService.IndexingProgress) {
+  try {
+    // Get or create a map for this connection
+    if (!documentIndexingProgress.has(ws.connectionData.connectionId)) {
+      documentIndexingProgress.set(ws.connectionData.connectionId, new Map());
+    }
+
+    const progressMap = documentIndexingProgress.get(ws.connectionData.connectionId)!;
+    
+    // Store latest progress
+    progressMap.set(progress.url, progress);
+
+    // Send progress update to client
+    sendToClient(ws, {
+      type: MessageType.DOCUMENT_INDEXING_PROGRESS,
+      payload: progress
+    });
+
+    // If complete or error, remove from progress tracking
+    if (progress.status === documentProcessingService.IndexingStatus.Complete || 
+        progress.status === documentProcessingService.IndexingStatus.Error) {
+      progressMap.delete(progress.url);
+    }
+  } catch (error) {
+    logger.error('Error handling document progress:', error);
+  }
+}
+
+/**
+ * Handle document indexing request
+ */
+async function handleIndexDocument(ws: WebSocketWithData, userId: string, message: ClientMessage) {
+  if (!message.payload?.url) {
+    sendToClient(ws, {
+      type: MessageType.DOCUMENT_INDEX_ERROR,
+      payload: {
+        error: 'Missing URL',
+        url: message.payload?.url || ''
+      }
+    });
+    return;
+  }
+
+  const url = message.payload.url;
+
+  try {
+    // Set up progress callback to report status to client
+    const progressCallback = (progress: documentProcessingService.IndexingProgress) => {
+      sendDocumentProgress(ws, progress);
+    };
+
+    logger.info(`Starting document indexing for ${url} by user ${userId}`);
+
+    // Start indexing process (non-blocking)
+    documentProcessingService.indexDocument(userId, url, progressCallback)
+      .then((document) => {
+        // Send success message when complete
+        sendToClient(ws, {
+          type: MessageType.DOCUMENT_INDEXED,
+          payload: {
+            id: document.id,
+            title: document.title,
+            url: document.url,
+            chunkCount: document.chunks,
+            indexedAt: document.timestamp
+          }
+        });
+        logger.info(`Document indexed successfully: ${url}`);
+      })
+      .catch((error) => {
+        // Send error message if indexing fails
+        sendToClient(ws, {
+          type: MessageType.DOCUMENT_INDEX_ERROR,
+          payload: {
+            error: error.message || 'Unknown error during indexing',
+            url
+          }
+        });
+        logger.error(`Error indexing document ${url}:`, error);
+      });
+
+  } catch (error) {
+    sendToClient(ws, {
+      type: MessageType.DOCUMENT_INDEX_ERROR,
+      payload: {
+        error: (error as Error).message || 'Unknown error',
+        url
+      }
+    });
+    logger.error(`Error handling document indexing for ${url}:`, error);
+  }
+}
+
+/**
+ * Handle document removal request
+ */
+async function handleRemoveDocument(ws: WebSocketWithData, userId: string, message: ClientMessage) {
+  if (!message.payload?.id) {
+    sendToClient(ws, {
+      type: MessageType.DOCUMENT_REMOVE_ERROR,
+      payload: {
+        error: 'Missing document ID',
+        id: message.payload?.id || ''
+      }
+    });
+    return;
+  }
+
+  const documentId = message.payload.id;
+
+  try {
+    await documentProcessingService.removeDocument(userId, documentId);
+    
+    // Send confirmation
+    sendToClient(ws, {
+      type: MessageType.DOCUMENT_REMOVED,
+      payload: { id: documentId }
+    });
+    
+    logger.info(`Document ${documentId} removed for user ${userId}`);
+  } catch (error) {
+    sendToClient(ws, {
+      type: MessageType.DOCUMENT_REMOVE_ERROR,
+      payload: {
+        error: (error as Error).message || 'Unknown error',
+        id: documentId
+      }
+    });
+    logger.error(`Error removing document ${documentId}:`, error);
   }
 }
 
@@ -2123,7 +2226,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           }
         });
 
-        // Clean up the context due to error
+        // Clean up the context
         activeTurnContexts.delete(safeRequestId);
       }
     } else {

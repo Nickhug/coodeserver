@@ -540,6 +540,123 @@ export async function deleteFileVectors(
  * @param workspaceId - Optional workspace ID. If provided, only vectors for this workspace will be deleted.
  *                     If not provided, all vectors for the user will be deleted (legacy behavior)
  */
+/**
+ * Fetch metadata for vectors by their IDs
+ * Used by document indexing to check if documents exist
+ */
+export async function fetchMetadataByIds(namespace: string, ids: string[]): Promise<PineconeRecordMetadata[]> {
+  await initializeIndex();
+
+  if (!pineconeIndex) {
+    throw new Error('Pinecone index not initialized');
+  }
+
+  try {
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const results: PineconeRecordMetadata[] = [];
+    
+    // Process in batches of 100 (Pinecone limit)
+    const batchSize = 100;
+    for (let i = 0; i < ids.length; i += batchSize) {
+      const batchIds = ids.slice(i, i + batchSize);
+      
+      const response = await pineconeIndex.namespace(namespace).fetch(batchIds);
+      
+      if (response && response.records) {
+        for (const id of batchIds) {
+          const vector = response.records[id];
+          if (vector && vector.metadata) {
+            results.push(vector.metadata as PineconeRecordMetadata);
+          }
+        }
+      }
+    }
+    
+    return results;
+  } catch (error) {
+    logger.error(`Error fetching metadata for vectors in namespace ${namespace}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Fetch vectors by metadata filter
+ * Used by document indexing to find all chunks for a document
+ */
+export async function fetchVectorsByMetadata(
+  namespace: string,
+  metadataFilter: Record<string, any>
+): Promise<Array<{id: string, metadata: PineconeRecordMetadata}>> {
+  await initializeIndex();
+
+  if (!pineconeIndex) {
+    throw new Error('Pinecone index not initialized');
+  }
+
+  try {
+    const filterObj: Record<string, any> = {};
+    
+    // Convert flat filter to Pinecone filter format
+    Object.entries(metadataFilter).forEach(([key, value]) => {
+      filterObj[key] = { $eq: value };
+    });
+    
+    // Use dummy vector for metadata-only query
+    const queryResponse = await pineconeIndex.namespace(namespace).query({
+      vector: new Array(3072).fill(0),
+      topK: 10000, // Maximum allowed
+      filter: Object.keys(filterObj).length > 0 ? filterObj : undefined,
+      includeMetadata: true,
+      includeValues: false
+    });
+    
+    if (!queryResponse.matches) {
+      return [];
+    }
+    
+    return queryResponse.matches.map(match => ({
+      id: match.id,
+      metadata: match.metadata as PineconeRecordMetadata
+    }));
+  } catch (error) {
+    logger.error(`Error fetching vectors by metadata in namespace ${namespace}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Delete vectors by IDs
+ * Used by document indexing to remove document chunks
+ */
+export async function deleteVectors(namespace: string, ids: string[]): Promise<void> {
+  await initializeIndex();
+
+  if (!pineconeIndex) {
+    throw new Error('Pinecone index not initialized');
+  }
+
+  try {
+    if (ids.length === 0) {
+      return;
+    }
+    
+    // Delete in batches of 1000 (Pinecone limit)
+    const batchSize = 1000;
+    for (let i = 0; i < ids.length; i += batchSize) {
+      const batchIds = ids.slice(i, i + batchSize);
+      await pineconeIndex.namespace(namespace).deleteMany(batchIds);
+    }
+    
+    logger.info(`Deleted ${ids.length} vectors from namespace ${namespace}`);
+  } catch (error) {
+    logger.error(`Error deleting vectors from namespace ${namespace}:`, error);
+    throw error;
+  }
+}
+
 export async function deleteUserVectors(userId: string, workspaceId?: string): Promise<void> {
   await initializeIndex();
 

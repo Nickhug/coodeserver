@@ -39,6 +39,9 @@ export const config = {
   pineconeIndexName: process.env.PINECONE_INDEX_NAME || 'coode-codebase',
   pineconeNamespace: process.env.PINECONE_NAMESPACE || 'default',
   
+  // ScraperAPI Configuration
+  scraperApiKey: process.env.SCRAPER_API_KEY || '',
+  
   // Embedding Configuration
   embeddingModel: process.env.EMBEDDING_MODEL || 'gemini-embedding-exp-03-07',
   embeddingApiVersion: process.env.EMBEDDING_API_VERSION || 'v1alpha',
@@ -96,6 +99,11 @@ export function validateConfig(): { isValid: boolean; errors: string[]; warnings
   // Pinecone validation
   if (!config.pineconeApiKey) {
     errors.push('Pinecone API key is not provided. Vector search will not work.');
+  }
+  
+  // ScraperAPI validation
+  if (!config.scraperApiKey) {
+    errors.push('ScraperAPI key is not provided. Document indexing will not work.');
   }
   
   // Embedding configuration validation

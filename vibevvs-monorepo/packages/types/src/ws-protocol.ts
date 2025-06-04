@@ -54,6 +54,15 @@ export enum MessageType {
   CODEBASE_SEARCH_RESPONSE = 'codebase_search_response',
   CODEBASE_CLEAR_INDEX_REQUEST = 'codebase_clear_index_request',
   CODEBASE_CLEAR_INDEX_RESPONSE = 'codebase_clear_index_response',
+  
+  // Document indexing messages
+  INDEX_DOCUMENT = 'index-document',
+  DOCUMENT_INDEXED = 'document-indexed',
+  DOCUMENT_INDEXING_PROGRESS = 'document-indexing-progress',
+  DOCUMENT_INDEX_ERROR = 'document-index-error',
+  REMOVE_DOCUMENT = 'remove-document',
+  DOCUMENT_REMOVED = 'document-removed',
+  DOCUMENT_REMOVE_ERROR = 'document-remove-error',
 
   // General error
   ERROR = 'error'
