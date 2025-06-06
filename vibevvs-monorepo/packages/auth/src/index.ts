@@ -1,22 +1,41 @@
+import { createClerkClient } from '@clerk/backend';
 import logger from '@repo/logger';
 import { getUserByClerkId, storeAuthToken as dbStoreAuthToken } from '@repo/db';
 import type { User } from '@repo/types';
 
-// Store the secret key for later use
-let secretKey: string | null = null;
+// Store the clerk client for later use
+let clerkClient: ReturnType<typeof createClerkClient> | null = null;
+let jwtKey: string | null = null;
 
 /**
- * Initialize Clerk client with secret key
+ * Initialize Clerk client with secret key and optional JWT key
  * @param clerkSecretKey Clerk secret key
+ * @param clerkJwtKey Optional JWT key for networkless verification
+ * @param clerkPublishableKey Optional publishable key
  */
-export function initClerk(clerkSecretKey: string): void {
+export function initClerk(clerkSecretKey: string, clerkJwtKey?: string, clerkPublishableKey?: string): void {
   if (!clerkSecretKey) {
     logger.error('No Clerk secret key provided');
     return;
   }
   
-  secretKey = clerkSecretKey;
-  logger.info('Clerk authentication initialized');
+  try {
+    clerkClient = createClerkClient({
+      secretKey: clerkSecretKey,
+      publishableKey: clerkPublishableKey,
+      // Store JWT key for networkless verification if provided
+      ...(clerkJwtKey ? { jwtKey: clerkJwtKey } : {})
+    });
+    
+    if (clerkJwtKey) {
+      jwtKey = clerkJwtKey;
+      logger.info('Clerk authentication initialized with JWT key (networkless mode)');
+    } else {
+      logger.info('Clerk authentication initialized');
+    }
+  } catch (error) {
+    logger.error('Failed to initialize Clerk client:', error);
+  }
 }
 
 /**
@@ -46,27 +65,44 @@ export async function verifyToken(token: string): Promise<string | null> {
       return 'dev_user_123';
     }
     
-    // In production, we should use the Clerk API to verify tokens
-    if (!secretKey) {
+    // In production, use the Clerk SDK to verify tokens
+    if (!clerkClient) {
       logger.warn('Clerk not initialized, cannot verify token');
       return null;
     }
 
     try {
-      // This is where you would use the Clerk SDK to verify the token
-      // For now we're using a simplified approach
-      if (token.startsWith('clerk_')) {
-        // Extract a user ID from the token (simplified)
-        const userId = `user_${token.substring(6, 14)}`;
-        logger.debug(`Token validation simplified: ${userId}`);
+      // Create a mock request object with the token in the Authorization header
+      // This is needed because authenticateRequest expects a Request object
+      const mockRequest = new Request('https://dummy-url', {
+        headers: {
+          // Format it as a Bearer token which is what Clerk expects
+          Authorization: `Bearer ${token}`
+        }
+      });
+      
+      // Use authenticateRequest to verify the token
+      const authResult = await clerkClient.authenticateRequest(mockRequest, {
+        // If we have a JWT key, use it for networkless verification
+        ...(jwtKey ? { jwtKey } : {}),
+        // Add any additional domains that are authorized to use this token
+        authorizedParties: ['https://coode.ai', 'http://localhost']
+      });
+      
+      if (authResult.isSignedIn && authResult.toAuth().userId) {
+        const userId = authResult.toAuth().userId;
+        logger.debug(`Token verified for user: ${userId}`);
         return userId;
+      } else {
+        logger.warn('Token verification failed: User not signed in or userId missing');
+        return null;
       }
     } catch (verifyError) {
       logger.error('Token verification error:', verifyError);
       return null;
     }
 
-    logger.warn('Invalid token format');
+    logger.warn('Invalid token format or verification failed');
     return null;
   } catch (error) {
     logger.error('Token verification error:', error);
@@ -172,10 +208,54 @@ export async function checkUserCredits(
   }
 }
 
+/**
+ * Get rich user information directly from Clerk
+ * @param clerkId The Clerk user ID
+ * @returns Enhanced user information if found, null otherwise
+ */
+export async function getClerkUserData(clerkId: string): Promise<any | null> {
+  try {
+    if (!clerkId) {
+      logger.warn('Empty clerkId provided');
+      return null;
+    }
+    
+    if (!clerkClient) {
+      logger.warn('Clerk not initialized, cannot fetch user data');
+      return null;
+    }
+    
+    // Get user from Clerk
+    const clerkUser = await clerkClient.users.getUser(clerkId);
+    
+    if (!clerkUser) {
+      logger.warn(`User with Clerk ID ${clerkId} not found in Clerk`);
+      return null;
+    }
+    
+    // Get primary avatar URL and other user data
+    return {
+      id: clerkId,
+      firstName: clerkUser.firstName,
+      lastName: clerkUser.lastName,
+      name: clerkUser.firstName && clerkUser.lastName ? 
+        `${clerkUser.firstName} ${clerkUser.lastName}` : 
+        clerkUser.username || clerkUser.emailAddresses[0]?.emailAddress?.split('@')[0] || '',
+      email: clerkUser.emailAddresses[0]?.emailAddress || '',
+      avatarUrl: clerkUser.imageUrl,
+      username: clerkUser.username
+    };
+  } catch (error) {
+    logger.error('Error getting user from Clerk:', error);
+    return null;
+  }
+}
+
 export default {
   initClerk,
   verifyToken,
   getDbUserByClerkId,
+  getClerkUserData,
   storeAuthToken,
   generateToken,
   checkUserCredits,

@@ -264,6 +264,9 @@ export interface UserDataResponsePayload {
     email: string;
     credits: number;
     subscription: string;
+    name?: string;
+    avatarUrl?: string;
+    username?: string;
   };
   error?: string;
 }

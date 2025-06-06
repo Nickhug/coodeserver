@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import cors from 'cors';
 import { config, validateConfig } from './config';
 import logger from '@repo/logger';
-import { verifyToken, getDbUserByClerkId } from '@repo/auth';
+import { initClerk, verifyToken, getDbUserByClerkId, getClerkUserData } from '@repo/auth';
 import { MessageType, ClientMessage, ServerMessage } from '@repo/types';
 import * as documentProcessingService from './document-processing-service';
 import * as gemini from '@repo/ai-providers';
@@ -88,6 +88,18 @@ setInterval(() => {
 export function setupServer(): http.Server {
   // Create Express app
   const app = express();
+
+  // Initialize Clerk client
+  const clerkSecretKey = process.env.CLERK_SECRET_KEY;
+  const clerkJwtKey = process.env.CLERK_JWT_KEY;
+  const clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY;
+
+  if (!clerkSecretKey) {
+    logger.warn('CLERK_SECRET_KEY environment variable not found. Authentication will not work properly.');
+  } else {
+    initClerk(clerkSecretKey, clerkJwtKey, clerkPublishableKey);
+    logger.info('Clerk client initialized');
+  }
 
   // Configure CORS
   app.use(cors({
@@ -1077,16 +1089,27 @@ async function handleAuthentication(ws: WebSocketWithData, message: ClientMessag
     ws.connectionData.isAuthenticated = true;
     connections.set(connectionId, ws.connectionData);
 
-    // Get user data from DB
-    const user = await getUserByClerkId(userId);
+    // Get user data from both Clerk and DB in parallel for efficiency
+    const [clerkUserData, dbUser] = await Promise.all([
+      getClerkUserData(userId),
+      getUserByClerkId(userId)
+    ]);
 
-    // Create user data object to send
-    const userData = user ? {
+    // Create enhanced user data object to send
+    const userData = {
       id: userId,
-      email: user.email,
-      credits: user.credits_remaining,
-      subscription: user.subscription_tier
-    } : { id: userId };
+      // Prefer DB email since it's the system of record, but fall back to Clerk
+      email: dbUser?.email || clerkUserData?.email || '',
+      // Include credits and subscription from DB
+      credits: dbUser?.credits_remaining || 0,
+      subscription: dbUser?.subscription_tier || 'free',
+      // Include rich data from Clerk
+      name: clerkUserData?.name || '',
+      firstName: clerkUserData?.firstName || '',
+      lastName: clerkUserData?.lastName || '',
+      username: clerkUserData?.username || '',
+      avatarUrl: clerkUserData?.avatarUrl || ''
+    };
 
     // Send authentication success message
     logger.info(`Authentication successful for connection ${connectionId} for user ${userId}`);
@@ -1906,10 +1929,13 @@ async function handleUserDataRequest(ws: WebSocketWithData, message: ClientMessa
       return;
     }
 
-    // Get user data from database
-    const user = await getUserByClerkId(userId);
+    // Get user data from both Clerk and DB in parallel for efficiency
+    const [clerkUserData, dbUser] = await Promise.all([
+      getClerkUserData(userId),
+      getUserByClerkId(userId)
+    ]);
 
-    if (!user) {
+    if (!dbUser) {
       logger.warn(`User with ID ${userId} not found in database`);
       sendToClient(ws, {
         type: MessageType.USER_DATA_RESPONSE,
@@ -1920,12 +1946,20 @@ async function handleUserDataRequest(ws: WebSocketWithData, message: ClientMessa
       return;
     }
 
-    // Format the user data to match expected interface
+    // Create enhanced user data object with rich Clerk data
     const userData = {
       id: userId,
-      email: user.email,
-      credits: user.credits_remaining,
-      subscription: user.subscription_tier
+      // Prefer DB email since it's the system of record, but fall back to Clerk
+      email: dbUser.email || clerkUserData?.email || '',
+      // Include credits and subscription from DB
+      credits: dbUser.credits_remaining || 0,
+      subscription: dbUser.subscription_tier || 'free',
+      // Include rich data from Clerk
+      name: clerkUserData?.name || '',
+      firstName: clerkUserData?.firstName || '',
+      lastName: clerkUserData?.lastName || '',
+      username: clerkUserData?.username || '',
+      avatarUrl: clerkUserData?.avatarUrl || ''
     };
 
     // Send user data back to client
