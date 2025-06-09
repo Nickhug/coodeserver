@@ -6,7 +6,14 @@ import cors from 'cors';
 import { config, validateConfig } from './config';
 import logger from '@repo/logger';
 import { initClerk, verifyToken, getDbUserByClerkId, getClerkUserData } from '@repo/auth';
-import { MessageType, ClientMessage, ServerMessage } from '@repo/types';
+import { 
+  MessageType, 
+  ClientMessage, 
+  ServerMessage,
+  CodebaseDeleteVectorsRequestMessage,
+  CodebaseDeleteVectorsResponseMessage
+} from '@repo/types';
+import { deleteVectors as pineconeDeleteVectors } from './pinecone-service';
 import * as documentProcessingService from './document-processing-service';
 import * as gemini from '@repo/ai-providers';
 import {
@@ -478,10 +485,64 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
             code: 'UNAUTHORIZED',
             requestId: clientMessage.payload?.requestId
           }
-        });
+        } as ServerMessage);
         return;
       }
       await handleCodebaseClearIndexRequest(ws, clientMessage);
+    } else if (messageType === MessageType.CODEBASE_DELETE_VECTORS_REQUEST) {
+      logger.info(`WS MSG [${connectionId}][${requestId}] Codebase delete vectors request`);
+      if (config.authEnabled && !isAuthenticated) {
+        logger.warn(`WS AUTH [${connectionId}] Unauthorized codebase delete vectors request rejected`);
+        sendToClient(ws, {
+          type: MessageType.CODEBASE_DELETE_VECTORS_RESPONSE, 
+          payload: {
+            requestId: clientMessage.payload?.requestId,
+            success: false,
+            error: 'Authentication required',
+            code: 'UNAUTHORIZED' // Added for consistency, though not in original plan
+          }
+        } as CodebaseDeleteVectorsResponseMessage);
+        return;
+      }
+
+      const deleteRequest = clientMessage as CodebaseDeleteVectorsRequestMessage;
+      const { workspaceId, chunkIds } = deleteRequest.payload;
+
+      if (!workspaceId || !chunkIds || chunkIds.length === 0) {
+        logger.warn(`WS MSG [${connectionId}][${requestId}] Invalid payload for delete vectors request: workspaceId or chunkIds missing.`);
+        sendToClient(ws, {
+          type: MessageType.CODEBASE_DELETE_VECTORS_RESPONSE,
+          payload: {
+            requestId: deleteRequest.payload.requestId,
+            success: false,
+            error: 'Invalid payload: workspaceId and chunkIds are required.'
+          }
+        } as CodebaseDeleteVectorsResponseMessage);
+        return;
+      }
+
+      try {
+        await pineconeDeleteVectors(workspaceId, chunkIds);
+        logger.info(`WS MSG [${connectionId}][${requestId}] Successfully processed delete vectors request for workspace ${workspaceId}, ${chunkIds.length} chunks.`);
+        sendToClient(ws, {
+          type: MessageType.CODEBASE_DELETE_VECTORS_RESPONSE,
+          payload: {
+            requestId: deleteRequest.payload.requestId,
+            success: true,
+          }
+        } as CodebaseDeleteVectorsResponseMessage);
+      } catch (error) {
+        logger.error(`WS ERROR [${connectionId}][${requestId}] Error deleting vectors for workspace ${workspaceId}:`, error);
+        sendToClient(ws, {
+          type: MessageType.CODEBASE_DELETE_VECTORS_RESPONSE,
+          payload: {
+            requestId: deleteRequest.payload.requestId,
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to delete vectors'
+          }
+        } as CodebaseDeleteVectorsResponseMessage);
+      }
+
     } else if (messageType === MessageType.INDEX_DOCUMENT) {
       logger.info(`WS MSG [${connectionId}][${requestId}] Document indexing request`);
       if (config.authEnabled && !isAuthenticated) {

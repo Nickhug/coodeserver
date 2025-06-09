@@ -54,6 +54,8 @@ export enum MessageType {
   CODEBASE_SEARCH_RESPONSE = 'codebase_search_response',
   CODEBASE_CLEAR_INDEX_REQUEST = 'codebase_clear_index_request',
   CODEBASE_CLEAR_INDEX_RESPONSE = 'codebase_clear_index_response',
+  CODEBASE_DELETE_VECTORS_REQUEST = 'codebase_delete_vectors_request',
+  CODEBASE_DELETE_VECTORS_RESPONSE = 'codebase_delete_vectors_response',
   
   // Document indexing messages
   INDEX_DOCUMENT = 'index-document',
@@ -400,6 +402,15 @@ export interface CodebaseClearIndexResponsePayload {
 }
 
 /**
+ * Codebase delete vectors request payload
+ */
+export interface CodebaseDeleteVectorsRequestPayload {
+  requestId: string;
+  workspaceId: string; // Typically the namespace in Pinecone
+  chunkIds: string[];
+}
+
+/**
  * Type definitions for codebase indexing messages
  */
 export type CodebaseEmbeddingRequestMessage = ClientMessage & { payload: CodebaseEmbeddingRequestPayload };
@@ -409,4 +420,21 @@ export type CodebaseEmbeddingBatchResponseMessage = ServerMessage & { payload: C
 export type CodebaseSearchRequestMessage = ClientMessage & { payload: CodebaseSearchRequestPayload };
 export type CodebaseSearchResponseMessage = ServerMessage & { payload: CodebaseSearchResponsePayload };
 export type CodebaseClearIndexRequestMessage = ClientMessage & { payload: CodebaseClearIndexRequestPayload };
-export type CodebaseClearIndexResponseMessage = ServerMessage & { payload: CodebaseClearIndexResponsePayload };
+export interface CodebaseClearIndexResponseMessage extends ServerMessage {
+  payload: CodebaseClearIndexResponsePayload;
+}
+
+export interface CodebaseDeleteVectorsRequestMessage extends ClientMessage {
+  type: MessageType.CODEBASE_DELETE_VECTORS_REQUEST;
+  payload: CodebaseDeleteVectorsRequestPayload;
+};
+
+export interface CodebaseDeleteVectorsResponseMessage extends ServerMessage {
+  type: MessageType.CODEBASE_DELETE_VECTORS_RESPONSE;
+  payload: {
+    requestId: string;
+    success: boolean;
+    error?: string;
+    deletedVectorCount?: number;
+  };
+}
