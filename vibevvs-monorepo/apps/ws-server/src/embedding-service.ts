@@ -102,15 +102,21 @@ const embeddingRateLimiter = new EmbeddingRateLimiter();
 
 /**
  * Generate a unique key for a code chunk
+ * Now uses the file path as part of the key for better traceability
  */
 function generateChunkKey(chunk: CodeChunk): string {
+  // Create a base path ID that's safe for storage
+  const safeFilePath = chunk.filePath.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+  
+  // Still include a hash for uniqueness in case of content changes within same lines
   const hash = crypto.createHash('sha256');
-  hash.update(chunk.filePath);
   hash.update(chunk.content);
   hash.update(chunk.type);
   hash.update(String(chunk.startLine));
   hash.update(String(chunk.endLine));
-  return hash.digest('hex');
+  const contentHash = hash.digest('hex').substring(0, 12); // Shortened hash
+  
+  return `${safeFilePath}_L${chunk.startLine}-${chunk.endLine}_${contentHash}`;
 }
 
 /**
@@ -389,25 +395,35 @@ export async function generateBatchEmbeddings(
 /**
  * Format a code chunk for embedding generation
  */
-function formatChunkForEmbedding(chunk: CodeChunk): string {
-  let formatted = `File: ${chunk.filePath}\n`;
-  formatted += `Type: ${chunk.type}\n`;
+export function formatChunkForEmbedding(chunk: CodeChunk): string {
+  // Basic formatting for code chunks
+  let formattedContent = '';
   
+  // Add file information with path as the primary identifier
+  formattedContent += `File: ${chunk.filePath}\n`;
+  
+  if (chunk.language) {
+    formattedContent += `Language: ${chunk.language}\n`;
+  }
+  
+  // Add type and name if available
+  if (chunk.type) {
+    formattedContent += `Type: ${chunk.type}\n`;
+  }
   if (chunk.name) {
-    formatted += `Name: ${chunk.name}\n`;
+    formattedContent += `Name: ${chunk.name}\n`;
   }
   
-  if (chunk.metadata?.signature) {
-    formatted += `Signature: ${chunk.metadata.signature}\n`;
-  }
+  // Add line numbers
+  formattedContent += `Lines: ${chunk.startLine}-${chunk.endLine}\n\n`;
   
-  if (chunk.metadata?.docstring) {
-    formatted += `Documentation: ${chunk.metadata.docstring}\n`;
-  }
+  // Include chunk ID for traceability
+  formattedContent += `ChunkID: ${chunk.id}\n\n`;
   
-  formatted += `\nCode:\n${chunk.content}`;
+  // Add actual content
+  formattedContent += chunk.content;
   
-  return formatted;
+  return formattedContent;
 }
 
 /**

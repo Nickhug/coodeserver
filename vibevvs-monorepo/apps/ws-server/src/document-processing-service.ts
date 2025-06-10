@@ -7,6 +7,7 @@ import logger from '@repo/logger';
 import { config } from './config';
 import * as pineconeService from './pinecone-service';
 import axios from 'axios';
+import tiktoken from 'tiktoken';
 
 // Define types for the required modules
 
@@ -14,9 +15,10 @@ import axios from 'axios';
 const DOCUMENTS_INDEX = 'web-documents-v1';
 
 // Configuration
-const maxChunkSize = 8000; // Max characters per chunk
-const CHUNK_OVERLAP = 200; // Overlap between chunks for context preservation
 const MAX_CHUNKS_PER_DOCUMENT = 50; // Limit to prevent overly large documents
+const MISTRAL_MAX_TOKENS = 8192; // Max tokens supported by Mistral API
+const TARGET_TOKENS_PER_CHUNK = 7500; // Target number of tokens per chunk (leaves margin below limit)
+const CHUNK_OVERLAP_TOKENS = 100; // Overlap between chunks for context preservation (in tokens)
 
 // Interface for document chunk
 export interface DocumentChunk {
@@ -139,7 +141,30 @@ export async function scrapeWebContent(url: string, progressCallback: (progress:
 }
 
 /**
- * Split document content into chunks with overlap
+ * Get token count using tiktoken
+ */
+function getTokenCount(text: string): number {
+    try {
+        // Use cl100k_base encoding which is used by many recent models
+        const encoding = tiktoken.get_encoding('cl100k_base');
+        const tokens = encoding.encode(text);
+        return tokens.length;
+    } catch (error) {
+        logger.error('Error counting tokens:', error);
+        // Fallback approximation (roughly 4 chars per token)
+        return Math.ceil(text.length / 4);
+    }
+}
+
+/**
+ * Get tiktoken encoding
+ */
+function getEncoding() {
+    return tiktoken.get_encoding('cl100k_base');
+}
+
+/**
+ * Split document content into chunks based on token count
  */
 export function chunkDocumentContent(content: string, documentId: string, url: string, title: string): DocumentChunk[] {
     try {
@@ -148,45 +173,63 @@ export function chunkDocumentContent(content: string, documentId: string, url: s
             .replace(/\s+/g, ' ')
             .trim();
         
-        // Calculate number of chunks needed
-        const contentLength = cleanContent.length;
-        const effectiveChunkSize = maxChunkSize - CHUNK_OVERLAP;
-        let numFullChunks = Math.floor(contentLength / effectiveChunkSize);
+        // Get encoding and tokenize the content
+        const encoding = getEncoding();
+        const tokens = encoding.encode(cleanContent);
+        const totalTokens = tokens.length;
+        
+        // Calculate how many chunks we'll need
+        let numChunks = Math.ceil(totalTokens / TARGET_TOKENS_PER_CHUNK);
         
         // Limit number of chunks
-        numFullChunks = Math.min(numFullChunks, MAX_CHUNKS_PER_DOCUMENT);
+        numChunks = Math.min(numChunks, MAX_CHUNKS_PER_DOCUMENT);
         
-        const chunks: DocumentChunk[] = [];
-        
-        // Generate chunks with overlap
-        for (let i = 0; i < numFullChunks; i++) {
-            const start = i * effectiveChunkSize;
-            const end = Math.min(start + maxChunkSize, contentLength);
-            
-            chunks.push({
-                id: `${url}_chunk_${i}`,
+        // If content is small enough for a single chunk
+        if (numChunks <= 1 && totalTokens <= MISTRAL_MAX_TOKENS) {
+            return [{
+                id: documentId.replace(/[^a-zA-Z0-9_-]/g, '_') + '_chunk_0',
                 documentId,
-                content: cleanContent.substring(start, end),
+                content: cleanContent,
+                chunkIndex: 0,
+                url,
+                title
+            }];
+        }
+        
+        const finalChunks: DocumentChunk[] = [];
+        
+        // Calculate chunk size with even distribution
+        const tokensPerChunk = Math.floor(totalTokens / numChunks);
+        
+        // Generate chunks based on token count
+        for (let i = 0; i < numChunks; i++) {
+            const startPosition = i * (tokensPerChunk - CHUNK_OVERLAP_TOKENS);
+            const endPosition = Math.min(startPosition + tokensPerChunk, totalTokens);
+            
+            // Extract tokens for this chunk
+            const chunkTokens = tokens.slice(startPosition, endPosition);
+            
+            // Decode tokens back to text
+            const decoder = new TextDecoder();
+            const chunkContent = decoder.decode(encoding.decode(chunkTokens));
+            
+            // Create chunk with token-aware boundaries
+            finalChunks.push({
+                id: documentId.replace(/[^a-zA-Z0-9_-]/g, '_') + `_chunk_${i}`,
+                documentId,
+                content: chunkContent,
                 chunkIndex: i,
                 url,
                 title
             });
+            
+            // If we've reached the end of the content, break
+            if (endPosition >= totalTokens) {
+                break;
+            }
         }
         
-        // Add final chunk if needed
-        if (numFullChunks === 0 || (numFullChunks * effectiveChunkSize < contentLength)) {
-            const start = numFullChunks * effectiveChunkSize;
-            chunks.push({
-                id: `${url}_chunk_${numFullChunks}`,
-                documentId,
-                content: cleanContent.substring(start),
-                chunkIndex: numFullChunks,
-                url,
-                title
-            });
-        }
-        
-        return chunks;
+        return finalChunks;
     } catch (error) {
         logger.error('Error chunking document content:', error);
         throw new Error(`Failed to process document content: ${(error as Error).message}`);
