@@ -2645,12 +2645,10 @@ async function handleCodebaseEmbeddingBatchRequest(ws: WebSocketWithData, messag
       // 3. It's been at least PROGRESS_UPDATE_THROTTLE_MS since the last update
       // 4. This is the final update (completedChunks === totalChunks)
       if (
-        lastProgressUpdateTime === 0 || 
-        progress.fileStatus === 'embedding_started' ||
-        progress.fileStatus === 'file_completed' ||
-        progress.fileStatus === 'file_error' ||
-        timeSinceLastUpdate >= PROGRESS_UPDATE_THROTTLE_MS ||
-        progress.completedChunks === progress.totalChunks
+        lastProgressUpdateTime === 0 || // Always send the first update
+        progress.completedChunks === progress.totalChunks || // Always send the final update
+        progress.fileStatus === 'file_error' || // Always send critical errors
+        timeSinceLastUpdate >= PROGRESS_UPDATE_THROTTLE_MS // Otherwise, only send if 20s have passed
       ) {
         // Send progress updates to client
         sendToClient(ws, {
