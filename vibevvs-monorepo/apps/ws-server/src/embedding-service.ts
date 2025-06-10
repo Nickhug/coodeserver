@@ -18,7 +18,10 @@ interface EmbeddingResponse {
 
 // Configuration
 const EMBEDDING_MODEL = 'codestral-embed';
-const BATCH_SIZE = config.embeddingBatchSize || 50; // Increased batch size for Mistral API
+// Configure dynamic batch sizing based on token and request limits
+const DEFAULT_BATCH_SIZE = config.embeddingBatchSize || 50;
+const MAX_TOKENS_PER_REQUEST = 15000; // Mistral allows up to 16k, using 15k for safety margin
+const MAX_PARALLEL_BATCHES = 2; // Number of embedding batches to process in parallel
 
 class EmbeddingRateLimiter {
   private requests: number;
@@ -195,26 +198,110 @@ export async function generateBatchEmbeddings(
   let totalTokensUsed = 0;
   let successfullyStored = 0;
   
-  const totalBatches = Math.ceil(chunks.length / BATCH_SIZE);
-  logger.info(`Starting batch embedding for ${chunks.length} chunks in ${totalBatches} batches for user ${userId}`);
+  // Smart batching based on token estimation and parallel processing
+  const createOptimizedBatches = (chunks: CodeChunk[]): CodeChunk[][] => {
+    const batches: CodeChunk[][] = [];
+    let currentBatch: CodeChunk[] = [];
+    let estimatedTokens = 0;
+    
+    // Rough token estimation - average 1 token per 4 characters with a safety margin
+    const estimateTokens = (chunk: CodeChunk): number => {
+      const content = formatChunkForEmbedding(chunk);
+      return Math.ceil(content.length / 3); // Conservative estimate
+    };
+    
+    for (const chunk of chunks) {
+      const chunkTokens = estimateTokens(chunk);
+      
+      // If adding this chunk would exceed token limit, create a new batch
+      if (estimatedTokens + chunkTokens > MAX_TOKENS_PER_REQUEST || currentBatch.length >= DEFAULT_BATCH_SIZE) {
+        if (currentBatch.length > 0) {
+          batches.push([...currentBatch]);
+          currentBatch = [];
+          estimatedTokens = 0;
+        }
+      }
+      
+      // Add chunk to current batch
+      currentBatch.push(chunk);
+      estimatedTokens += chunkTokens;
+    }
+    
+    // Add remaining chunks as the final batch
+    if (currentBatch.length > 0) {
+      batches.push(currentBatch);
+    }
+    
+    return batches;
+  };
   
-  // await embeddingRateLimiter.waitForSlot(); // Removed from here
+  // Create optimized batches based on token estimation
+  const optimizedBatches = createOptimizedBatches(chunks);
+  const totalBatches = optimizedBatches.length;
+  
+  logger.info(`Starting optimized batch embedding for ${chunks.length} chunks, organized into ${totalBatches} token-optimized batches for user ${userId}`);
   
   let currentFileForProgress: string | undefined = undefined;
   let overallProcessedChunks = 0;
 
-  // Process chunks in batches
-  for (let i = 0; i < chunks.length; i += BATCH_SIZE) {
-    const currentBatchNumber = Math.floor(i / BATCH_SIZE) + 1;
-    const batch = chunks.slice(i, i + BATCH_SIZE);
+  // Create a queue system for processing batches with controlled concurrency
+  class ParallelBatchProcessor {
+    private queue: CodeChunk[][] = [];
+    private active = 0;
+    private completed = 0;
+    
+    constructor(private batches: CodeChunk[][], private concurrency: number) {
+      this.queue = [...batches];
+    }
+    
+    async process(processor: (batch: CodeChunk[], batchIndex: number) => Promise<void>): Promise<void> {
+      const workers: Promise<void>[] = [];
+      
+      // Start workers up to concurrency limit
+      for (let i = 0; i < Math.min(this.concurrency, this.batches.length); i++) {
+        workers.push(this.worker(processor));
+      }
+      
+      // Wait for all workers to complete
+      await Promise.all(workers);
+    }
+    
+    private async worker(processor: (batch: CodeChunk[], batchIndex: number) => Promise<void>): Promise<void> {
+      while (this.queue.length > 0) {
+        // Take next batch from queue
+        const batch = this.queue.shift()!;
+        const batchIndex = this.completed + this.active;
+        this.active++;
+        
+        try {
+          await processor(batch, batchIndex);
+        } catch (error) {
+          logger.error(`Error processing batch ${batchIndex}:`, error);
+        }
+        
+        this.active--;
+        this.completed++;
+      }
+    }
+    
+    getProgress(): { completed: number; total: number } {
+      return { completed: this.completed, total: this.batches.length };
+    }
+  }
+  
+  // Create the parallel processor with our batches
+  const batchProcessor = new ParallelBatchProcessor(optimizedBatches, MAX_PARALLEL_BATCHES);
+
+  // Process batches in parallel
+  await batchProcessor.process(async (currentBatch, batchIndex) => {
+    const currentBatchNumber = batchIndex + 1;
+    logger.info(`Processing batch ${currentBatchNumber}/${totalBatches} (${currentBatch.length} chunks)`);
     let successfullyStoredInCurrentBatch = 0;
     let errorsInCurrentBatch = 0;
 
-    logger.info(`Processing batch ${currentBatchNumber}/${totalBatches} (${batch.length} chunks)`);
-
     // Determine current file being processed for progress reporting
-    if (batch.length > 0 && batch[0].filePath !== currentFileForProgress) {
-      currentFileForProgress = batch[0].filePath;
+    if (currentBatch.length > 0 && currentBatch[0].filePath !== currentFileForProgress) {
+      currentFileForProgress = currentBatch[0].filePath;
       if (onProgress) {
         onProgress({
           completedChunks: overallProcessedChunks,
@@ -231,7 +318,7 @@ export async function generateBatchEmbeddings(
 
     const chunksToEmbed: Array<{ chunk: CodeChunk; key: string }> = [];
     
-    for (const chunk of batch) {
+    for (const chunk of currentBatch) {
       const chunkKey = generateChunkKey(chunk);
       chunksToEmbed.push({ chunk, key: chunkKey });
     }
@@ -270,6 +357,7 @@ export async function generateBatchEmbeddings(
               chunkId: embedding.id,
               error: embedding.error,
             });
+            errorsInCurrentBatch++;
           } else {
             embeddings.push({
               chunkId: embedding.id,
@@ -303,6 +391,7 @@ export async function generateBatchEmbeddings(
           try {
             await pineconeService.upsertVectors(userId, vectorsToUpsert);
             successfullyStored += vectorsToUpsert.length;
+            successfullyStoredInCurrentBatch += vectorsToUpsert.length;
             logger.info(`Successfully stored ${vectorsToUpsert.length} vectors in Pinecone for batch ${currentBatchNumber}`);
           } catch (pineconeError) {
             logger.error(`Failed to store vectors in Pinecone for batch ${currentBatchNumber}:`, pineconeError);
@@ -313,12 +402,13 @@ export async function generateBatchEmbeddings(
                 chunkId,
                 error: `Failed to store in Pinecone: ${pineconeError instanceof Error ? pineconeError.message : String(pineconeError)}`
               });
+              errorsInCurrentBatch++;
             });
           }
         }
         
         // Report progress
-        overallProcessedChunks += batch.length;
+        overallProcessedChunks += currentBatch.length;
         if (onProgress) {
           onProgress({
             completedChunks: overallProcessedChunks,
@@ -336,8 +426,11 @@ export async function generateBatchEmbeddings(
 
         // Check if the current file is completed in this batch
         if (currentFileForProgress) {
-          const remainingChunksInFile = chunks.slice(i + batch.length).filter(c => c.filePath === currentFileForProgress);
-          if (remainingChunksInFile.length === 0) {
+          // Check if there are any more chunks for this file in the remaining batches
+          const remainingChunksForFile = optimizedBatches.slice(batchIndex + 1).flatMap(b => 
+            b.filter(c => c.filePath === currentFileForProgress)
+          );
+          if (remainingChunksForFile.length === 0) {
             // All chunks for currentFileForProgress have been processed (or attempted)
             let fileHasErrors = false;
             const fileErrorMessages: string[] = [];
@@ -377,11 +470,12 @@ export async function generateBatchEmbeddings(
             chunkId: item.chunk.id,
             error: `Batch processing failed: ${batchError instanceof Error ? batchError.message : String(batchError)}`
           });
+          errorsInCurrentBatch++;
         });
       }
     }
-  }
-  
+  });
+
   logger.info(`Batch embedding complete: ${embeddings.length} successful, ${errors.length} errors, ${successfullyStored} stored in Pinecone, ${totalTokensUsed} tokens used`);
   
   return {

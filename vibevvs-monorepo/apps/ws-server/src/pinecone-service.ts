@@ -338,29 +338,61 @@ export async function upsertVectors(
       }
     }));
 
-    // Upsert in batches of 100 to user's dedicated namespace
-    const batchSize = 100;
-    for (let i = 0; i < vectorsForNamespace.length; i += batchSize) {
-      const batch = vectorsForNamespace.slice(i, i + batchSize);
-      await pineconeIndex.namespace(userNamespace).upsert(batch);
-      logger.debug(`Upserted batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(vectorsForNamespace.length / batchSize)} to namespace ${userNamespace}`);
-
-      // ---- START IMMEDIATE FETCH DEBUG ----
-      if (batch.length > 0) {
-        const firstIdInBatch = batch[0].id;
-        logger.debug(`Attempting immediate fetch for ID ${firstIdInBatch} from namespace ${userNamespace} post-upsert.`);
-        try {
-          const fetchResult = await pineconeIndex.namespace(userNamespace).fetch([firstIdInBatch]);
-          if (fetchResult && fetchResult.records && Object.keys(fetchResult.records).length > 0) {
-            logger.info(`IMMEDIATE FETCH SUCCEEDED for ID ${firstIdInBatch} in namespace ${userNamespace}. Vector found.`);
-          } else {
-            logger.warn(`IMMEDIATE FETCH FAILED or EMPTY for ID ${firstIdInBatch} in namespace ${userNamespace}. Vector not found immediately.`);
-          }
-        } catch (fetchError: any) {
-          logger.error(`IMMEDIATE FETCH ERROR for ID ${firstIdInBatch} in namespace ${userNamespace}: ${fetchError.message}`);
+    // Upsert in optimized batches to user's dedicated namespace
+    // Pinecone allows up to 1000 vectors per batch with a 2MB limit
+    const MAX_VECTORS_PER_BATCH = 1000;
+    const MAX_BATCH_SIZE_BYTES = 2 * 1024 * 1024; // 2MB
+    
+    // Dynamic batch sizing based on payload size
+    const batchVectors: typeof vectorsForNamespace[] = [];
+    let currentBatch: typeof vectorsForNamespace = [];
+    let currentBatchSize = 0;
+    
+    for (const vector of vectorsForNamespace) {
+      // Estimate size of this vector (values array + metadata)
+      // vector.values is a Float32Array of numbers (4 bytes each)
+      const valuesSize = vector.values.length * 4;
+      const metadataSize = JSON.stringify(vector.metadata).length * 2; // Unicode chars ~2 bytes
+      const idSize = vector.id.length * 2;
+      const estimatedVectorSize = valuesSize + metadataSize + idSize;
+      
+      // If adding this vector would exceed batch limits, push current batch and start a new one
+      if (currentBatch.length >= MAX_VECTORS_PER_BATCH || 
+          currentBatchSize + estimatedVectorSize > MAX_BATCH_SIZE_BYTES) {
+        if (currentBatch.length > 0) {
+          batchVectors.push([...currentBatch]);
+          currentBatch = [];
+          currentBatchSize = 0;
         }
       }
-      // ---- END IMMEDIATE FETCH DEBUG ----
+      
+      // Add vector to current batch
+      currentBatch.push(vector);
+      currentBatchSize += estimatedVectorSize;
+    }
+    
+    // Add the last batch if not empty
+    if (currentBatch.length > 0) {
+      batchVectors.push(currentBatch);
+    }
+    
+    logger.info(`Optimized ${vectorsForNamespace.length} vectors into ${batchVectors.length} batches for upserting`);
+    
+    // Process all batches with some parallelism, but not too much to avoid overwhelming Pinecone
+    const PARALLEL_UPSERTS = 2;
+    for (let i = 0; i < batchVectors.length; i += PARALLEL_UPSERTS) {
+      const batchPromises = [];
+      for (let j = 0; j < PARALLEL_UPSERTS && i + j < batchVectors.length; j++) {
+        const batchIndex = i + j;
+        const batch = batchVectors[batchIndex];
+        batchPromises.push(
+          (async () => {
+            await pineconeIndex.namespace(userNamespace).upsert(batch);
+            logger.debug(`Upserted optimized batch ${batchIndex + 1}/${batchVectors.length} with ${batch.length} vectors to namespace ${userNamespace}`);
+          })()
+        );
+      }
+      await Promise.all(batchPromises);
     }
 
     logger.info(`Successfully upserted ${vectors.length} vectors for user ${userId} in namespace ${userNamespace}`);
