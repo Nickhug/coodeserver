@@ -3,7 +3,7 @@
 
 import logger from '@repo/logger';
 import { config } from './config';
-import * as gemini from '@repo/ai-providers';
+import * as mistral from './mistral';
 import { CodeChunk } from '@repo/types';
 import crypto from 'crypto';
 import * as pineconeService from './pinecone-service';
@@ -17,9 +17,8 @@ interface EmbeddingResponse {
 }
 
 // Configuration
-const EMBEDDING_MODEL = config.embeddingModel || 'text-embedding-004';
-const EMBEDDING_API_VERSION = (config.embeddingApiVersion || 'v1alpha') as 'v1alpha' | 'v1beta'; // Use v1alpha for experimental models
-const BATCH_SIZE = config.embeddingBatchSize || 3; // Chunks per batch, aligned with Gemini API limits
+const EMBEDDING_MODEL = 'codestral-embed';
+const BATCH_SIZE = config.embeddingBatchSize || 50; // Increased batch size for Mistral API
 
 class EmbeddingRateLimiter {
   private requests: number;
@@ -28,35 +27,28 @@ class EmbeddingRateLimiter {
 
   constructor() {
     this.requests = 0;
-    this.resetTime = Date.now() + 60000; // 1 minute from now
+    this.resetTime = Date.now() + 1000; // 1 second window for Mistral (6 RPS limit)
     this.lastRequestTime = 0;
 
     logger.info(
-      `EmbeddingRateLimiter initialized: Will use dynamic rate limit from config.`
+      `EmbeddingRateLimiter initialized: Will use 6 requests per second limit for Mistral API`
     );
   }
 
   private getMinDelayBetweenRequests(): number {
-    let effectiveRateLimit = config.embeddingRateLimit || 10;
-    if (effectiveRateLimit === 10) {
-      effectiveRateLimit = 9; // Temporary adjustment for 10 RPM -> 9 RPM
-    }
-    return 60000 / effectiveRateLimit;
+    // Mistral allows 6 requests per second
+    return 1000 / 6; // ~166ms between requests
   }
 
   async checkLimit(): Promise<boolean> {
     const now = Date.now();
     if (now > this.resetTime) {
       this.requests = 0;
-      this.resetTime = now + 60000;
+      this.resetTime = now + 1000; // Reset every second
     }
 
-    let configuredRateLimitCheck = config.embeddingRateLimit || 10;
-    let effectiveRateLimitCheck = configuredRateLimitCheck;
-    if (configuredRateLimitCheck === 10) {
-      effectiveRateLimitCheck = 9; // Temporary adjustment
-    }
-    if (this.requests >= effectiveRateLimitCheck) {
+    // Mistral allows 6 requests per second
+    if (this.requests >= 6) {
       return false;
     }
     
@@ -67,8 +59,6 @@ class EmbeddingRateLimiter {
     }
     
     // If we are here, it means we can make a request.
-    // We only increment requests and update lastRequestTime if we are actually *making* a request,
-    // not just checking. So, this logic will be moved to where a request is actually made or slot is taken.
     return true;
   }
 
@@ -81,19 +71,12 @@ class EmbeddingRateLimiter {
   async waitForSlot(): Promise<void> {
     while (true) {
         const now = Date.now();
-        let configuredRateLimit = config.embeddingRateLimit || 10;
-        let currentRateLimit = configuredRateLimit;
-        let temporaryAdjustmentActive = false;
-
-        if (configuredRateLimit === 10) {
-          currentRateLimit = 9; // Temporary adjustment for 10 RPM -> 9 RPM
-          temporaryAdjustmentActive = true;
-        }
-        let minDelay = 60000 / currentRateLimit;
+        const currentRateLimit = 6; // 6 requests per second for Mistral
+        let minDelay = this.getMinDelayBetweenRequests();
 
         if (now > this.resetTime) {
             this.requests = 0;
-            this.resetTime = now + 60000;
+            this.resetTime = now + 1000;
         }
 
         if (this.requests < currentRateLimit) {
@@ -108,11 +91,8 @@ class EmbeddingRateLimiter {
         const waitForMinDelay = minDelay - (now - this.lastRequestTime);
         const waitTime = Math.max(0, Math.min(waitTimeForReset, waitForMinDelay)); // Ensure non-negative wait time
         
-        const logMessage = temporaryAdjustmentActive 
-          ? `Rate limit (temp. adjusted to ${currentRateLimit} RPM from ${configuredRateLimit} RPM): waiting ${Math.ceil(waitTime/1000)}s before next request (${this.requests}/${currentRateLimit} used)`
-          : `Rate limit (${currentRateLimit} RPM): waiting ${Math.ceil(waitTime/1000)}s before next request (${this.requests}/${currentRateLimit} used)`;
-        logger.info(logMessage);
-        await new Promise(resolve => setTimeout(resolve, Math.min(waitTime + 100, 15000))); // Max 15s wait, add 100ms buffer
+        logger.info(`Rate limit (${currentRateLimit} RPS): waiting ${Math.ceil(waitTime)}ms before next request (${this.requests}/${currentRateLimit} used)`);
+        await new Promise(resolve => setTimeout(resolve, Math.min(waitTime + 10, 1000))); // Max 1s wait, add 10ms buffer
     }
   }
 }
@@ -145,12 +125,10 @@ export async function generateChunkEmbedding(
   // Wait for a slot if rate limited
   await embeddingRateLimiter.waitForSlot();
 
-  // Generate new embedding
-  const result = await gemini.generateEmbedding({
-    apiKey: config.geminiApiKey,
+  // Generate new embedding with Mistral
+  const result = await mistral.generateEmbedding({
+    apiKey: config.mistralApiKey,
     content: formatChunkForEmbedding(chunk),
-    model: EMBEDDING_MODEL,
-    apiVersion: EMBEDDING_API_VERSION,
   });
   
   if (result.error) {
@@ -263,12 +241,9 @@ export async function generateBatchEmbeddings(
           content: formatChunkForEmbedding(item.chunk),
         }));
         
-        const batchResult = await gemini.generateBatchEmbeddings({
-          apiKey: config.geminiApiKey,
+        const batchResult = await mistral.generateBatchEmbeddings({
+          apiKey: config.mistralApiKey,
           contents,
-          model: EMBEDDING_MODEL,
-          batchSize: BATCH_SIZE,
-          apiVersion: EMBEDDING_API_VERSION,
         });
         
         totalTokensUsed += batchResult.totalTokensUsed;
@@ -450,12 +425,10 @@ export async function generateQueryEmbedding(
   // Wait for a slot if rate limited
   await embeddingRateLimiter.waitForSlot();
 
-  // Generate embedding for the query
-  const result = await gemini.generateEmbedding({
-    apiKey: config.geminiApiKey,
+  // Generate embedding for the query using Mistral's Codestral Embed API
+  const result = await mistral.generateEmbedding({
+    apiKey: config.mistralApiKey,
     content: query,
-    model: EMBEDDING_MODEL,
-    apiVersion: EMBEDDING_API_VERSION,
   });
   
   if (result.error) {

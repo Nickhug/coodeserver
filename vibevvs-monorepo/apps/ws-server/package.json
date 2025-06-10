@@ -9,6 +9,7 @@
     "lint": "eslint \"**/*.ts*\""
   },
   "dependencies": {
+    "@mistralai/mistralai": "^1.7.1",
     "@pinecone-database/pinecone": "^4.1.0",
     "@repo/ai-providers": "*",
     "@repo/auth": "*",
