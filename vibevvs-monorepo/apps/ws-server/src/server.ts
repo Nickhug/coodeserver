@@ -2630,27 +2630,57 @@ async function handleCodebaseEmbeddingBatchRequest(ws: WebSocketWithData, messag
     // Import embedding service
     const embeddingService = await import('./embedding-service');
 
+    // Track the last time progress was sent to avoid flooding the client
+    let lastProgressUpdateTime = 0;
+    const PROGRESS_UPDATE_THROTTLE_MS = 20000; // Only send progress updates every 20 seconds
+    
     // Generate embeddings with progress tracking
     const result = await embeddingService.generateBatchEmbeddings(chunks, userId, (progress) => {
-      // Send progress updates to client
-      sendToClient(ws, {
-        type: MessageType.CODEBASE_EMBEDDING_PROGRESS,
-        payload: {
-          requestId,
-          batchId,
-          completedChunks: progress.completedChunks,
-          totalChunks: progress.totalChunks,
-          currentBatchNumber: progress.currentBatchNumber,
-          totalBatches: progress.totalBatches,
-          successfullyStoredInBatch: progress.successfullyStoredInBatch, // Added
-          errorsInBatch: progress.errorsInBatch, // Added
-          currentFileRelativePath: progress.currentFileRelativePath, // Added
-          fileStatus: progress.fileStatus, // Added
-          fileErrorDetails: progress.fileErrorDetails, // Added
-          // Calculate overall percentage based on chunks for now, client can refine with file counts
-          percentage: Math.round((progress.completedChunks / progress.totalChunks) * 100)
-        }
-      });
+      const now = Date.now();
+      const timeSinceLastUpdate = now - lastProgressUpdateTime;
+      
+      // Only send progress updates in these cases:
+      // 1. Initial update (lastProgressUpdateTime === 0)
+      // 2. File-level status changes (started/completed/error)
+      // 3. It's been at least PROGRESS_UPDATE_THROTTLE_MS since the last update
+      // 4. This is the final update (completedChunks === totalChunks)
+      if (
+        lastProgressUpdateTime === 0 || 
+        progress.fileStatus === 'embedding_started' ||
+        progress.fileStatus === 'file_completed' ||
+        progress.fileStatus === 'file_error' ||
+        timeSinceLastUpdate >= PROGRESS_UPDATE_THROTTLE_MS ||
+        progress.completedChunks === progress.totalChunks
+      ) {
+        // Send progress updates to client
+        sendToClient(ws, {
+          type: MessageType.CODEBASE_EMBEDDING_PROGRESS,
+          payload: {
+            requestId,
+            batchId,
+            completedChunks: progress.completedChunks,
+            totalChunks: progress.totalChunks,
+            currentBatchNumber: progress.currentBatchNumber,
+            totalBatches: progress.totalBatches,
+            successfullyStoredInBatch: progress.successfullyStoredInBatch,
+            errorsInBatch: progress.errorsInBatch,
+            currentFileRelativePath: progress.currentFileRelativePath,
+            fileStatus: progress.fileStatus,
+            fileErrorDetails: progress.fileErrorDetails,
+            // Calculate overall percentage based on chunks for now, client can refine with file counts
+            percentage: Math.round((progress.completedChunks / progress.totalChunks) * 100)
+          }
+        });
+        
+        lastProgressUpdateTime = now;
+      } else {
+        // Log that we're throttling updates but don't send to client
+        logger.debug(
+          `Throttled embedding progress update: ${progress.completedChunks}/${progress.totalChunks} chunks` +
+          ` (${Math.round((progress.completedChunks / progress.totalChunks) * 100)}%)` +
+          ` - Batch ${progress.currentBatchNumber}/${progress.totalBatches}`
+        );
+      }
     });
 
     // Send final response
