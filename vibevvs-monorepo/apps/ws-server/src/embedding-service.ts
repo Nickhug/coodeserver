@@ -197,6 +197,10 @@ export async function generateBatchEmbeddings(
   const errors: Array<{ chunkId: string; error: string }> = [];
   let totalTokensUsed = 0;
   let successfullyStored = 0;
+
+  // Throttling for progress updates
+  let lastProgressUpdateTime = 0;
+  const progressUpdateInterval = 30 * 1000; // 30 seconds
   
   // Smart batching based on token estimation and parallel processing
   const createOptimizedBatches = (chunks: CodeChunk[]): CodeChunk[][] => {
@@ -410,16 +414,21 @@ export async function generateBatchEmbeddings(
         // Report progress
         overallProcessedChunks += currentBatch.length;
         if (onProgress) {
-          onProgress({
-            completedChunks: overallProcessedChunks,
-            totalChunks: chunks.length,
-            currentBatchNumber,
-            totalBatches,
-            successfullyStoredInBatch: successfullyStoredInCurrentBatch,
-            errorsInBatch: errorsInCurrentBatch,
-            currentFileRelativePath: currentFileForProgress,
-            fileStatus: 'embedding_progress'
-          });
+          const now = Date.now();
+          // Send progress update if it's the last batch or if the throttle interval has passed
+          if (currentBatchNumber === totalBatches || now - lastProgressUpdateTime > progressUpdateInterval) {
+            onProgress({
+              completedChunks: overallProcessedChunks,
+              totalChunks: chunks.length,
+              currentBatchNumber,
+              totalBatches,
+              successfullyStoredInBatch: successfullyStoredInCurrentBatch,
+              errorsInBatch: errorsInCurrentBatch,
+              currentFileRelativePath: currentFileForProgress,
+              fileStatus: 'embedding_progress'
+            });
+            lastProgressUpdateTime = now; // Reset the timer
+          }
         }
         
         logger.info(`Batch ${currentBatchNumber}/${totalBatches} complete: ${overallProcessedChunks}/${chunks.length} chunks processed so far, ${successfullyStored} stored in Pinecone`);
