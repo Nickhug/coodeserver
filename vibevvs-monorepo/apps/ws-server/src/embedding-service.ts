@@ -198,9 +198,6 @@ export async function generateBatchEmbeddings(
   let totalTokensUsed = 0;
   let successfullyStored = 0;
 
-  // Throttling for progress updates
-  let lastProgressUpdateTime = 0;
-  const progressUpdateInterval = 30 * 1000; // 30 seconds
   
   // Smart batching based on token estimation and parallel processing
   const createOptimizedBatches = (chunks: CodeChunk[]): CodeChunk[][] => {
@@ -411,26 +408,9 @@ export async function generateBatchEmbeddings(
           }
         }
         
-        // Report progress
+        // Progress is now primarily tracked by file events (started, completed, error)
+        // The continuous 'embedding_progress' updates have been removed to avoid client spam.
         overallProcessedChunks += currentBatch.length;
-        if (onProgress) {
-          const now = Date.now();
-          // Send progress update if it's the last batch or if the throttle interval has passed
-          if (currentBatchNumber === totalBatches || now - lastProgressUpdateTime > progressUpdateInterval) {
-            onProgress({
-              completedChunks: overallProcessedChunks,
-              totalChunks: chunks.length,
-              currentBatchNumber,
-              totalBatches,
-              successfullyStoredInBatch: successfullyStoredInCurrentBatch,
-              errorsInBatch: errorsInCurrentBatch,
-              currentFileRelativePath: currentFileForProgress,
-              fileStatus: 'embedding_progress'
-            });
-            lastProgressUpdateTime = now; // Reset the timer
-          }
-        }
-        
         logger.info(`Batch ${currentBatchNumber}/${totalBatches} complete: ${overallProcessedChunks}/${chunks.length} chunks processed so far, ${successfullyStored} stored in Pinecone`);
 
         // Check if the current file is completed in this batch
