@@ -2,7 +2,31 @@
 // Licensed under the MIT License. See License.txt in the project root for license information.
 
 import { Mistral } from '@mistralai/mistralai';
+import type {
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    CompletionEvent, // Type for the wrapper of streamed chat events
+    CompletionChunk, // Type for the data within CompletionEvent
+    FIMCompletionResponse,
+    UsageInfo,
+    Messages as ChatMessage, // Changed from Message to Messages
+    ToolCall as MistralToolCall, // Tool calls in response
+    DeltaMessage, // Contains delta for content and tool_calls in a stream chunk choice
+} from '@mistralai/mistralai/models/components';
 import { config } from './config';
+
+// Helper to ensure content is a string
+function ensureStringContent(content: string | any[] | null | undefined): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map(item => (typeof item === 'string' ? item : item?.text || ''))
+      .join('');
+  }
+  return '';
+}
 import logger from '@repo/logger';
 // Dynamically import node-fetch as it is an ES Module
 
@@ -128,6 +152,9 @@ export async function generateBatchEmbeddings({
 /**
  * Process a Fill-In-Middle (FIM) request using Codestral model
  */
+/**
+ * Process a Fill-In-Middle (FIM) request using Codestral model
+ */
 export async function processFIM({
   apiKey,
   prefix,
@@ -150,7 +177,7 @@ export async function processFIM({
   stream?: boolean;
   stopSequences?: string[];
   onStream?: (chunk: string) => void;
-  onFinal?: (text: string) => void;
+  onFinal?: (text: string, tokensUsed?: number) => void; // Added tokensUsed
   onError?: (error: Error) => void;
 }): Promise<void> {
   try {
@@ -158,32 +185,31 @@ export async function processFIM({
     logger.info(`Mistral Codestral FIM request: model=${model}, stream=${stream}, temp=${temperature}`);
     
     // Validate inputs
-    if (!prefix && !suffix) {
-      throw new Error('Either prefix or suffix must be provided');
+    if (!prefix) { // Prefix (prompt) is essential for FIM
+      throw new Error('Prefix (prompt) must be provided for FIM');
     }
 
     // Log token length for diagnostics (approximate)
     logger.debug(`Mistral FIM approximate input sizes: prefix=${prefix.length / 4} chars, suffix=${suffix.length / 4} chars`);
     
-    // FIM is not directly supported by the SDK, so we need to use the raw API endpoint
-    // Use the enterprise API endpoint for FIM
-    const apiUrl = 'https://api.mistral.ai/v1/fim/completions';
-    
-    const requestBody = {
-      model,
-      prefix: prefix || '',
-      suffix: suffix || '',
-      max_tokens: maxTokens,
-      temperature,
-      stop: stopSequences,
-      stream
-    };
-    
-    if (stream && onStream) {
+    const client = new Mistral({ apiKey }); // Initialize client with options object
+
+    if (stream && onStream && onFinal) {
+      // SDK does not seem to have client.fim.stream(), so keep existing fetch-based streaming
+      const apiUrl = 'https://api.mistral.ai/v1/fim/completions';
+      const requestBody = {
+        model,
+        prompt: prefix, // API uses 'prompt' for prefix
+        suffix: suffix || undefined, // Suffix is optional
+        max_tokens: maxTokens,
+        temperature,
+        stop: stopSequences.length > 0 ? stopSequences : undefined,
+        stream
+      };
+      logger.debug(`Mistral FIM (stream) request body: ${JSON.stringify(requestBody)}`);
       // Process as stream
       try {
-        let fullResponse = '';
-        
+        let accumulatedText = '';
         const response = await fetch(apiUrl, {
           method: 'POST',
           headers: {
@@ -195,6 +221,7 @@ export async function processFIM({
         
         if (!response.ok) {
           const errorText = await response.text();
+          logger.error(`Mistral FIM stream API error: ${response.status} ${errorText}`);
           throw new Error(`Mistral API error: ${response.status} ${errorText}`);
         }
         
@@ -221,9 +248,11 @@ export async function processFIM({
               try {
                 const data = JSON.parse(jsonData);
                 if (data.choices && data.choices.length > 0) {
-                  const content = data.choices[0].text || '';
-                  if (content) {
-                    fullResponse += content;
+                  // Mistral FIM stream format: data.choices[0].text (older style) or data.choices[0].delta.content (newer chat style)
+                  // Sticking to data.choices[0].text as per original code for FIM stream.
+                  const content = data.choices[0].text;
+                  if (typeof content === 'string') { // Ensure content is a string
+                    accumulatedText += content;
                     onStream(content);
                   }
                 }
@@ -235,7 +264,7 @@ export async function processFIM({
         }
         
         if (onFinal) {
-          onFinal(fullResponse);
+          onFinal(accumulatedText, undefined); // No token count from raw stream
         }
       } catch (streamError) {
         logger.error(`Mistral FIM stream error: ${streamError instanceof Error ? streamError.message : String(streamError)}`);
@@ -243,31 +272,145 @@ export async function processFIM({
           onError(streamError instanceof Error ? streamError : new Error(String(streamError)));
         }
       }
-    } else {
-      // Process as non-stream
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({...requestBody, stream: false})
+    } else if (onFinal) { // Non-streaming FIM using SDK
+      logger.debug(`Mistral FIM (non-stream) using SDK: model=${model}, prefix_len=${prefix.length}, suffix_len=${suffix?.length || 0}`);
+      
+      const fimResponse: FIMCompletionResponse = await client.fim.complete({
+        model,
+        prompt: prefix,
+        suffix: suffix || undefined,
+        temperature,
+        maxTokens,
+        stop: stopSequences.length > 0 ? stopSequences : undefined,
       });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Mistral API error: ${response.status} ${errorText}`);
-      }
-      
-      const data = await response.json();
-      const completionText = data.choices && data.choices.length > 0 ? data.choices[0].text || '' : '';
-      
-      if (onFinal) {
-        onFinal(completionText);
-      }
+
+      const tokensUsed = fimResponse.usage?.totalTokens; // Corrected casing
+      const completionText = ensureStringContent(fimResponse.choices[0].message.content);
+      const finishReason = fimResponse.choices[0].finishReason; // Corrected casing
+      onFinal(completionText, tokensUsed); // Corrected arguments for FIM onFinal
+    } else {
+      // Fallback or error if no onFinal provided for non-streaming
+      logger.warn('Mistral FIM: onFinal callback not provided for non-streaming request.');
     }
   } catch (error) {
-    logger.error(`Mistral FIM error: ${error instanceof Error ? error.message : String(error)}`);
+    logger.error(`Mistral FIM processing error: ${error instanceof Error ? error.message : String(error)}`);
+    if (onError) {
+      onError(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+}
+
+/**
+ * Process a Chat request using Mistral models
+ */
+export async function processChat({
+  apiKey,
+  model = 'codestral-latest', // Default to codestral, or use specific chat models like 'mistral-large-latest'
+  messages,
+  temperature = 0.7,
+  maxTokens,
+  stream = false,
+  stopSequences = [],
+  // tools, // TODO: Add tool support if needed later
+  // tool_choice, // TODO: Add tool support if needed later
+  onStream,
+  onFinal,
+  onError,
+}: {
+  apiKey: string;
+  model?: string;
+  messages: ChatMessage[]; // Correctly using the aliased ChatMessage
+  temperature?: number;
+  maxTokens?: number;
+  stream?: boolean;
+  stopSequences?: string[];
+  // tools?: any[];
+  // tool_choice?: string;
+  onStream?: (chunk: string) => void;
+  onFinal?: (fullText: string, tokensUsed?: number, toolCalls?: MistralToolCall[], finishReason?: string | null) => void; // finishReason can be null
+  onError?: (error: Error) => void;
+}): Promise<void> {
+  try {
+    const client = new Mistral({ apiKey });
+    logger.info(`Mistral Chat request: model=${model}, stream=${stream}, temp=${temperature}, messages_count=${messages.length}`);
+
+    if (stream && onStream && onFinal) {
+      let fullResponseText = '';
+      let accumulatedToolCalls: any[] = [];
+      let finalUsage: UsageInfo | undefined;
+      let finalFinishReason: string | null = null;
+
+      const streamResponse = await client.chat.stream({
+        model,
+        messages,
+        temperature,
+        maxTokens,
+        stop: stopSequences.length > 0 ? stopSequences : undefined,
+      });
+
+      for await (const event of streamResponse) { // event is CompletionEvent
+        const chunk = event.data as CompletionChunk; // Assuming 'data' holds the CompletionChunk
+        if (chunk && chunk.choices && chunk.choices.length > 0) {
+          const choice = chunk.choices[0];
+          const delta = choice.delta as DeltaMessage; // Cast delta to DeltaMessage
+            const currentContent = ensureStringContent(delta?.content);
+            if (currentContent) {
+            fullResponseText += currentContent;
+            onStream(currentContent);
+          }
+          if (delta && delta.toolCalls) { // Corrected to toolCalls
+            delta.toolCalls.forEach((tc: MistralToolCall, index: number) => { // Corrected to toolCalls and typed tc, index
+              if (tc.function?.name || tc.function?.arguments) { // Check if there's something to add/update
+                let existingToolCall = accumulatedToolCalls[index]; // Use the index from forEach
+                if (!existingToolCall) {
+                  accumulatedToolCalls[index] = {
+                    id: tc.id,
+                    type: 'function',
+                    function: { name: tc.function.name || '', arguments: tc.function.arguments || "" }
+                  };
+                } else {
+                  if (tc.id && !existingToolCall.id) existingToolCall.id = tc.id;
+                  if (tc.function.name && !existingToolCall.function.name) existingToolCall.function.name = tc.function.name;
+                  if (tc.function.arguments) existingToolCall.function.arguments += tc.function.arguments;
+                }
+              }
+            });
+          }
+          if (choice.finishReason) { // Corrected casing
+            finalFinishReason = choice.finishReason;
+          }
+        }
+        if (chunk && chunk.usage) { 
+            finalUsage = chunk.usage as UsageInfo;
+        }
+      }
+      accumulatedToolCalls = accumulatedToolCalls.filter(tc => tc && tc.function && tc.function.name);
+
+      onFinal(fullResponseText, finalUsage?.totalTokens, accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined, finalFinishReason || undefined);
+
+    } else if (onFinal) { // Non-streaming
+      const response: ChatCompletionResponse = await client.chat.complete({
+        model,
+        messages,
+        temperature,
+        maxTokens,
+        stop: stopSequences.length > 0 ? stopSequences : undefined,
+        // tools,
+        // tool_choice,
+      });
+
+      const choice = response.choices && response.choices.length > 0 ? response.choices[0] : null;
+      const completionText = ensureStringContent(choice?.message?.content);
+      const tokensUsed = (response.usage as UsageInfo)?.totalTokens; // Verified casing
+      const toolCalls = choice?.message?.toolCalls as MistralToolCall[] | undefined; // Corrected to toolCalls
+      const finishReason = choice?.finishReason; // Corrected to finishReason
+
+      onFinal(completionText, tokensUsed, toolCalls, finishReason || undefined);
+    } else {
+      logger.warn('Mistral Chat: onFinal callback not provided for non-streaming request.');
+    }
+  } catch (error) {
+    logger.error(`Mistral Chat error: ${error instanceof Error ? error.message : String(error)}`);
     if (onError) {
       onError(error instanceof Error ? error : new Error(String(error)));
     }

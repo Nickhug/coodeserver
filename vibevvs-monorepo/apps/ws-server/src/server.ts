@@ -17,6 +17,7 @@ import { deleteVectors as pineconeDeleteVectors } from './pinecone-service';
 import * as documentProcessingService from './document-processing-service';
 import * as gemini from '@repo/ai-providers';
 import * as mistral from './mistral';
+import type { ToolCall as MistralToolCall } from '@mistralai/mistralai/models/components'; // For Mistral tool calls-providers';
 import {
   getUserByClerkId,
   verifyAndConsumeAuthToken,
@@ -1796,7 +1797,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   code: 'STREAMING_ERROR',
                   requestId: safeRequestId,
                   provider,
-                  model
+                  model: model // Correct for Gemini's commonStreamHandlers.onError
                 }
               });
             },
@@ -2071,6 +2072,301 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
         if (userId && response.tokensUsed) {
           const creditsUsed = response.creditsUsed || (response.tokensUsed / 1000);
           logUsage(userId, provider, model, response.tokensUsed);
+        }
+      }
+    } else if (provider === 'mistral') {
+      const apiKey = process.env.MISTRAL_API_KEY;
+
+      // Destructure model from payload and define modelToUse early for use in all paths, including API key error
+      const { model } = message.payload; 
+      const modelToUse = model || 'mistral-small-latest';
+
+      if (!apiKey) {
+        logger.error(`WS MISTRAL [${ws.connectionData.connectionId}][${safeRequestId}] MISTRAL_API_KEY not configured`);
+        sendToClient(ws, {
+          type: MessageType.PROVIDER_ERROR,
+          payload: {
+            error: 'Mistral API key not configured on server',
+            code: 'API_KEY_MISSING',
+            requestId: safeRequestId,
+            provider,
+            model: modelToUse // Use modelToUse which has a default
+          }
+        });
+        return;
+      }
+
+      // 'model' is destructured above, and 'modelToUse' is defined based on it.
+      const { stream, messages, prompt, suffix, temperature, maxTokens, systemMessage, tools, toolChoice, requestType } = message.payload;
+      // modelToUse is already defined above.
+      const userId = ws.connectionData.userId; // Get userId for logging usage
+
+      logger.info(
+        `WS MISTRAL [${ws.connectionData.connectionId}][${safeRequestId}] Request: ` +
+        `Model=${modelToUse}, Type=${requestType || 'chat'}, Stream=${stream}, Temp=${temperature}, ` +
+        `MaxTokens=${maxTokens}, Tools=${tools ? tools.map((t: any) => t.name).join(', ') : 'none'}`
+      );
+
+      const streamStats = { startTime: 0, chunkCount: 0, totalCharsStreamed: 0, lastChunkTime: 0 };
+
+      if (stream) {
+        try {
+          const commonStreamHandlers = {
+            onStart: () => {
+              streamStats.startTime = Date.now();
+              logger.info(`WS MISTRAL [${ws.connectionData.connectionId}][${safeRequestId}] Stream started for model ${modelToUse}`);
+            },
+            onStream: (chunk: string) => { // onStream from mistral.ts maps to this
+              streamStats.chunkCount++;
+              streamStats.totalCharsStreamed += chunk.length;
+              streamStats.lastChunkTime = Date.now();
+              if (streamStats.chunkCount % 10 === 0) {
+                logger.debug(
+                  `WS MISTRAL [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                  `Streaming progress: ${streamStats.chunkCount} chunks, ` +
+                  `${streamStats.totalCharsStreamed} chars, ` +
+                  `${Date.now() - streamStats.startTime}ms elapsed`
+                );
+              }
+              sendToClient(ws, {
+                type: MessageType.PROVIDER_STREAM_CHUNK,
+                payload: {
+                  chunk,
+                  requestId: safeRequestId,
+                  provider,
+                  model: modelToUse // Correct for Mistral's onStream
+                }
+              });
+            },
+            onError: (error: Error) => {
+              logger.error(
+                `WS MISTRAL [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                `Streaming error after ${streamStats.chunkCount} chunks: ${error.message}`
+              );
+              sendToClient(ws, {
+                type: MessageType.PROVIDER_ERROR,
+                payload: {
+                  error: `Streaming error: ${error.message}`,
+                  code: 'STREAMING_ERROR',
+                  requestId: safeRequestId,
+                  provider,
+                  model: modelToUse // Correct for Mistral's streaming onError
+                }
+              });
+            }
+          };
+
+          if (requestType === 'fim') {
+            await mistral.processFIM({
+              apiKey,
+              model: modelToUse,
+              prompt: String(prompt || ''),
+              suffix: suffix ? String(suffix) : undefined,
+              temperature,
+              maxTokens,
+              stream: true,
+              ...commonStreamHandlers,
+              onFinal: (fullText: string, tokensUsed?: number) => {
+                const elapsedMs = Date.now() - streamStats.startTime;
+                const charsPerSecond = streamStats.totalCharsStreamed / (elapsedMs / 1000);
+                logger.info(
+                  `WS MISTRAL FIM [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                  `Stream complete: ${streamStats.chunkCount} chunks, ` +
+                  `${streamStats.totalCharsStreamed} chars, ` +
+                  `${elapsedMs}ms total time, ` +
+                  `${charsPerSecond.toFixed(1)} chars/sec, ` +
+                  `${tokensUsed || 0} tokens used`
+                );
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_STREAM_END,
+                  payload: {
+                    tokensUsed,
+                    success: true,
+                    requestId: safeRequestId,
+                    provider,
+                    model: modelToUse
+                  }
+                });
+                if (userId && tokensUsed) {
+                  logUsage(userId, provider, modelToUse, tokensUsed);
+                }
+              }
+            });
+          } else { // Default to chat
+            await mistral.processChat({
+              apiKey,
+              model: modelToUse,
+              messages: messages || [{ role: 'user', content: String(prompt || '') }],
+              temperature,
+              maxTokens,
+              stream: true,
+              // tools, // Mistral tools might have a different format or not be fully supported yet
+              // tool_choice: toolChoice,
+              ...commonStreamHandlers,
+              onFinal: (fullText: string, tokensUsed?: number, toolCalls?: MistralToolCall[], finishReason?: string | null) => {
+                const elapsedMs = Date.now() - streamStats.startTime;
+                const charsPerSecond = streamStats.totalCharsStreamed / (elapsedMs / 1000);
+                logger.info(
+                  `WS MISTRAL Chat [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                  `Stream complete: ${streamStats.chunkCount} chunks, ` +
+                  `${streamStats.totalCharsStreamed} chars, ` +
+                  `${elapsedMs}ms total time, ` +
+                  `${charsPerSecond.toFixed(1)} chars/sec, ` +
+                  `${tokensUsed || 0} tokens used, FinishReason: ${finishReason}`
+                );
+
+                if (toolCalls && toolCalls.length > 0) {
+                  logger.info(`WS MISTRAL Chat [${ws.connectionData.connectionId}][${safeRequestId}] Tool calls received: ${JSON.stringify(toolCalls)}`);
+                  // Placeholder: Implement tool call context storage if needed for Mistral
+                  // activeTurnContexts.set(safeRequestId, { ... });
+                }
+
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_STREAM_END,
+                  payload: {
+                    tokensUsed,
+                    success: true, 
+                    requestId: safeRequestId,
+                    provider,
+                    model: modelToUse,
+                    toolCall: toolCalls && toolCalls.length > 0 ? toolCalls[0] : undefined, // Simplified: Pass first tool call if any
+                    waitingForToolCall: !!(toolCalls && toolCalls.length > 0)
+                  }
+                });
+                if (userId && tokensUsed) {
+                  logUsage(userId, provider, modelToUse, tokensUsed);
+                }
+              }
+            });
+          }
+        } catch (error) {
+          logger.error(
+            `WS MISTRAL [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+            `Error in streaming setup: ${error instanceof Error ? error.message : String(error)}`
+          );
+          sendToClient(ws, {
+            type: MessageType.PROVIDER_ERROR,
+            payload: {
+              error: `Streaming error: ${error instanceof Error ? error.message : String(error)}`,
+              code: 'STREAMING_ERROR',
+              requestId: safeRequestId,
+              provider,
+              model: modelToUse // Correct for Mistral's streaming catch block
+            }
+          });
+        }
+      } else { // Non-streaming
+        try {
+          if (requestType === 'fim') {
+            await mistral.processFIM({
+              apiKey,
+              model: modelToUse,
+              prompt: String(prompt || ''),
+              suffix: suffix ? String(suffix) : undefined,
+              temperature,
+              maxTokens,
+              stream: false,
+              onFinal: (fullText: string, tokensUsed?: number) => {
+                logger.info(
+                  `WS MISTRAL FIM (Non-Stream) [${ws.connectionData.connectionId}][${safeRequestId}] Response: ` +
+                  `Text Length: ${fullText.length}, Tokens Used: ${tokensUsed || 0}`
+                );
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_RESPONSE,
+                  payload: {
+                    text: fullText,
+                    tokensUsed,
+                    success: true,
+                    requestId: safeRequestId,
+                    provider,
+                    model: modelToUse
+                  }
+                });
+                if (userId && tokensUsed) {
+                  logUsage(userId, provider, modelToUse, tokensUsed);
+                }
+              },
+              onError: (error: Error) => {
+                logger.error(`WS MISTRAL FIM (Non-Stream) [${ws.connectionData.connectionId}][${safeRequestId}] Error: ${error.message}`);
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_ERROR,
+                  payload: {
+                    error: error.message,
+                    code: 'PROVIDER_API_ERROR',
+                    requestId: safeRequestId,
+                    provider,
+                    model: modelToUse // Correct for Mistral's non-streaming FIM onError
+                  }
+                });
+              }
+            });
+          } else { // Default to chat
+            await mistral.processChat({
+              apiKey,
+              model: modelToUse,
+              messages: messages || [{ role: 'user', content: String(prompt || '') }],
+              temperature,
+              maxTokens,
+              stream: false,
+              // tools, 
+              // tool_choice: toolChoice,
+              onFinal: (fullText: string, tokensUsed?: number, toolCalls?: MistralToolCall[], finishReason?: string | null) => {
+                logger.info(
+                  `WS MISTRAL Chat (Non-Stream) [${ws.connectionData.connectionId}][${safeRequestId}] Response: ` +
+                  `Text Length: ${fullText.length}, Tokens Used: ${tokensUsed || 0}, FinishReason: ${finishReason}`
+                );
+                if (toolCalls && toolCalls.length > 0) {
+                  logger.info(`WS MISTRAL Chat (Non-Stream) [${ws.connectionData.connectionId}][${safeRequestId}] Tool calls received: ${JSON.stringify(toolCalls)}`);
+                  // Placeholder: Implement tool call context storage if needed for Mistral
+                  // activeTurnContexts.set(safeRequestId, { ... });
+                }
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_RESPONSE,
+                  payload: {
+                    text: fullText,
+                    tokensUsed,
+                    success: true,
+                    requestId: safeRequestId,
+                    provider,
+                    model: modelToUse,
+                    toolCall: toolCalls && toolCalls.length > 0 ? toolCalls[0] : undefined, // Simplified
+                    waitingForToolCall: !!(toolCalls && toolCalls.length > 0)
+                  }
+                });
+                if (userId && tokensUsed) {
+                  logUsage(userId, provider, modelToUse, tokensUsed);
+                }
+              },
+              onError: (error: Error) => {
+                logger.error(`WS MISTRAL Chat (Non-Stream) [${ws.connectionData.connectionId}][${safeRequestId}] Error: ${error.message}`);
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_ERROR,
+                  payload: {
+                    error: error.message,
+                    code: 'PROVIDER_API_ERROR',
+                    requestId: safeRequestId,
+                    provider,
+                    model: modelToUse // Correct for Mistral's non-streaming Chat onError
+                  }
+                });
+              }
+            });
+          }
+        } catch (error) {
+            logger.error(
+              `WS MISTRAL [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+              `Error in non-streaming call: ${error instanceof Error ? error.message : String(error)}`
+            );
+            sendToClient(ws, {
+              type: MessageType.PROVIDER_ERROR,
+              payload: {
+                error: `Non-streaming call error: ${error instanceof Error ? error.message : String(error)}`,
+                code: 'PROVIDER_REQUEST_ERROR',
+                requestId: safeRequestId,
+                provider,
+                model: modelToUse // Correct for Mistral's non-streaming catch block
+              }
+            });
         }
       }
     } else {
