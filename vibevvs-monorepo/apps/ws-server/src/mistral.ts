@@ -4,7 +4,7 @@
 import { Mistral } from '@mistralai/mistralai';
 import { config } from './config';
 import logger from '@repo/logger';
-import fetch from 'node-fetch';
+// Dynamically import node-fetch as it is an ES Module
 
 // Constants
 const EMBEDDING_MODEL = 'codestral-embed';
@@ -154,6 +154,7 @@ export async function processFIM({
   onError?: (error: Error) => void;
 }): Promise<void> {
   try {
+    const { default: fetch } = await import('node-fetch');
     logger.info(`Mistral Codestral FIM request: model=${model}, stream=${stream}, temp=${temperature}`);
     
     // Validate inputs
