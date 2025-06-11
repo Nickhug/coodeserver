@@ -4,6 +4,7 @@
 import { Mistral } from '@mistralai/mistralai';
 import { config } from './config';
 import logger from '@repo/logger';
+import fetch from 'node-fetch';
 
 // Constants
 const EMBEDDING_MODEL = 'codestral-embed';
@@ -125,10 +126,159 @@ export async function generateBatchEmbeddings({
 }
 
 /**
+ * Process a Fill-In-Middle (FIM) request using Codestral model
+ */
+export async function processFIM({
+  apiKey,
+  prefix,
+  suffix,
+  model = 'codestral-latest',
+  temperature = 0.2,
+  maxTokens = 512,
+  stream = true,
+  stopSequences = [],
+  onStream,
+  onFinal,
+  onError,
+}: {
+  apiKey: string;
+  prefix: string;
+  suffix: string;
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  stream?: boolean;
+  stopSequences?: string[];
+  onStream?: (chunk: string) => void;
+  onFinal?: (text: string) => void;
+  onError?: (error: Error) => void;
+}): Promise<void> {
+  try {
+    logger.info(`Mistral Codestral FIM request: model=${model}, stream=${stream}, temp=${temperature}`);
+    
+    // Validate inputs
+    if (!prefix && !suffix) {
+      throw new Error('Either prefix or suffix must be provided');
+    }
+
+    // Log token length for diagnostics (approximate)
+    logger.debug(`Mistral FIM approximate input sizes: prefix=${prefix.length / 4} chars, suffix=${suffix.length / 4} chars`);
+    
+    // FIM is not directly supported by the SDK, so we need to use the raw API endpoint
+    // Use the enterprise API endpoint for FIM
+    const apiUrl = 'https://api.mistral.ai/v1/fim/completions';
+    
+    const requestBody = {
+      model,
+      prefix: prefix || '',
+      suffix: suffix || '',
+      max_tokens: maxTokens,
+      temperature,
+      stop: stopSequences,
+      stream
+    };
+    
+    if (stream && onStream) {
+      // Process as stream
+      try {
+        let fullResponse = '';
+        
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify(requestBody)
+        });
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`Mistral API error: ${response.status} ${errorText}`);
+        }
+        
+        if (!response.body) {
+          throw new Error('Response body is null');
+        }
+        
+        // Process the stream
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n').filter(line => line.trim() !== '');
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const jsonData = line.substring(6);
+              if (jsonData === '[DONE]') continue;
+              
+              try {
+                const data = JSON.parse(jsonData);
+                if (data.choices && data.choices.length > 0) {
+                  const content = data.choices[0].text || '';
+                  if (content) {
+                    fullResponse += content;
+                    onStream(content);
+                  }
+                }
+              } catch (e) {
+                logger.error(`Failed to parse JSON from stream: ${e instanceof Error ? e.message : String(e)}`);
+              }
+            }
+          }
+        }
+        
+        if (onFinal) {
+          onFinal(fullResponse);
+        }
+      } catch (streamError) {
+        logger.error(`Mistral FIM stream error: ${streamError instanceof Error ? streamError.message : String(streamError)}`);
+        if (onError) {
+          onError(streamError instanceof Error ? streamError : new Error(String(streamError)));
+        }
+      }
+    } else {
+      // Process as non-stream
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({...requestBody, stream: false})
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Mistral API error: ${response.status} ${errorText}`);
+      }
+      
+      const data = await response.json();
+      const completionText = data.choices && data.choices.length > 0 ? data.choices[0].text || '' : '';
+      
+      if (onFinal) {
+        onFinal(completionText);
+      }
+    }
+  } catch (error) {
+    logger.error(`Mistral FIM error: ${error instanceof Error ? error.message : String(error)}`);
+    if (onError) {
+      onError(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+}
+
+/**
  * List available Mistral models (for compatibility with other provider interfaces)
  */
 export async function listModels(apiKey: string): Promise<any[]> {
   return [
     { id: 'codestral-embed', name: 'Codestral Embed' },
+    { id: 'codestral-latest', name: 'Codestral Latest', capabilities: ['fim', 'completion'] },
   ];
 }

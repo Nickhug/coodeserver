@@ -16,6 +16,7 @@ import {
 import { deleteVectors as pineconeDeleteVectors } from './pinecone-service';
 import * as documentProcessingService from './document-processing-service';
 import * as gemini from '@repo/ai-providers';
+import * as mistral from './mistral';
 import {
   getUserByClerkId,
   verifyAndConsumeAuthToken,
@@ -900,7 +901,7 @@ async function handleRemoveDocument(ws: WebSocketWithData, userId: string, messa
 /**
  * Set up HTTP routes
  */
-export function setupHttpRoutes(server: http.Server): void {
+export function setupHttpRoutes(server: http.Server, wss?: WebSocketServer): void {
   // Get the Express application from the server
   const app = server instanceof http.Server ? server.listeners('request')[0] as express.Application : undefined;
 
@@ -1026,6 +1027,157 @@ export function setupHttpRoutes(server: http.Server): void {
     }
   });
 
+  // Add FIM streaming endpoint
+  app.post('/api/void/llm-message/fim/stream', express.json({ limit: '50mb' }), async (req, res) => {
+    const requestId = uuidv4();
+    const startTime = Date.now();
+    logger.info(`[${requestId}] FIM request received: ${JSON.stringify(req.body?.modelName || 'unknown')}`);
+    
+    try {
+      const {
+        prefix,
+        suffix,
+        modelName = 'codestral-latest',
+        stopSequences = [],
+        temperature = 0.2,
+        maxTokens = 512,
+        providerName = 'mistral',
+        apiKey,
+        stream = true
+      } = req.body;
+
+      // Validate request
+      if (!prefix && !suffix) {
+        logger.error(`[${requestId}] FIM request missing both prefix and suffix`);
+        return res.status(400).json({ error: 'Either prefix or suffix must be provided' });
+      }
+
+      if (!apiKey) {
+        logger.error(`[${requestId}] FIM request missing API key`);
+        return res.status(401).json({ error: 'API key is required' });
+      }
+
+      // Set headers for streaming response
+      if (stream) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+      }
+
+      // Setup to track response data
+      let fullText = '';
+      let tokenCount = 0;
+      let isResponseComplete = false;
+
+      // Setup for client abort handling
+      req.on('close', () => {
+        if (!isResponseComplete) {
+          logger.info(`[${requestId}] Client closed connection before FIM response completion`);
+          isResponseComplete = true;
+        }
+      });
+
+      // Process FIM request
+      await mistral.processFIM({
+        apiKey,
+        prefix,
+        suffix,
+        model: modelName,
+        temperature,
+        maxTokens,
+        stream,
+        stopSequences,
+        // Handle streaming chunks
+        onStream: (chunk) => {
+          if (isResponseComplete) return;
+          tokenCount++;
+
+          fullText += chunk;
+          
+          // Send chunk as SSE
+          res.write(`data: ${JSON.stringify({
+            event: 'text',
+            text: chunk,
+            fullText: fullText,
+            modelName,
+            timeSinceStart: Date.now() - startTime,
+            tokenCount,
+          })}\n\n`);
+        },
+        // Handle final completed response
+        onFinal: (text) => {
+          if (isResponseComplete) return;
+          isResponseComplete = true;
+
+          if (stream) {
+            // Send final event for streaming responses
+            res.write(`data: ${JSON.stringify({
+              event: 'end',
+              fullText: text || fullText,
+              modelName,
+              timeSinceStart: Date.now() - startTime,
+              tokenCount,
+            })}\n\n`);
+            res.end();
+          } else {
+            // Send JSON response for non-streaming requests
+            res.json({
+              text: text || fullText,
+              modelName,
+              timeSinceStart: Date.now() - startTime,
+              tokenCount,
+            });
+          }
+
+          logger.info(`[${requestId}] FIM request completed in ${Date.now() - startTime}ms, tokens: ${tokenCount}`);
+        },
+        // Handle errors
+        onError: (error) => {
+          if (isResponseComplete) return;
+          isResponseComplete = true;
+
+          logger.error(`[${requestId}] FIM request error: ${error.message}`);
+
+          if (stream) {
+            res.write(`data: ${JSON.stringify({
+              event: 'error',
+              error: error.message,
+              timeSinceStart: Date.now() - startTime,
+            })}\n\n`);
+            res.end();
+          } else {
+            res.status(500).json({
+              error: error.message,
+              timeSinceStart: Date.now() - startTime,
+            });
+          }
+        },
+      });
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      logger.error(`[${requestId}] FIM request processing error: ${errorMsg}`);
+      
+      if (!res.headersSent) {
+        res.status(500).json({
+          error: errorMsg,
+          timeSinceStart: Date.now() - startTime,
+        });
+      } else {
+        try {
+          res.write(`data: ${JSON.stringify({
+            event: 'error',
+            error: errorMsg,
+            timeSinceStart: Date.now() - startTime,
+          })}\n\n`);
+          res.end();
+        } catch (writeError) {
+          logger.error(`[${requestId}] Failed to send error response: ${String(writeError)}`);
+        }
+      }
+    }
+  });
+
   // Global 404 handler
   app.use((req, res) => {
     logger.warn(`404 Not Found: ${req.method} ${req.path}`);
@@ -1060,6 +1212,7 @@ export function startWebSocketServer(): http.Server {
   logger.info(`NODE_ENV: ${process.env.NODE_ENV || 'not set'}`);
   logger.info(`PINECONE_API_KEY: ${process.env.PINECONE_API_KEY ? 'SET (' + process.env.PINECONE_API_KEY.length + ' chars)' : 'NOT SET'}`);
   logger.info(`GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? 'SET (' + process.env.GEMINI_API_KEY.length + ' chars)' : 'NOT SET'}`);
+  logger.info(`MISTRAL_API_KEY: ${process.env.MISTRAL_API_KEY ? 'SET (' + process.env.MISTRAL_API_KEY.length + ' chars)' : 'NOT SET'}`);
   logger.info(`PINECONE_INDEX_NAME: ${process.env.PINECONE_INDEX_NAME || 'not set (using default)'}`);
   logger.info(`PINECONE_NAMESPACE: ${process.env.PINECONE_NAMESPACE || 'not set (using default)'}`);
   logger.info('=====================================');
@@ -1067,11 +1220,11 @@ export function startWebSocketServer(): http.Server {
   // Set up the HTTP server
   const server = setupServer();
 
-  // Set up HTTP routes
-  setupHttpRoutes(server);
-
   // Set up the WebSocket server
-  setupWebSocketServer(server);
+  const wss = setupWebSocketServer(server);
+
+  // Set up HTTP routes
+  setupHttpRoutes(server, wss);
 
   // Log host configuration information
   if (config.host === '::') {
