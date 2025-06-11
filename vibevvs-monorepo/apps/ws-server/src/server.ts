@@ -1524,35 +1524,7 @@ async function handleProviderModels(ws: WebSocketWithData, message: ClientMessag
       case 'mistral':
         if (config.mistralApiKey) {
           available = true;
-          models = [
-            {
-              id: 'mistral-large-latest',
-              name: 'Mistral Large',
-              provider: 'mistral',
-              available: true,
-              contextWindow: 32768,
-              maxOutputTokens: 8192,
-              features: ['streaming', 'toolCalls']
-            },
-            {
-              id: 'mistral-medium-latest',
-              name: 'Mistral Medium',
-              provider: 'mistral',
-              available: true,
-              contextWindow: 32768,
-              maxOutputTokens: 8192,
-              features: ['streaming']
-            },
-            {
-              id: 'mistral-small-latest',
-              name: 'Mistral Small',
-              provider: 'mistral',
-              available: true,
-              contextWindow: 32768,
-              maxOutputTokens: 4096,
-              features: ['streaming']
-            }
-          ];
+          models = await mistral.listModels(config.mistralApiKey);
         }
         break;
 
