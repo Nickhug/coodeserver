@@ -430,6 +430,23 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
         return;
       }
       await handleToolExecutionResult(ws, clientMessage);
+    } else if (messageType === MessageType.FIM_REQUEST) {
+      const provider = clientMessage.payload?.provider || 'unknown';
+      const model = clientMessage.payload?.model || 'unknown';
+      logger.info(`WS MSG [${connectionId}][${requestId}] FIM request: ${provider}/${model}, streaming: ${!!clientMessage.payload?.stream}`);
+      if (config.authEnabled && !isAuthenticated) {
+        logger.warn(`WS AUTH [${connectionId}] Unauthorized FIM request rejected`);
+        sendToClient(ws, {
+          type: MessageType.PROVIDER_ERROR,
+          payload: {
+            error: 'Authentication required',
+            code: 'UNAUTHORIZED',
+            requestId: clientMessage.payload?.requestId
+          }
+        });
+        return;
+      }
+      await handleFimRequest(ws, clientMessage);
     } else if (messageType === MessageType.CODEBASE_EMBEDDING_REQUEST) {
       logger.info(`WS MSG [${connectionId}][${requestId}] Codebase embedding request`);
       if (config.authEnabled && !isAuthenticated) {
@@ -1562,6 +1579,276 @@ async function handleProviderModels(ws: WebSocketWithData, message: ClientMessag
 }
 
 /**
+ * Handle FIM (Fill-in-the-Middle) request from client
+ */
+async function handleFimRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
+  if (message.type !== MessageType.FIM_REQUEST) {
+    logger.error('Invalid message type passed to handleFimRequest');
+    return;
+  }
+
+  const { provider, model, prefix, suffix, temperature, maxTokens, stream = true, requestId } = message.payload;
+
+  // Ensure requestId is always available, generate one if needed
+  const safeRequestId = requestId || `fim-${uuidv4().substring(0, 8)}`;
+
+  const userId = ws.connectionData.userId;
+
+  // Log the full request details for debugging
+  logger.info(`FIM Request [${safeRequestId}]: ` +
+    `Provider: ${provider}, Model: ${model}, User: ${userId || 'anonymous'}, Stream: ${stream}, ` +
+    `Prefix Length: ${prefix?.length || 0}, Suffix Length: ${suffix?.length || 0}`);
+
+  if (!userId && config.authEnabled) {
+    logger.error(`WS FIM [${ws.connectionData.connectionId}][${safeRequestId}] No user ID available for FIM request`);
+    sendToClient(ws, {
+      type: MessageType.PROVIDER_ERROR,
+      payload: {
+        error: 'User ID not available',
+        code: 'NO_USER_ID',
+        requestId: safeRequestId
+      }
+    });
+    return;
+  }
+
+  logger.info(`Processing ${provider} FIM request for model ${model} from user ${userId || 'anonymous'}`);
+
+  try {
+    // Check if provider is configured
+    let apiKey: string;
+    switch (provider) {
+      case 'mistral': // Currently only Mistral supported for FIM
+        apiKey = config.mistralApiKey;
+        break;
+      default:
+        sendToClient(ws, {
+          type: MessageType.PROVIDER_ERROR,
+          payload: {
+            error: `Provider ${provider} is not supported for FIM requests`,
+            code: 'UNSUPPORTED_PROVIDER',
+            requestId: safeRequestId
+          }
+        });
+        return;
+    }
+
+    if (!apiKey) {
+      sendToClient(ws, {
+        type: MessageType.PROVIDER_ERROR,
+        payload: {
+          error: `API key for provider ${provider} is not configured`,
+          code: 'MISSING_API_KEY',
+          requestId: safeRequestId
+        }
+      });
+      return;
+    }
+
+    // Initialize provider client based on provider type
+    if (provider === 'mistral') {
+      // Signal stream start
+      if (stream) {
+        sendToClient(ws, {
+          type: MessageType.PROVIDER_STREAM_START,
+          payload: {
+            provider,
+            model,
+            requestId: safeRequestId
+          }
+        });
+      }
+
+      try {
+        // Use Mistral API for FIM
+        const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              {
+                role: 'user',
+                content: `Please complete the code between the prefix and suffix:\n\nPrefix:\n${prefix}\n\nSuffix:\n${suffix}`
+              }
+            ],
+            temperature: temperature || 0.2,
+            max_tokens: maxTokens || 256,
+            stream
+          })
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          logger.error(`Mistral FIM API error: ${errorText}`);
+          sendToClient(ws, {
+            type: MessageType.PROVIDER_ERROR,
+            payload: {
+              error: `Mistral API error: ${response.status} ${errorText}`,
+              code: 'PROVIDER_API_ERROR',
+              requestId: safeRequestId
+            }
+          });
+          return;
+        }
+
+        // Handle streaming response
+        if (stream) {
+          if (!response.body) {
+            throw new Error('Response body is null');
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let accumulatedText = '';
+          let buffer = '';
+
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              
+              // Process all complete lines
+              for (let i = 0; i < lines.length - 1; i++) {
+                const line = lines[i].trim();
+                if (line === '') continue;
+                if (line === 'data: [DONE]') continue;
+                
+                if (line.startsWith('data: ')) {
+                  try {
+                    const jsonData = JSON.parse(line.substring(6));
+                    if (jsonData.choices && jsonData.choices[0]?.delta?.content) {
+                      const chunk = jsonData.choices[0].delta.content;
+                      accumulatedText += chunk;
+                      
+                      // Send chunk to client
+                      sendToClient(ws, {
+                        type: MessageType.PROVIDER_STREAM_CHUNK,
+                        payload: {
+                          chunk,
+                          requestId: safeRequestId
+                        }
+                      });
+                    }
+                  } catch (error) {
+                    logger.error(`Error parsing streaming response: ${error}`);
+                  }
+                }
+              }
+              
+              // Keep the last potentially incomplete line in the buffer
+              buffer = lines[lines.length - 1];
+            }
+            
+            // Final decoding when stream is done
+            buffer += decoder.decode();
+            if (buffer && buffer.trim() !== '' && !buffer.includes('data: [DONE]')) {
+              try {
+                if (buffer.startsWith('data: ')) {
+                  const jsonData = JSON.parse(buffer.substring(6));
+                  if (jsonData.choices && jsonData.choices[0]?.delta?.content) {
+                    const chunk = jsonData.choices[0].delta.content;
+                    accumulatedText += chunk;
+                    
+                    // Send final chunk to client
+                    sendToClient(ws, {
+                      type: MessageType.PROVIDER_STREAM_CHUNK,
+                      payload: {
+                        chunk,
+                        requestId: safeRequestId
+                      }
+                    });
+                  }
+                }
+              } catch (error) {
+                logger.error(`Error parsing final streaming response: ${error}`);
+              }
+            }
+            
+            // Send stream end message
+            sendToClient(ws, {
+              type: MessageType.PROVIDER_STREAM_END,
+              payload: {
+                tokensUsed: accumulatedText.split(/\s+/).length, // Rough estimate of tokens used
+                success: true,
+                requestId: safeRequestId
+              }
+            });
+            
+          } catch (error) {
+            logger.error(`Error reading stream: ${error}`);
+            sendToClient(ws, {
+              type: MessageType.PROVIDER_ERROR,
+              payload: {
+                error: `Error reading stream: ${error}`,
+                code: 'STREAM_ERROR',
+                requestId: safeRequestId
+              }
+            });
+          } finally {
+            try {
+              await reader.cancel();
+            } catch (error) {
+              logger.error(`Error canceling reader: ${error}`);
+            }
+          }
+        } else {
+          // Handle non-streaming response
+          const data = await response.json();
+          const completion = data.choices[0]?.message?.content || '';
+          
+          sendToClient(ws, {
+            type: MessageType.PROVIDER_RESPONSE,
+            payload: {
+              text: completion,
+              tokensUsed: data.usage?.total_tokens || 0,
+              success: true,
+              requestId: safeRequestId
+            }
+          });
+        }
+      } catch (error) {
+        logger.error(`Error in Mistral FIM request: ${error}`);
+        sendToClient(ws, {
+          type: MessageType.PROVIDER_ERROR,
+          payload: {
+            error: `Error processing Mistral FIM request: ${error}`,
+            code: 'PROVIDER_ERROR',
+            requestId: safeRequestId
+          }
+        });
+      }
+    } else {
+      // This shouldn't happen as we already filtered unsupported providers
+      sendToClient(ws, {
+        type: MessageType.PROVIDER_ERROR,
+        payload: {
+          error: `Provider ${provider} implementation not found`,
+          code: 'PROVIDER_NOT_IMPLEMENTED',
+          requestId: safeRequestId
+        }
+      });
+    }
+  } catch (error) {
+    logger.error(`Unexpected error in handleFimRequest: ${error}`);
+    sendToClient(ws, {
+      type: MessageType.PROVIDER_ERROR,
+      payload: {
+        error: `Unexpected error: ${error}`,
+        code: 'INTERNAL_ERROR',
+        requestId: safeRequestId
+      }
+    });
+  }
+}
+
+/**
  * Handle provider request from client
  */
 async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
@@ -2160,8 +2447,8 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             await mistral.processFIM({
               apiKey,
               model: modelToUse,
-              prompt: String(prompt || ''),
-              suffix: suffix ? String(suffix) : undefined,
+              prefix: String(prompt || ''),
+              suffix: String(suffix || ''),
               temperature,
               maxTokens,
               stream: true,
@@ -2261,8 +2548,8 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             await mistral.processFIM({
               apiKey,
               model: modelToUse,
-              prompt: String(prompt || ''),
-              suffix: suffix ? String(suffix) : undefined,
+              prefix: String(prompt || ''),
+              suffix: String(suffix || ''),
               temperature,
               maxTokens,
               stream: false,

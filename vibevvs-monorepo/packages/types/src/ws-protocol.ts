@@ -29,6 +29,7 @@ export enum MessageType {
   PROVIDER_REQUEST = 'provider_request',
   PROVIDER_RESPONSE = 'provider_response',
   PROVIDER_ERROR = 'provider_error',
+  FIM_REQUEST = 'fim_request',
 
   // Streaming messages
   PROVIDER_STREAM_START = 'provider_stream_start',
