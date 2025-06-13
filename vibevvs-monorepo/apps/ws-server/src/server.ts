@@ -2124,7 +2124,8 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                     provider,
                     model,
                     toolCall: response.toolCall, // Pass through without transformation
-                    waitingForToolCall: true // Always set to true when tool call is present
+                    waitingForToolCall: true, // Always set to true when tool call is present
+                    reasoning: response.reasoning // Added reasoning
                   }
                 });
               } else {
@@ -2141,7 +2142,9 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                     success: response.success,
                     requestId: safeRequestId,
                     provider,
-                    model
+                    model,
+                    text: response.text, // Ensure text is included
+                    reasoning: response.reasoning // Added reasoning
                   }
                 });
               }

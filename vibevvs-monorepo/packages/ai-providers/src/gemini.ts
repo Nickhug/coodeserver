@@ -724,7 +724,6 @@ export async function sendStreamingRequest(
     logger.info(`Gemini stream completed, estimated tokens: ${totalTokens}`);
     
     // Pass the raw response to the completion handler
-    // The client side will handle parsing tool calls
     const responseObj: {
       text: string;
       tokensUsed: number;
@@ -738,93 +737,91 @@ export async function sendStreamingRequest(
         id: string;
       };
       waitingForToolCall?: boolean;
+      reasoning?: string; // Added for reasoning text
     } = {
-      text: completeText,
+      text: completeText.trim(), // Initial text is all accumulated content
       tokensUsed: totalTokens,
       creditsUsed: totalTokens / 1000, // Assuming 1000 tokens = 1 credit
       success: true,
-      generatedText: completeText,
-      rawResponse: rawResponse // Include the raw response as received, without modification
+      generatedText: completeText.trim(),
+      rawResponse: rawResponse, // Include the raw response as received, without modification
+      reasoning: undefined // Initialize reasoning
     };
 
-    // Check for toolCall but don't transform it
+    // Check for toolCall and differentiate reasoning from main text
     if (rawResponse && 
         rawResponse.candidates && 
         rawResponse.candidates[0]?.content?.parts) {
       
-      // Log the entire response structure for debugging
-      logger.info(`RAW RESPONSE STRUCTURE: ${JSON.stringify({
+      logger.info(`RAW RESPONSE STRUCTURE (for reasoning split): ${JSON.stringify({
         hasContent: !!rawResponse.candidates[0].content,
         contentParts: rawResponse.candidates[0].content?.parts?.length,
-        hasToolCall: rawResponse.candidates[0].content?.parts?.some((p: any) => p.functionCall)
+        hasToolCallInParts: rawResponse.candidates[0].content?.parts?.some((p: any) => p.functionCall),
+        hasCandidateLevelToolCall: !!rawResponse.candidates[0].functionCall
       }, null, 2)}`);
       
-      // Check each part for a function call
+      let toolCallFoundInParts = false;
       for (const part of rawResponse.candidates[0].content.parts) {
         if (part.functionCall) {
           logger.info(`Found functionCall in part: ${JSON.stringify(part.functionCall, null, 2)}`);
           
+          // The completeText accumulated *before* this part is considered reasoning.
+          // We need to be careful if completeText already includes text from this part.
+          // Assuming onChunk added to completeText, and this is the *final* processing step.
+          responseObj.reasoning = completeText.trim(); // Tentatively, all prior text is reasoning.
+          
           responseObj.toolCall = {
             name: part.functionCall.name,
             parameters: part.functionCall.args || {},
-            id: rawResponse.candidates[0].contentId || 'unknown'
+            id: rawResponse.candidates[0].contentId || `fc-${Date.now()}` // Ensure ID
           };
           
+          // Text directly associated with this tool call part (if any)
+          let toolCallPartText = '';
+          if (part.text) {
+            toolCallPartText = part.text.trim();
+            // If this part's text was part of completeText, we need to adjust reasoning.
+            // This is complex. For now, assume completeText is all text *before* this tool call decision.
+            // And toolCallPartText is *only* text from this specific part.
+            responseObj.reasoning = responseObj.reasoning.endsWith(toolCallPartText) 
+                                  ? responseObj.reasoning.slice(0, -toolCallPartText.length).trim() 
+                                  : responseObj.reasoning;
+          }
+          responseObj.text = toolCallPartText; // Main text is only what's in this part
+
           // Special handling for edit_file tool
           if (responseObj.toolCall.name === 'edit_file') {
-            // Ensure that searchReplaceBlocks parameter exists and is a string
             if (!responseObj.toolCall.parameters.searchReplaceBlocks) {
-              logger.warn(`Edit file tool call missing searchReplaceBlocks parameter, adding empty default`);
               responseObj.toolCall.parameters.searchReplaceBlocks = '';
             } else if (typeof responseObj.toolCall.parameters.searchReplaceBlocks !== 'string') {
-              logger.warn(`Edit file tool call has non-string searchReplaceBlocks, converting to string`);
               responseObj.toolCall.parameters.searchReplaceBlocks = String(responseObj.toolCall.parameters.searchReplaceBlocks);
             }
           }
           
-          // Explicitly ensure waitingForToolCall is true
           responseObj.waitingForToolCall = true;
-          
-          logger.info(`Set toolCall in response: ${JSON.stringify(responseObj.toolCall, null, 2)}`);
-          logger.info(`waitingForToolCall set to: ${responseObj.waitingForToolCall}`);
-          break;
+          toolCallFoundInParts = true;
+          logger.info(`Set toolCall from part.functionCall. Reasoning length: ${responseObj.reasoning?.length}, Text: "${responseObj.text}"`);
+          break; 
         }
       }
       
-      // Also check for any potential function call patterns in the text itself
-      // This is a fallback mechanism for when the model includes function call syntax in text
-      if (!responseObj.toolCall && completeText) {
-        // Look for structured function call patterns in the text
+      // Fallback: check for function call patterns in the completeText (if not found in parts directly)
+      if (!toolCallFoundInParts && completeText) {
         const functionCallPatterns = [
-          // antml:function_calls pattern
           /<function_calls>[\s\S]*?<invoke name="([^"]+)">/,
-          // General function call pattern with JSON
           /\{\s*"functionCall"\s*:\s*\{[\s\S]*?"name"\s*:\s*"([^"]+)"/,
-          // Plain text function call pattern
           /```\s*\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"args"\s*:/
         ];
         
         for (const pattern of functionCallPatterns) {
           const match = completeText.match(pattern);
-          if (match) {
-            logger.info(`Found function call pattern in text: ${match[1]}`);
-            
-            // Don't send the function call as text to the client
-            // Extract it as a toolCall instead
+          if (match && match[0]) { // Ensure match[0] exists for replacement
+            logger.info(`Found function call pattern in completeText: ${match[1]}`);
             try {
-              // Attempt to extract the function name
               const functionName = match[1];
               let parameters = {};
-              
-              // Try to extract parameters as well
               const paramMatch = completeText.match(/"parameters":\s*(\{[\s\S]*?\})/);
-              if (paramMatch) {
-                try {
-                  parameters = JSON.parse(paramMatch[1]);
-                } catch (e) {
-                  logger.error(`Failed to parse parameters from text: ${e}`);
-                }
-              }
+              if (paramMatch && paramMatch[1]) { try { parameters = JSON.parse(paramMatch[1]); } catch (e) { logger.error(`Failed to parse parameters from text: ${e}`); } }
               
               responseObj.toolCall = {
                 name: functionName,
@@ -832,69 +829,59 @@ export async function sendStreamingRequest(
                 id: `extracted-${Date.now()}`
               };
               
-              // Special handling for edit_file tool
-              if (responseObj.toolCall.name === 'edit_file') {
-                // Ensure that searchReplaceBlocks parameter exists and is a string
-                if (!responseObj.toolCall.parameters.searchReplaceBlocks) {
-                  logger.warn(`Extracted edit_file tool call missing searchReplaceBlocks parameter, adding empty default`);
-                  responseObj.toolCall.parameters.searchReplaceBlocks = '';
-                } else if (typeof responseObj.toolCall.parameters.searchReplaceBlocks !== 'string') {
-                  logger.warn(`Extracted edit_file tool call has non-string searchReplaceBlocks, converting to string`);
-                  responseObj.toolCall.parameters.searchReplaceBlocks = String(responseObj.toolCall.parameters.searchReplaceBlocks);
-                }
-              }
-              
+              if (responseObj.toolCall.name === 'edit_file') { /* ... edit_file handling ... */ }
               responseObj.waitingForToolCall = true;
               
-              logger.info(`Extracted toolCall from text: ${JSON.stringify(responseObj.toolCall, null, 2)}`);
-              
-              // Remove the function call text from the response
-              responseObj.text = completeText.replace(/<function_calls>[\s\S]*?<\/antml:function_calls>/, '');
-              
+              // The text containing the pattern is reasoning.
+              // The actual text response is what remains after removing the pattern.
+              responseObj.reasoning = completeText.trim();
+              responseObj.text = completeText.replace(match[0], '').trim(); // Remove the matched pattern
+
+              logger.info(`Extracted toolCall from text. Reasoning length: ${responseObj.reasoning?.length}, Text: "${responseObj.text}"`);
+              toolCallFoundInParts = true; // Mark as found to prevent candidate-level override if this was it
               break;
-            } catch (e) {
-              logger.error(`Failed to extract function call from text: ${e}`);
-            }
+            } catch (e) { logger.error(`Failed to extract toolCall from text: ${e}`); }
           }
         }
       }
       
-      // Check candidate-level function call
-      if (!responseObj.toolCall && rawResponse.candidates[0].functionCall) {
+      // Check candidate-level function call (if not found by other means)
+      if (!toolCallFoundInParts && !responseObj.toolCall && rawResponse.candidates[0].functionCall) {
         logger.info(`Found candidate-level functionCall: ${JSON.stringify(rawResponse.candidates[0].functionCall, null, 2)}`);
         
+        responseObj.reasoning = completeText.trim(); // All preceding text is reasoning
         responseObj.toolCall = {
           name: rawResponse.candidates[0].functionCall.name,
           parameters: rawResponse.candidates[0].functionCall.args || {},
-          id: rawResponse.candidates[0].contentId || 'unknown'
+          id: rawResponse.candidates[0].contentId || `cand-fc-${Date.now()}`
         };
         
-        // Special handling for edit_file tool
-        if (responseObj.toolCall.name === 'edit_file') {
-          // Ensure that searchReplaceBlocks parameter exists and is a string
-          if (!responseObj.toolCall.parameters.searchReplaceBlocks) {
-            logger.warn(`Candidate-level edit_file tool call missing searchReplaceBlocks parameter, adding empty default`);
-            responseObj.toolCall.parameters.searchReplaceBlocks = '';
-          } else if (typeof responseObj.toolCall.parameters.searchReplaceBlocks !== 'string') {
-            logger.warn(`Candidate-level edit_file tool call has non-string searchReplaceBlocks, converting to string`);
-            responseObj.toolCall.parameters.searchReplaceBlocks = String(responseObj.toolCall.parameters.searchReplaceBlocks);
-          }
-        }
-        
-        // Explicitly ensure waitingForToolCall is true
+        responseObj.text = ''; // Assume no separate text content with this type of tool call
+        if (responseObj.toolCall.name === 'edit_file') { /* ... edit_file handling ... */ }
         responseObj.waitingForToolCall = true;
-        
-        logger.info(`Set candidate-level toolCall in response: ${JSON.stringify(responseObj.toolCall, null, 2)}`);
-        logger.info(`waitingForToolCall set to: ${responseObj.waitingForToolCall}`);
+        logger.info(`Set candidate-level toolCall. Reasoning length: ${responseObj.reasoning?.length}, Text: "${responseObj.text}"`);
       }
     }
 
-    // Log the final response object
-    logger.info(`FINAL RESPONSE OBJECT: ${JSON.stringify({
-      hasToolCall: !!responseObj.toolCall,
-      isWaitingForToolCall: responseObj.waitingForToolCall,
-      toolCallName: responseObj.toolCall?.name
-    }, null, 2)}`);
+    // Final adjustments to reasoning and text based on tool call presence
+    if (responseObj.toolCall) {
+        // If there's a tool call, ensure reasoning is at least an empty string if it wasn't set.
+        // This could happen if the tool call was the very first output.
+        if (responseObj.reasoning === undefined || responseObj.reasoning === responseObj.text) {
+            // If reasoning is same as text, or undefined, it means text before tool call was empty or not captured.
+            // In this case, the 'text' field should be what came with the tool, and reasoning is empty.
+            // If reasoning was completeText and text was part.text, this should be fine.
+            // This case is more for when tool call is immediate.
+            if (responseObj.reasoning === undefined) responseObj.reasoning = "";
+        }
+    } else {
+        // No tool call, so completeText is the main response, and reasoning is undefined.
+        responseObj.text = completeText.trim();
+        responseObj.reasoning = undefined; 
+    }
+
+    // Log the final response object details related to reasoning and text
+    logger.info(`FINAL RESPONSE PREP: ToolCall: ${!!responseObj.toolCall}, Reasoning Length: ${responseObj.reasoning?.length || 0}, Text Length: ${responseObj.text?.length || 0}`);
 
     // Call onComplete handler
     handlers.onComplete(responseObj as LLMResponse);

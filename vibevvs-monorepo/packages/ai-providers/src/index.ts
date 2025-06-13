@@ -21,6 +21,7 @@ export interface LLMResponse {
     id: string;
   };
   waitingForToolCall?: boolean;
+  reasoning?: string; // Optional field for reasoning/thought process leading to a tool call or final answer
 }
 
 // Message types
