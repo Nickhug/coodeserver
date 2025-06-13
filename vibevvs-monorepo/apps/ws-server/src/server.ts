@@ -1897,7 +1897,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             chatMode,
             thinkingConfig: {
               includeThoughts: true,
-              thinkingBudget: 32768
+              thinkingBudget: 24576
             },
             onStart: () => {
               streamStats.startTime = Date.now();
@@ -2188,7 +2188,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
           chatMode: message.payload.chatMode,
           thinkingConfig: {
             includeThoughts: true,
-            thinkingBudget: 32768
+            thinkingBudget: 24576
           }
         });
 
@@ -2782,7 +2782,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           chatMode: requestChatMode,
           thinkingConfig: {
             includeThoughts: true,
-            thinkingBudget: 32768
+            thinkingBudget: 24576
           },
           onStart: () => {
             streamStats.startTime = Date.now();
@@ -3038,7 +3038,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           chatMode: requestChatMode,
           thinkingConfig: {
             includeThoughts: true,
-            thinkingBudget: 32768
+            thinkingBudget: 24576
           }
         });
 
