@@ -2119,13 +2119,13 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   type: MessageType.PROVIDER_STREAM_END,
                   payload: {
                     tokensUsed: response.tokensUsed,
-                    success: response.success,
+                    success: true,
                     requestId: safeRequestId,
                     provider,
                     model,
-                    toolCall: response.toolCall, // Pass through without transformation
-                    waitingForToolCall: true, // Always set to true when tool call is present
-                    reasoning: response.reasoning // Added reasoning
+                    toolCall: response.toolCall,
+                    waitingForToolCall: true,
+                    reasoning: response.reasoning
                   }
                 });
               } else {
@@ -2139,12 +2139,12 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   type: MessageType.PROVIDER_STREAM_END,
                   payload: {
                     tokensUsed: response.tokensUsed,
-                    success: response.success,
+                    success: true,
                     requestId: safeRequestId,
                     provider,
                     model,
-                    text: response.text, // Ensure text is included
-                    reasoning: response.reasoning // Added reasoning
+                    text: response.text,
+                    reasoning: response.reasoning
                   }
                 });
               }
@@ -2227,10 +2227,11 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             payload: {
               text: response.text,
               tokensUsed: response.tokensUsed,
-              success: response.success,
+              success: true,
               requestId: safeRequestId,
               toolCall: response.toolCall,
-              waitingForToolCall: response.waitingForToolCall
+              waitingForToolCall: response.waitingForToolCall,
+              reasoning: response.reasoning
             }
           });
         } else {
@@ -2244,8 +2245,9 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             payload: {
               text: response.text,
               tokensUsed: response.tokensUsed,
-              success: response.success,
-              requestId: safeRequestId
+              success: true,
+              requestId: safeRequestId,
+              reasoning: response.reasoning
             }
           });
 
@@ -2961,12 +2963,13 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
                 type: MessageType.PROVIDER_STREAM_END,
                 payload: {
                   tokensUsed: response.tokensUsed,
-                  success: response.success,
+                  success: true,
                   requestId: safeRequestId,
                   provider,
                   model,
-                  toolCall: response.toolCall, // Pass through without transformation
-                  waitingForToolCall: true // Always set to true when tool call is present
+                  toolCall: response.toolCall,
+                  waitingForToolCall: true,
+                  reasoning: response.reasoning
                 }
               });
             } else {
@@ -2980,10 +2983,12 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
                 type: MessageType.PROVIDER_STREAM_END,
                 payload: {
                   tokensUsed: response.tokensUsed,
-                  success: response.success,
+                  success: true,
                   requestId: safeRequestId,
                   provider,
-                  model
+                  model,
+                  text: response.text,
+                  reasoning: response.reasoning
                 }
               });
             }
@@ -3074,10 +3079,11 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
             payload: {
               text: response.text,
               tokensUsed: response.tokensUsed,
-              success: response.success,
+              success: true,
               requestId: safeRequestId,
               toolCall: response.toolCall,
-              waitingForToolCall: response.waitingForToolCall
+              waitingForToolCall: response.waitingForToolCall,
+              reasoning: response.reasoning
             }
           });
         } else {
@@ -3092,8 +3098,9 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
             payload: {
               text: response.text,
               tokensUsed: response.tokensUsed,
-              success: response.success,
-              requestId: safeRequestId
+              success: true,
+              requestId: safeRequestId,
+              reasoning: response.reasoning
             }
           });
 
