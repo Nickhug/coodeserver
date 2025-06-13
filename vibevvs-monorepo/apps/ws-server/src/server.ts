@@ -2415,7 +2415,18 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               // tools, // Mistral tools might have a different format or not be fully supported yet
               // tool_choice: toolChoice,
               ...commonStreamHandlers,
-              onFinal: (fullText: string, tokensUsed?: number, toolCalls?: MistralToolCall[], finishReason?: string | null) => {
+              onReasoningChunk: (chunk: string) => { // ✅ ADDED: Handle reasoning chunks
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_REASONING_CHUNK,
+                  payload: {
+                    chunk,
+                    requestId: safeRequestId,
+                    provider,
+                    model: modelToUse
+                  }
+                });
+              },
+              onFinal: (fullText: string, tokensUsed?: number, toolCalls?: MistralToolCall[], finishReason?: string | null, reasoning?: string) => { // ✅ ADDED: reasoning parameter
                 const elapsedMs = Date.now() - streamStats.startTime;
                 const charsPerSecond = streamStats.totalCharsStreamed / (elapsedMs / 1000);
                 logger.info(
@@ -2442,6 +2453,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                     provider,
                     model: modelToUse,
                     text: fullText, // Include the accumulated text in the correct field
+                    reasoning: reasoning, // ✅ ADDED: Include reasoning in stream end
                     toolCall: toolCalls && toolCalls.length > 0 ? toolCalls[0] : undefined, // Simplified: Pass first tool call if any
                     waitingForToolCall: !!(toolCalls && toolCalls.length > 0)
                   }
@@ -2523,7 +2535,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               stream: false,
               // tools, 
               // tool_choice: toolChoice,
-              onFinal: (fullText: string, tokensUsed?: number, toolCalls?: MistralToolCall[], finishReason?: string | null) => {
+              onFinal: (fullText: string, tokensUsed?: number, toolCalls?: MistralToolCall[], finishReason?: string | null, reasoning?: string) => { // ✅ ADDED: reasoning parameter
                 logger.info(
                   `WS MISTRAL Chat (Non-Stream) [${ws.connectionData.connectionId}][${safeRequestId}] Response: ` +
                   `Text Length: ${fullText.length}, Tokens Used: ${tokensUsed || 0}, FinishReason: ${finishReason}`
@@ -2542,6 +2554,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                     requestId: safeRequestId,
                     provider,
                     model: modelToUse,
+                    reasoning: reasoning, // ✅ ADDED: Include reasoning in non-streaming response
                     toolCall: toolCalls && toolCalls.length > 0 ? toolCalls[0] : undefined, // Simplified
                     waitingForToolCall: !!(toolCalls && toolCalls.length > 0)
                   }

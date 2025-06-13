@@ -260,7 +260,7 @@ export async function processFIM({
  */
 export async function processChat({
   apiKey,
-  model = 'codestral-latest', // Default to codestral, or use specific chat models like 'mistral-large-latest'
+  model = 'mistral-large-latest', // ✅ FIXED: Use proper chat model instead of codestral-latest
   messages,
   temperature = 0.7,
   maxTokens,
@@ -269,6 +269,7 @@ export async function processChat({
   // tools, // TODO: Add tool support if needed later
   // tool_choice, // TODO: Add tool support if needed later
   onStream,
+  onReasoningChunk, // ✅ ADDED: For reasoning tokens
   onFinal,
   onError,
 }: {
@@ -282,7 +283,8 @@ export async function processChat({
   // tools?: any[];
   // tool_choice?: string;
   onStream?: (chunk: string) => void;
-  onFinal?: (fullText: string, tokensUsed?: number, toolCalls?: MistralToolCall[], finishReason?: string | null) => void; // finishReason can be null
+  onReasoningChunk?: (chunk: string) => void; // ✅ ADDED: For reasoning tokens
+  onFinal?: (fullText: string, tokensUsed?: number, toolCalls?: MistralToolCall[], finishReason?: string | null, reasoning?: string) => void; // ✅ ADDED: reasoning field
   onError?: (error: Error) => void;
 }): Promise<void> {
   try {
@@ -291,9 +293,14 @@ export async function processChat({
 
     if (stream && onStream && onFinal) {
       let fullResponseText = '';
+      let accumulatedReasoning = ''; // ✅ ADDED: Track reasoning content
       let accumulatedToolCalls: any[] = [];
       let finalUsage: UsageInfo | undefined;
       let finalFinishReason: string | null = null;
+
+      // ✅ ADDED: State tracking for parsing <think> tags
+      let insideThinkingTags = false;
+      let pendingContent = ''; // Buffer for processing content that might contain think tags
 
       const streamResponse = await client.chat.stream({
         model,
@@ -308,10 +315,57 @@ export async function processChat({
         if (chunk && chunk.choices && chunk.choices.length > 0) {
           const choice = chunk.choices[0];
           const delta = choice.delta as DeltaMessage; // Cast delta to DeltaMessage
-            const currentContent = ensureStringContent(delta?.content);
-            if (currentContent) {
-            fullResponseText += currentContent;
-            onStream(currentContent);
+          const currentContent = ensureStringContent(delta?.content);
+          if (currentContent) {
+            // ✅ ADDED: Process content through thinking tag parser
+            pendingContent += currentContent;
+            
+            // Process complete tags in the pending content
+            while (true) {
+              if (!insideThinkingTags) {
+                // Look for opening <think> tag
+                const thinkStartIndex = pendingContent.indexOf('<think>');
+                if (thinkStartIndex !== -1) {
+                  // Send any content before the think tag as regular content
+                  const beforeThink = pendingContent.substring(0, thinkStartIndex);
+                  if (beforeThink) {
+                    fullResponseText += beforeThink;
+                    onStream(beforeThink);
+                  }
+                  
+                  insideThinkingTags = true;
+                  pendingContent = pendingContent.substring(thinkStartIndex + 7); // Remove '<think>'
+                } else {
+                  // No opening tag found, send all content as regular
+                  fullResponseText += pendingContent;
+                  onStream(pendingContent);
+                  pendingContent = '';
+                  break;
+                }
+              } else {
+                // Look for closing </think> tag
+                const thinkEndIndex = pendingContent.indexOf('</think>');
+                if (thinkEndIndex !== -1) {
+                  // Send thinking content as reasoning chunk
+                  const thinkingContent = pendingContent.substring(0, thinkEndIndex);
+                  if (thinkingContent && onReasoningChunk) {
+                    accumulatedReasoning += thinkingContent;
+                    onReasoningChunk(thinkingContent);
+                  }
+                  
+                  insideThinkingTags = false;
+                  pendingContent = pendingContent.substring(thinkEndIndex + 8); // Remove '</think>'
+                } else {
+                  // No closing tag yet, send all as reasoning
+                  if (pendingContent && onReasoningChunk) {
+                    accumulatedReasoning += pendingContent;
+                    onReasoningChunk(pendingContent);
+                  }
+                  pendingContent = '';
+                  break;
+                }
+              }
+            }
           }
           if (delta && delta.toolCalls) { // Corrected to toolCalls
             delta.toolCalls.forEach((tc: MistralToolCall, index: number) => { // Corrected to toolCalls and typed tc, index
@@ -339,9 +393,23 @@ export async function processChat({
             finalUsage = chunk.usage as UsageInfo;
         }
       }
+      
+      // ✅ ADDED: Handle any remaining pending content at the end of stream
+      if (pendingContent) {
+        if (insideThinkingTags && onReasoningChunk) {
+          // Still inside thinking tags, treat as reasoning
+          accumulatedReasoning += pendingContent;
+          onReasoningChunk(pendingContent);
+        } else {
+          // Regular content
+          fullResponseText += pendingContent;
+          onStream(pendingContent);
+        }
+      }
+      
       accumulatedToolCalls = accumulatedToolCalls.filter(tc => tc && tc.function && tc.function.name);
 
-      onFinal(fullResponseText, finalUsage?.totalTokens, accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined, finalFinishReason || undefined);
+      onFinal(fullResponseText, finalUsage?.totalTokens, accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined, finalFinishReason || undefined, accumulatedReasoning || undefined); // ✅ ADDED: reasoning parameter
 
     } else if (onFinal) { // Non-streaming
       const response: ChatCompletionResponse = await client.chat.complete({
@@ -355,12 +423,38 @@ export async function processChat({
       });
 
       const choice = response.choices && response.choices.length > 0 ? response.choices[0] : null;
-      const completionText = ensureStringContent(choice?.message?.content);
+      const rawCompletionText = ensureStringContent(choice?.message?.content);
       const tokensUsed = (response.usage as UsageInfo)?.totalTokens; // Verified casing
       const toolCalls = choice?.message?.toolCalls as MistralToolCall[] | undefined; // Corrected to toolCalls
       const finishReason = choice?.finishReason; // Corrected to finishReason
 
-      onFinal(completionText, tokensUsed, toolCalls, finishReason || undefined);
+      // ✅ ADDED: Extract reasoning from non-streaming response
+      let completionText = rawCompletionText;
+      let extractedReasoning = '';
+      
+      // Parse out <think> tags if present
+      const thinkRegex = /<think>([\s\S]*?)<\/think>/g;
+      let match;
+      let lastIndex = 0;
+      let cleanedText = '';
+      
+      while ((match = thinkRegex.exec(rawCompletionText)) !== null) {
+        // Add text before the think tag
+        cleanedText += rawCompletionText.substring(lastIndex, match.index);
+        // Accumulate reasoning content
+        extractedReasoning += match[1];
+        lastIndex = match.index + match[0].length;
+      }
+      
+      // Add remaining text after last think tag
+      cleanedText += rawCompletionText.substring(lastIndex);
+      
+      // Use cleaned text if we found reasoning, otherwise use original
+      if (extractedReasoning) {
+        completionText = cleanedText.trim();
+      }
+
+      onFinal(completionText, tokensUsed, toolCalls, finishReason || undefined, extractedReasoning || undefined); // ✅ ADDED: reasoning parameter
     } else {
       logger.warn('Mistral Chat: onFinal callback not provided for non-streaming request.');
     }
@@ -377,7 +471,18 @@ export async function processChat({
  */
 export async function listModels(apiKey: string): Promise<any[]> {
   return [
-    { id: 'codestral-embed', name: 'Codestral Embed' },
+    // Embedding models
+    { id: 'codestral-embed', name: 'Codestral Embed', capabilities: ['embedding'] },
+    
+    // Code models (for FIM)
     { id: 'codestral-latest', name: 'Codestral Latest', capabilities: ['fim', 'completion'] },
+    
+    // Chat models
+    { id: 'mistral-large-latest', name: 'Mistral Large Latest', capabilities: ['chat', 'reasoning'] },
+    { id: 'mistral-small-latest', name: 'Mistral Small Latest', capabilities: ['chat'] },
+    { id: 'mistral-medium-2506', name: 'Mistral Medium 2506', capabilities: ['chat', 'reasoning'] }, // ✅ ADDED: New model
+    { id: 'open-mistral-7b', name: 'Open Mistral 7B', capabilities: ['chat'] },
+    { id: 'open-mixtral-8x7b', name: 'Open Mixtral 8x7B', capabilities: ['chat'] },
+    { id: 'open-mixtral-8x22b', name: 'Open Mixtral 8x22B', capabilities: ['chat'] },
   ];
 }
