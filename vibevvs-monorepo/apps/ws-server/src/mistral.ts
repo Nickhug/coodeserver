@@ -266,8 +266,8 @@ export async function processChat({
   maxTokens,
   stream = false,
   stopSequences = [],
-  // tools, // TODO: Add tool support if needed later
-  // tool_choice, // TODO: Add tool support if needed later
+  tools, // ✅ ADDED: Tool support
+  toolChoice, // ✅ ADDED: Tool choice support
   onStream,
   onReasoningChunk, // ✅ ADDED: For reasoning tokens
   onFinal,
@@ -280,8 +280,8 @@ export async function processChat({
   maxTokens?: number;
   stream?: boolean;
   stopSequences?: string[];
-  // tools?: any[];
-  // tool_choice?: string;
+  tools?: any[]; // ✅ ADDED: Tool definitions
+  toolChoice?: string; // ✅ ADDED: Tool choice option
   onStream?: (chunk: string) => void;
   onReasoningChunk?: (chunk: string) => void; // ✅ ADDED: For reasoning tokens
   onFinal?: (fullText: string, tokensUsed?: number, toolCalls?: MistralToolCall[], finishReason?: string | null, reasoning?: string) => void; // ✅ ADDED: reasoning field
@@ -308,6 +308,8 @@ export async function processChat({
         temperature,
         maxTokens,
         stop: stopSequences.length > 0 ? stopSequences : undefined,
+        tools: tools && tools.length > 0 ? tools : undefined, // ✅ ADDED: Tool support
+        toolChoice: toolChoice as any || undefined, // ✅ ADDED: Tool choice support (cast to any for flexibility)
       });
 
       for await (const event of streamResponse) { // event is CompletionEvent
@@ -418,8 +420,8 @@ export async function processChat({
         temperature,
         maxTokens,
         stop: stopSequences.length > 0 ? stopSequences : undefined,
-        // tools,
-        // tool_choice,
+        tools: tools && tools.length > 0 ? tools : undefined, // ✅ ADDED: Tool support
+        toolChoice: toolChoice as any || undefined, // ✅ ADDED: Tool choice support (cast to any for flexibility)
       });
 
       const choice = response.choices && response.choices.length > 0 ? response.choices[0] : null;
