@@ -31,6 +31,11 @@ export interface GeminiMessage {
   parts: GeminiPart[];
 }
 
+interface ThinkingConfig {
+  includeThoughts?: boolean;
+  thinkingBudget?: number;
+}
+
 export interface SendGeminiRequestParams {
   apiKey: string;
   model: string;
@@ -41,6 +46,7 @@ export interface SendGeminiRequestParams {
   files?: { mimeType: string; data: string }[];
   tools?: { name: string; description: string; parameters: Record<string, { description: string }> }[] | null;
   chatMode?: 'normal' | 'gather' | 'agent';
+  thinkingConfig?: ThinkingConfig;
   onStream?: ((text: string, toolCallUpdate?: { name: string; parameters: Record<string, unknown>; id?: string }) => void) | null;
 }
 
@@ -116,6 +122,7 @@ interface GeminiRequestParams {
   systemMessage?: string;
   tools?: any[];
   chatMode?: 'normal' | 'gather' | 'agent';
+  thinkingConfig?: ThinkingConfig;
 }
 
 interface GeminiStreamHandler {
@@ -341,8 +348,9 @@ export async function sendStreamingRequest(
   params: GeminiRequestParams,
   handlers: GeminiStreamHandler
 ): Promise<void> {
-  // Declare completeText at the function scope so it's available in the catch block
-  let completeText = '';
+  // Declare accumulators at the function scope so they are available in the catch block
+  let accumulatedAnswer = ''; // Was completeText
+  let accumulatedThoughts = '';
   
   try {
     const { apiKey, model, prompt, temperature = 0.7, maxTokens, systemMessage, tools, chatMode } = params;
@@ -469,6 +477,12 @@ export async function sendStreamingRequest(
       logger.info(`Streaming request includes chatMode: ${chatMode}`);
     }
 
+    // Add thinkingConfig if present
+    if (params.thinkingConfig) {
+      requestBody.config = { thinkingConfig: params.thinkingConfig };
+      logger.info(`Added thinkingConfig to streaming request: ${JSON.stringify(params.thinkingConfig)}`);
+    }
+
     
     // Direct API call to v1beta endpoint with API key in URL
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
@@ -493,6 +507,7 @@ export async function sendStreamingRequest(
     }
     
     // Process the SSE stream
+    // Note: accumulatedAnswer and accumulatedThoughts will be built up here.
     const reader = response.body.getReader();
     let rawResponse = null; // Store the raw response
     const decoder = new TextDecoder();
@@ -564,28 +579,41 @@ export async function sendStreamingRequest(
                 // Store the raw response data (will use the last chunk)
                 rawResponse = data;
                 
-                // Extract text content
-                let chunkText = '';
+                // Extract text content, differentiating thoughts and answers
                 if (data.candidates && 
                     data.candidates[0]?.content?.parts && 
                     data.candidates[0].content.parts.length > 0) {
                   
-                  // Extract text content only
+                  let thoughtChunkForThisSSEEvent = '';
+                  let answerChunkForThisSSEEvent = '';
+
                   for (const part of data.candidates[0].content.parts) {
                     if (part.text) {
-                      chunkText += part.text;
+                      // The 'thought' property is a boolean indicating if the part is a thought summary
+                      if (part.thought === true) { 
+                        thoughtChunkForThisSSEEvent += part.text;
+                      } else {
+                        answerChunkForThisSSEEvent += part.text;
+                      }
                     }
                   }
                   
-                  // Call onChunk handler with small delay
-                  if (chunkText) {
+                  if (thoughtChunkForThisSSEEvent) {
+                    accumulatedThoughts += thoughtChunkForThisSSEEvent;
+                  }
+                  if (answerChunkForThisSSEEvent) {
+                    accumulatedAnswer += answerChunkForThisSSEEvent;
+                  }
+
+                  // Call onChunk handler with combined text for now (to minimize downstream changes immediately)
+                  // The final onComplete will provide the clean separation.
+                  const combinedChunkText = thoughtChunkForThisSSEEvent + answerChunkForThisSSEEvent;
+                  if (combinedChunkText) {
                     // Add small delay when streaming from Gemini 2.5 models
                     if (model.includes('gemini-2.5')) {
                       await new Promise(resolve => setTimeout(resolve, 5));
                     }
-                    
-                    handlers.onChunk(chunkText);
-                    completeText += chunkText;
+                    handlers.onChunk(combinedChunkText);
                   }
                 }
               } catch (jsonError: any) {
@@ -645,115 +673,100 @@ export async function sendStreamingRequest(
       logger.warn(`Stream ended with remaining partial line: ${partialLine.substring(0, 100)}...`);
       try {
         const parsedPartial = JSON.parse(partialLine);
-        // If parsing succeeded, this partial line was actually a complete JSON object.
-        // It could be a final data chunk or an error object.
-        rawResponse = parsedPartial; // Update rawResponse with this final parsed object
+        rawResponse = parsedPartial;
         logger.info(`Successfully parsed final partial line as JSON: ${JSON.stringify(parsedPartial, null, 2)}`);
 
-        // Check if this parsed final object is an error
         if (parsedPartial.error) {
           logger.error(`Error detected in final parsed partial line: ${JSON.stringify(parsedPartial.error)}`);
-          // This error will be handled by onComplete based on rawResponse
-          completeText = ''; // Clear any previously accumulated text if we end on an error
+          accumulatedAnswer = ''; 
+          accumulatedThoughts = '';
         } else if (parsedPartial.candidates && parsedPartial.candidates[0]?.content?.parts) {
-          // Or, if it's a regular data chunk, extract text
-          let finalChunkText = '';
+          let finalThoughtChunk = '';
+          let finalAnswerChunk = '';
           for (const part of parsedPartial.candidates[0].content.parts) {
             if (part.text) {
-              finalChunkText += part.text;
+              if (part.thought === true) {
+                finalThoughtChunk += part.text;
+              } else {
+                finalAnswerChunk += part.text;
+              }
             }
           }
-          if (finalChunkText) {
-            logger.info(`Extracted text from final parsed partial line: ${finalChunkText}`);
-            handlers.onChunk(finalChunkText); // Process it like a regular chunk
-            completeText += finalChunkText;
+          if (finalThoughtChunk) {
+            logger.info(`Extracted thoughts from final parsed partial line: ${finalThoughtChunk}`);
+            accumulatedThoughts += finalThoughtChunk;
+          }
+          if (finalAnswerChunk) {
+            logger.info(`Extracted answer from final parsed partial line: ${finalAnswerChunk}`);
+            // Call onChunk for the answer part, as the main loop might have missed it
+            handlers.onChunk(finalAnswerChunk); 
+            accumulatedAnswer += finalAnswerChunk;
           }
         }
       } catch (e) {
-        // JSON.parse failed, so it's not a complete JSON object.
-        // This is the case for the originally reported log.
         logger.error(`Final partial line is not valid JSON: ${partialLine.substring(0, 100)}... Error: ${e}`);
-        // Attempt to extract text using regex as a last resort, if it wasn't an error that should have been JSON
-        if (!partialLine.toLowerCase().includes('"error"')) {
-          const textMatch = partialLine.match(/"text":\s*"([^"]*)"/);
+        if (!partialLine.toLowerCase().includes("\"error\"")) {
+          const textMatch = partialLine.match(/"text":\s*"([^\"]*)"/);
           if (textMatch && textMatch[1]) {
             const extractedText = textMatch[1];
             logger.info(`Extracted text via regex from non-JSON final partial line: ${extractedText}`);
             handlers.onChunk(extractedText);
-            completeText += extractedText;
+            accumulatedAnswer += extractedText;
           }
         } else {
-            // It contains "error" but isn't valid JSON. This is the problematic scenario.
             logger.error(`Final partial line contained 'error' but was not valid JSON: ${partialLine.substring(0, 150)}`);
-            // Synthesize an error in rawResponse so onComplete can handle it.
             let errorMessage = 'Incomplete error response from API.';
             let errorCode = 'PARTIAL_API_ERROR';
-            // Try to extract a message from the partial error if possible
-            const messageMatch = partialLine.match(/"message":\s*"([^"]*)/);
-            if (messageMatch && messageMatch[1]) {
-                errorMessage = messageMatch[1] + "..."; // Indicate it's partial
-            }
+            const messageMatch = partialLine.match(/"message":\s*"([^\"]*)/);
+            if (messageMatch && messageMatch[1]) errorMessage = messageMatch[1] + "...";
             const codeMatch = partialLine.match(/"code":\s*(\d+)/);
-            if (codeMatch && codeMatch[1]) {
-                errorCode = `API_CODE_${codeMatch[1]}`;
-            }
+            if (codeMatch && codeMatch[1]) errorCode = `API_CODE_${codeMatch[1]}`;
             rawResponse = { error: { message: errorMessage, code: errorCode, details: partialLine } };
-            completeText = ''; // Clear any text, we are ending on an error.
+            accumulatedAnswer = '';
+            accumulatedThoughts = '';
             logger.info('Set rawResponse to a synthesized error due to partial error JSON at stream end.');
         }
       }
     }
     
-    // Ensure we wait a moment before sending the completion to avoid race conditions
     if (model.includes('gemini-2.5')) {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
     
-    // Remove the synthetic response generation and just log if no response was received
-    if (!rawResponse && completeText) {
-      // Instead of creating a synthetic response, just log the issue
-      logger.warn(`Stream completed without a valid raw response despite receiving text content. Length: ${completeText.length} chars`);
-      // We will continue with whatever partial responses we received
+    if (!rawResponse && (accumulatedAnswer || accumulatedThoughts)) {
+      logger.warn(`Stream completed without a valid raw response despite receiving text. Answer Length: ${accumulatedAnswer.length}, Thoughts Length: ${accumulatedThoughts.length}`);
     }
     
-    // Estimate token usage
     const inputTokens = Math.ceil(prompt.length / 4);
-    const outputTokens = Math.ceil(completeText.length / 4);
-    const totalTokens = inputTokens + outputTokens;
+    const outputTokens = Math.ceil(accumulatedAnswer.length / 4);
+    const thoughtsTokens = rawResponse?.usageMetadata?.thoughtsTokenCount || Math.ceil(accumulatedThoughts.length / 4); // Estimate if not provided
+    const totalTokens = inputTokens + outputTokens + thoughtsTokens;
     
-    logger.info(`Gemini stream completed, estimated tokens: ${totalTokens}`);
+    logger.info(`Gemini stream completed. Input Tokens: ${inputTokens}, Output Tokens (Answer): ${outputTokens}, Thoughts Tokens: ${thoughtsTokens}, Total: ${totalTokens}`);
     
-    // Pass the raw response to the completion handler
-    const responseObj: {
-      text: string;
-      tokensUsed: number;
-      creditsUsed: number;
-      success: boolean;
-      generatedText: string;
-      rawResponse: any;
-      toolCall?: {
-        name: string;
-        parameters: Record<string, unknown>;
-        id: string;
-      };
-      waitingForToolCall?: boolean;
-      reasoning?: string; // Added for reasoning text
-    } = {
-      text: completeText.trim(), // Initial text is all accumulated content
+    const responseObj: LLMResponse = {
+      text: accumulatedAnswer.trim(),
       tokensUsed: totalTokens,
-      creditsUsed: totalTokens / 1000, // Assuming 1000 tokens = 1 credit
+      creditsUsed: totalTokens / 1000, 
       success: true,
-      generatedText: completeText.trim(),
-      rawResponse: rawResponse, // Include the raw response as received, without modification
-      reasoning: undefined // Initialize reasoning
+      generatedText: accumulatedAnswer.trim(),
+      rawResponse: rawResponse,
+      reasoning: accumulatedThoughts.trim(), // Primarily from thoughts
+      toolCall: undefined,
+      waitingForToolCall: false,
+      // Add thoughtsTokenCount if LLMResponse type is updated to support it
+      // thoughtsTokenCount: thoughtsTokens 
     };
 
-    // Check for toolCall and differentiate reasoning from main text
+    // Tool call processing - operates on accumulatedAnswer if thoughts didn't cover reasoning
+    let tempReasoningForToolCall = accumulatedThoughts.trim();
+    let textToSearchForToolCall = accumulatedAnswer.trim();
+
     if (rawResponse && 
         rawResponse.candidates && 
         rawResponse.candidates[0]?.content?.parts) {
       
-      logger.info(`RAW RESPONSE STRUCTURE (for reasoning split): ${JSON.stringify({
+      logger.info(`RAW RESPONSE STRUCTURE (for tool call processing): ${JSON.stringify({
         hasContent: !!rawResponse.candidates[0].content,
         contentParts: rawResponse.candidates[0].content?.parts?.length,
         hasToolCallInParts: rawResponse.candidates[0].content?.parts?.some((p: any) => p.functionCall),
@@ -765,31 +778,32 @@ export async function sendStreamingRequest(
         if (part.functionCall) {
           logger.info(`Found functionCall in part: ${JSON.stringify(part.functionCall, null, 2)}`);
           
-          // The completeText accumulated *before* this part is considered reasoning.
-          // We need to be careful if completeText already includes text from this part.
-          // Assuming onChunk added to completeText, and this is the *final* processing step.
-          responseObj.reasoning = completeText.trim(); // Tentatively, all prior text is reasoning.
-          
+          // If thoughts are present, they are the reasoning.
+          // If not, text before this tool call part (from accumulatedAnswer) is reasoning.
+          if (!tempReasoningForToolCall) {
+             // This implies the text leading to the tool call was part of 'accumulatedAnswer'
+             // We need to find where in 'accumulatedAnswer' this tool call 'part' begins.
+             // This is complex. For now, if no thoughts, assume all of 'accumulatedAnswer' before this part's text is reasoning.
+             tempReasoningForToolCall = textToSearchForToolCall;
+          }
+
           responseObj.toolCall = {
             name: part.functionCall.name,
             parameters: part.functionCall.args || {},
-            id: rawResponse.candidates[0].contentId || `fc-${Date.now()}` // Ensure ID
+            id: rawResponse.candidates[0].contentId || `fc-${Date.now()}`
           };
           
-          // Text directly associated with this tool call part (if any)
           let toolCallPartText = '';
-          if (part.text) {
+          if (part.text) { // Text directly associated with this tool call part
             toolCallPartText = part.text.trim();
-            // If this part's text was part of completeText, we need to adjust reasoning.
-            // This is complex. For now, assume completeText is all text *before* this tool call decision.
-            // And toolCallPartText is *only* text from this specific part.
-            responseObj.reasoning = responseObj.reasoning.endsWith(toolCallPartText) 
-                                  ? responseObj.reasoning.slice(0, -toolCallPartText.length).trim() 
-                                  : responseObj.reasoning;
+            // If this part's text was part of textToSearchForToolCall, adjust reasoning.
+            if (tempReasoningForToolCall.endsWith(toolCallPartText)) {
+                tempReasoningForToolCall = tempReasoningForToolCall.slice(0, -toolCallPartText.length).trim();
+            }
           }
-          responseObj.text = toolCallPartText; // Main text is only what's in this part
+          responseObj.text = toolCallPartText; // Main text is only what's in this part if tool call found
+          responseObj.generatedText = toolCallPartText;
 
-          // Special handling for edit_file tool
           if (responseObj.toolCall.name === 'edit_file') {
             if (!responseObj.toolCall.parameters.searchReplaceBlocks) {
               responseObj.toolCall.parameters.searchReplaceBlocks = '';
@@ -800,105 +814,85 @@ export async function sendStreamingRequest(
           
           responseObj.waitingForToolCall = true;
           toolCallFoundInParts = true;
-          logger.info(`Set toolCall from part.functionCall. Reasoning length: ${responseObj.reasoning?.length}, Text: "${responseObj.text}"`);
+          logger.info(`Set toolCall from part.functionCall. Reasoning (final): "${tempReasoningForToolCall}", Text: "${responseObj.text}"`);
           break; 
         }
       }
       
-      // Fallback: check for function call patterns in the completeText (if not found in parts directly)
-      if (!toolCallFoundInParts && completeText) {
+      if (!toolCallFoundInParts && textToSearchForToolCall && !responseObj.toolCall) { // only if no thoughts and no tool call in parts
         const functionCallPatterns = [
-          /<function_calls>[\s\S]*?<invoke name="([^"]+)">/,
-          /\{\s*"functionCall"\s*:\s*\{[\s\S]*?"name"\s*:\s*"([^"]+)"/,
-          /```\s*\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"args"\s*:/
+          /<function_calls>[\s\S]*?<invoke name="([^\"]+)">/,
+          /\{\s*"functionCall"\s*:\s*\{[\s\S]*?"name"\s*:\s*"([^\"]+)"/,
+          /```\s*\{\s*"name"\s*:\s*"([^\"]+)"\s*,\s*"args"\s*:/
         ];
-        
         for (const pattern of functionCallPatterns) {
-          const match = completeText.match(pattern);
-          if (match && match[0]) { // Ensure match[0] exists for replacement
-            logger.info(`Found function call pattern in completeText: ${match[1]}`);
+          const match = textToSearchForToolCall.match(pattern);
+          if (match && match[0]) {
+            logger.info(`Found function call pattern in accumulatedAnswer: ${match[1]}`);
             try {
+              tempReasoningForToolCall = textToSearchForToolCall.trim(); // All of accumulatedAnswer is reasoning
+              responseObj.text = textToSearchForToolCall.replace(match[0], '').trim();
+              responseObj.generatedText = responseObj.text;
+              
               const functionName = match[1];
               let parameters = {};
-              const paramMatch = completeText.match(/"parameters":\s*(\{[\s\S]*?\})/);
+              const paramMatch = textToSearchForToolCall.match(/"parameters":\s*(\{[\s\S]*?\})/);
               if (paramMatch && paramMatch[1]) { try { parameters = JSON.parse(paramMatch[1]); } catch (e) { logger.error(`Failed to parse parameters from text: ${e}`); } }
               
-              responseObj.toolCall = {
-                name: functionName,
-                parameters: parameters,
-                id: `extracted-${Date.now()}`
-              };
-              
+              responseObj.toolCall = { name: functionName, parameters: parameters, id: `extracted-${Date.now()}` };
               if (responseObj.toolCall.name === 'edit_file') { /* ... edit_file handling ... */ }
               responseObj.waitingForToolCall = true;
-              
-              // The text containing the pattern is reasoning.
-              // The actual text response is what remains after removing the pattern.
-              responseObj.reasoning = completeText.trim();
-              responseObj.text = completeText.replace(match[0], '').trim(); // Remove the matched pattern
-
-              logger.info(`Extracted toolCall from text. Reasoning length: ${responseObj.reasoning?.length}, Text: "${responseObj.text}"`);
-              toolCallFoundInParts = true; // Mark as found to prevent candidate-level override if this was it
+              toolCallFoundInParts = true;
+              logger.info(`Extracted toolCall from text. Reasoning (final): "${tempReasoningForToolCall}", Text: "${responseObj.text}"`);
               break;
             } catch (e) { logger.error(`Failed to extract toolCall from text: ${e}`); }
           }
         }
       }
       
-      // Check candidate-level function call (if not found by other means)
       if (!toolCallFoundInParts && !responseObj.toolCall && rawResponse.candidates[0].functionCall) {
         logger.info(`Found candidate-level functionCall: ${JSON.stringify(rawResponse.candidates[0].functionCall, null, 2)}`);
-        
-        responseObj.reasoning = completeText.trim(); // All preceding text is reasoning
+        tempReasoningForToolCall = textToSearchForToolCall.trim(); // All of accumulatedAnswer is reasoning if no thoughts
+        responseObj.text = ''; 
+        responseObj.generatedText = '';
         responseObj.toolCall = {
           name: rawResponse.candidates[0].functionCall.name,
           parameters: rawResponse.candidates[0].functionCall.args || {},
           id: rawResponse.candidates[0].contentId || `cand-fc-${Date.now()}`
         };
-        
-        responseObj.text = ''; // Assume no separate text content with this type of tool call
         if (responseObj.toolCall.name === 'edit_file') { /* ... edit_file handling ... */ }
         responseObj.waitingForToolCall = true;
-        logger.info(`Set candidate-level toolCall. Reasoning length: ${responseObj.reasoning?.length}, Text: "${responseObj.text}"`);
+        logger.info(`Set candidate-level toolCall. Reasoning (final): "${tempReasoningForToolCall}", Text: "${responseObj.text}"`);
       }
     }
 
-    // Final adjustments to reasoning and text based on tool call presence
-    if (responseObj.toolCall) {
-        // If there's a tool call, ensure reasoning is at least an empty string if it wasn't set.
-        // This could happen if the tool call was the very first output.
-        if (responseObj.reasoning === undefined || responseObj.reasoning === responseObj.text) {
-            // If reasoning is same as text, or undefined, it means text before tool call was empty or not captured.
-            // In this case, the 'text' field should be what came with the tool, and reasoning is empty.
-            // If reasoning was completeText and text was part.text, this should be fine.
-            // This case is more for when tool call is immediate.
-            if (responseObj.reasoning === undefined) responseObj.reasoning = "";
-        }
-    } else {
-        // No tool call, so completeText is the main response, and reasoning is undefined.
-        responseObj.text = completeText.trim();
-        responseObj.reasoning = undefined; 
+    // Final assignment of reasoning
+    responseObj.reasoning = tempReasoningForToolCall; // This now holds either thoughts or text-before-tool-call
+
+    // Ensure reasoning is at least an empty string if tool call exists but reasoning is still undefined/empty
+    if (responseObj.toolCall && !responseObj.reasoning) {
+        responseObj.reasoning = "";
+    }
+    // If no tool call, and no thoughts, reasoning should be undefined as per original logic for pure text responses
+    if (!responseObj.toolCall && !accumulatedThoughts.trim()) {
+        responseObj.reasoning = undefined;
     }
 
-    // Log the final response object details related to reasoning and text
     logger.info(`FINAL RESPONSE PREP: ToolCall: ${!!responseObj.toolCall}, Reasoning Length: ${responseObj.reasoning?.length || 0}, Text Length: ${responseObj.text?.length || 0}`);
 
-    // Call onComplete handler
     handlers.onComplete(responseObj as LLMResponse);
   } catch (error) {
     logger.error(`Error in Gemini stream: ${error instanceof Error ? error.message : String(error)}`);
     
-    // Even when there's an error in the stream overall, we may have received some content
-    // If we have any content, we should still deliver it to the client
-    if (completeText) {
-      logger.info(`Despite stream error, returning collected text of length ${completeText.length}`);
-      // Create a minimal response with the text we did receive
+    if (accumulatedAnswer || accumulatedThoughts) {
+      logger.info(`Despite stream error, returning collected content. Answer length ${accumulatedAnswer.length}, Thoughts length ${accumulatedThoughts.length}`);
       const errorResponse: LLMResponse = {
-        text: completeText,
-        tokensUsed: Math.ceil(completeText.length / 4), // Rough estimate
-        success: false, // Mark as not fully successful
+        text: accumulatedAnswer,
+        reasoning: accumulatedThoughts,
+        tokensUsed: Math.ceil((accumulatedAnswer.length + accumulatedThoughts.length) / 4),
+        success: false,
         error: error instanceof Error ? error.message : String(error),
-        generatedText: completeText
+        generatedText: accumulatedAnswer // Use accumulatedAnswer for generatedText in error cases
       };
       handlers.onComplete(errorResponse);
     } else {
