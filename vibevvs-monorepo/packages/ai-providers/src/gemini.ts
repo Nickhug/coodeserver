@@ -466,10 +466,12 @@ export async function sendStreamingRequest(
       
       // Add toolConfig for function calling when in agent mode
       if (chatMode === 'agent') {
-        requestBody.generationConfig.functionCallingConfig = {
-          // In agent mode, set to 'auto' to allow the model to decide when to use tools
-          // This encourages tool usage without forcing it
-          mode: 'auto'
+        requestBody.toolConfig = {
+          functionCallingConfig: {
+            // In agent mode, set to 'auto' to allow the model to decide when to use tools
+            // This encourages tool usage without forcing it
+            mode: 'auto',
+          },
         };
         logger.info('Added function calling config for agent mode');
       }
