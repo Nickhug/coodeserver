@@ -1587,7 +1587,8 @@ async function handleFimRequest(ws: WebSocketWithData, message: ClientMessage): 
     return;
   }
 
-  const { provider, model, prefix, suffix, temperature, maxTokens, stream = true, requestId } = message.payload;
+  const { provider, model, fim, temperature, maxTokens, stream = true, requestId } = message.payload;
+  const { prefix, suffix, stopTokens } = fim || {}; // Extract from fim object, provide default if fim is undefined
 
   // Ensure requestId is always available, generate one if needed
   const safeRequestId = requestId || `fim-${uuidv4().substring(0, 8)}`;
