@@ -1952,14 +1952,44 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                 `Streaming error after ${streamStats.chunkCount} chunks: ${error.message}`
               );
 
+              // Enhanced error analysis for better debugging
+              const errorMessage = error.message || 'Unknown streaming error';
+              let errorCode = 'STREAMING_ERROR';
+              
+              // Detect specific error types for better handling
+              if (errorMessage.includes('truncated') || errorMessage.includes('partial line')) {
+                errorCode = 'STREAM_TRUNCATED';
+                logger.warn(
+                  `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                  `Detected stream truncation error - this may indicate API issues or network problems`
+                );
+              } else if (errorMessage.includes('Gemini API Error') || errorMessage.includes('GEMINI_')) {
+                errorCode = 'GEMINI_API_ERROR';
+                logger.error(
+                  `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                  `Gemini API returned an error: ${errorMessage}`
+                );
+              } else if (errorMessage.includes('timeout') || errorMessage.includes('TIMEOUT')) {
+                errorCode = 'STREAM_TIMEOUT';
+                logger.warn(
+                  `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                  `Stream timeout detected - possibly due to slow API response`
+                );
+              }
+
               sendToClient(ws, {
                 type: MessageType.PROVIDER_ERROR,
                 payload: {
-                  error: `Streaming error: ${error.message}`,
-                  code: 'STREAMING_ERROR',
+                  error: `Streaming error: ${errorMessage}`,
+                  code: errorCode,
                   requestId: safeRequestId,
                   provider,
-                  model: model // Correct for Gemini's commonStreamHandlers.onError
+                  model: model, // Correct for Gemini's commonStreamHandlers.onError
+                  streamStats: {
+                    chunksReceived: streamStats.chunkCount,
+                    totalCharsStreamed: streamStats.totalCharsStreamed,
+                    elapsedMs: Date.now() - streamStats.startTime
+                  }
                 }
               });
             },
@@ -2365,7 +2395,8 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                     success: true,
                     requestId: safeRequestId,
                     provider,
-                    model: modelToUse
+                    model: modelToUse,
+                    text: fullText // Include the accumulated text in the correct field
                   }
                 });
                 if (userId && tokensUsed) {
@@ -2410,6 +2441,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                     requestId: safeRequestId,
                     provider,
                     model: modelToUse,
+                    text: fullText, // Include the accumulated text in the correct field
                     toolCall: toolCalls && toolCalls.length > 0 ? toolCalls[0] : undefined, // Simplified: Pass first tool call if any
                     waitingForToolCall: !!(toolCalls && toolCalls.length > 0)
                   }
