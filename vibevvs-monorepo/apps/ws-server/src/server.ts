@@ -1666,7 +1666,7 @@ async function handleFimRequest(ws: WebSocketWithData, message: ClientMessage): 
         prefix,
         suffix,
         model,
-        temperature: temperature || 0.2,
+        temperature: temperature || 0.97,
         maxTokens: maxTokens || 512,
         stream,
         stopSequences: [], // Not yet implemented in client
