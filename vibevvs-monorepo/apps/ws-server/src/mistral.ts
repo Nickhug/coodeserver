@@ -181,7 +181,6 @@ export async function processFIM({
   onError?: (error: Error) => void;
 }): Promise<void> {
   try {
-    const { default: fetch } = await import('node-fetch');
     logger.info(`Mistral Codestral FIM request: model=${model}, stream=${stream}, temp=${temperature}`);
     
     // Validate inputs
@@ -195,77 +194,34 @@ export async function processFIM({
     const client = new Mistral({ apiKey }); // Initialize client with options object
 
     if (stream && onStream && onFinal) {
-      // SDK does not seem to have client.fim.stream(), so keep existing fetch-based streaming
-      const apiUrl = 'https://api.mistral.ai/v1/fim/completions';
-      const requestBody = {
-        model,
-        prompt: prefix, // API uses 'prompt' for prefix
-        suffix: suffix || undefined, // Suffix is optional
-        max_tokens: maxTokens,
-        temperature,
-        stop: stopSequences.length > 0 ? stopSequences : undefined,
-        stream
-      };
-      logger.debug(`Mistral FIM (stream) request body: ${JSON.stringify(requestBody)}`);
-      // Process as stream
       try {
         let accumulatedText = '';
-        const response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-          },
-          body: JSON.stringify(requestBody)
+        let finalUsage: UsageInfo | undefined;
+
+        const streamResponse = await client.fim.stream({
+          model,
+          prompt: prefix,
+          suffix: suffix || undefined,
+          temperature,
+          maxTokens,
+          stop: stopSequences.length > 0 ? stopSequences : undefined,
         });
-        
-        if (!response.ok) {
-          const errorText = await response.text();
-          logger.error(`Mistral FIM stream API error: ${response.status} ${errorText}`);
-          throw new Error(`Mistral API error: ${response.status} ${errorText}`);
-        }
-        
-        if (!response.body) {
-          throw new Error('Response body is null');
-        }
-        
-        // Process the stream
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split('\n').filter(line => line.trim() !== '');
-          
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const jsonData = line.substring(6);
-              if (jsonData === '[DONE]') continue;
-              
-              try {
-                const data = JSON.parse(jsonData);
-                if (data.choices && data.choices.length > 0) {
-                  // Mistral FIM stream format: data.choices[0].text (older style) or data.choices[0].delta.content (newer chat style)
-                  // Sticking to data.choices[0].text as per original code for FIM stream.
-                  const content = data.choices[0].text;
-                  if (typeof content === 'string') { // Ensure content is a string
-                    accumulatedText += content;
-                    onStream(content);
-                  }
-                }
-              } catch (e) {
-                logger.error(`Failed to parse JSON from stream: ${e instanceof Error ? e.message : String(e)}`);
-              }
+
+        for await (const event of streamResponse) {
+          const chunk = (event as any).data; // FIM stream chunk
+          if (chunk && chunk.choices && chunk.choices.length > 0) {
+            const choice = chunk.choices[0];
+            const content = ensureStringContent(choice.delta?.content);
+            if (content) {
+              accumulatedText += content;
+              onStream(content);
             }
           }
+          if (chunk && chunk.usage) {
+            finalUsage = chunk.usage;
+          }
         }
-        
-        if (onFinal) {
-          onFinal(accumulatedText, undefined); // No token count from raw stream
-        }
+        onFinal(accumulatedText, finalUsage?.totalTokens);
       } catch (streamError) {
         logger.error(`Mistral FIM stream error: ${streamError instanceof Error ? streamError.message : String(streamError)}`);
         if (onError) {
@@ -284,10 +240,9 @@ export async function processFIM({
         stop: stopSequences.length > 0 ? stopSequences : undefined,
       });
 
-      const tokensUsed = fimResponse.usage?.totalTokens; // Corrected casing
+      const tokensUsed = fimResponse.usage?.totalTokens;
       const completionText = ensureStringContent(fimResponse.choices[0].message.content);
-      const finishReason = fimResponse.choices[0].finishReason; // Corrected casing
-      onFinal(completionText, tokensUsed); // Corrected arguments for FIM onFinal
+      onFinal(completionText, tokensUsed);
     } else {
       // Fallback or error if no onFinal provided for non-streaming
       logger.warn('Mistral FIM: onFinal callback not provided for non-streaming request.');

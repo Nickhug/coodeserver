@@ -1659,171 +1659,65 @@ async function handleFimRequest(ws: WebSocketWithData, message: ClientMessage): 
         });
       }
 
-      try {
-        // Use Mistral API for FIM
-        const response = await fetch('https://api.mistral.ai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              {
-                role: 'user',
-                content: `Please complete the code between the prefix and suffix:\n\nPrefix:\n${prefix}\n\nSuffix:\n${suffix}`
-              }
-            ],
-            temperature: temperature || 0.2,
-            max_tokens: maxTokens || 256,
-            stream
-          })
-        });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          logger.error(`Mistral FIM API error: ${errorText}`);
+      // Call the correct FIM processor from mistral.ts
+      await mistral.processFIM({
+        apiKey,
+        prefix,
+        suffix,
+        model,
+        temperature: temperature || 0.2,
+        maxTokens: maxTokens || 512,
+        stream,
+        stopSequences: [], // Not yet implemented in client
+        
+        onStream: (chunk) => {
+          if (!ws || ws.readyState !== WebSocket.OPEN) {
+            logger.warn(`WS FIM [${ws.connectionData.connectionId}][${safeRequestId}] WebSocket not open, cannot send stream chunk.`);
+            return;
+          }
+          sendToClient(ws, {
+            type: MessageType.PROVIDER_STREAM_CHUNK,
+            payload: {
+              chunk,
+              provider,
+              model,
+              requestId: safeRequestId
+            }
+          });
+        },
+        
+        onFinal: (fullText, tokensUsed) => {
+          if (!ws || ws.readyState !== WebSocket.OPEN) {
+            logger.warn(`WS FIM [${ws.connectionData.connectionId}][${safeRequestId}] WebSocket not open, cannot send stream end.`);
+            return;
+          }
+          sendToClient(ws, {
+            type: MessageType.PROVIDER_STREAM_END,
+            payload: {
+              success: true,
+              tokensUsed: tokensUsed || 0,
+              requestId: safeRequestId,
+              fullText
+            }
+          });
+        },
+        
+        onError: (error) => {
+          if (!ws || ws.readyState !== WebSocket.OPEN) {
+            logger.warn(`WS FIM [${ws.connectionData.connectionId}][${safeRequestId}] WebSocket not open, cannot send error.`);
+            return;
+          }
+          logger.error(`Mistral FIM processing error for [${safeRequestId}]: ${error.message}`);
           sendToClient(ws, {
             type: MessageType.PROVIDER_ERROR,
             payload: {
-              error: `Mistral API error: ${response.status} ${errorText}`,
+              error: `Mistral FIM error: ${error.message}`,
               code: 'PROVIDER_API_ERROR',
               requestId: safeRequestId
             }
           });
-          return;
         }
-
-        // Handle streaming response
-        if (stream) {
-          if (!response.body) {
-            throw new Error('Response body is null');
-          }
-
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let accumulatedText = '';
-          let buffer = '';
-
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              
-              buffer += decoder.decode(value, { stream: true });
-              const lines = buffer.split('\n');
-              
-              // Process all complete lines
-              for (let i = 0; i < lines.length - 1; i++) {
-                const line = lines[i].trim();
-                if (line === '') continue;
-                if (line === 'data: [DONE]') continue;
-                
-                if (line.startsWith('data: ')) {
-                  try {
-                    const jsonData = JSON.parse(line.substring(6));
-                    if (jsonData.choices && jsonData.choices[0]?.delta?.content) {
-                      const chunk = jsonData.choices[0].delta.content;
-                      accumulatedText += chunk;
-                      
-                      // Send chunk to client
-                      sendToClient(ws, {
-                        type: MessageType.PROVIDER_STREAM_CHUNK,
-                        payload: {
-                          chunk,
-                          requestId: safeRequestId
-                        }
-                      });
-                    }
-                  } catch (error) {
-                    logger.error(`Error parsing streaming response: ${error}`);
-                  }
-                }
-              }
-              
-              // Keep the last potentially incomplete line in the buffer
-              buffer = lines[lines.length - 1];
-            }
-            
-            // Final decoding when stream is done
-            buffer += decoder.decode();
-            if (buffer && buffer.trim() !== '' && !buffer.includes('data: [DONE]')) {
-              try {
-                if (buffer.startsWith('data: ')) {
-                  const jsonData = JSON.parse(buffer.substring(6));
-                  if (jsonData.choices && jsonData.choices[0]?.delta?.content) {
-                    const chunk = jsonData.choices[0].delta.content;
-                    accumulatedText += chunk;
-                    
-                    // Send final chunk to client
-                    sendToClient(ws, {
-                      type: MessageType.PROVIDER_STREAM_CHUNK,
-                      payload: {
-                        chunk,
-                        requestId: safeRequestId
-                      }
-                    });
-                  }
-                }
-              } catch (error) {
-                logger.error(`Error parsing final streaming response: ${error}`);
-              }
-            }
-            
-            // Send stream end message
-            sendToClient(ws, {
-              type: MessageType.PROVIDER_STREAM_END,
-              payload: {
-                tokensUsed: accumulatedText.split(/\s+/).length, // Rough estimate of tokens used
-                success: true,
-                requestId: safeRequestId
-              }
-            });
-            
-          } catch (error) {
-            logger.error(`Error reading stream: ${error}`);
-            sendToClient(ws, {
-              type: MessageType.PROVIDER_ERROR,
-              payload: {
-                error: `Error reading stream: ${error}`,
-                code: 'STREAM_ERROR',
-                requestId: safeRequestId
-              }
-            });
-          } finally {
-            try {
-              await reader.cancel();
-            } catch (error) {
-              logger.error(`Error canceling reader: ${error}`);
-            }
-          }
-        } else {
-          // Handle non-streaming response
-          const data = await response.json();
-          const completion = data.choices[0]?.message?.content || '';
-          
-          sendToClient(ws, {
-            type: MessageType.PROVIDER_RESPONSE,
-            payload: {
-              text: completion,
-              tokensUsed: data.usage?.total_tokens || 0,
-              success: true,
-              requestId: safeRequestId
-            }
-          });
-        }
-      } catch (error) {
-        logger.error(`Error in Mistral FIM request: ${error}`);
-        sendToClient(ws, {
-          type: MessageType.PROVIDER_ERROR,
-          payload: {
-            error: `Error processing Mistral FIM request: ${error}`,
-            code: 'PROVIDER_ERROR',
-            requestId: safeRequestId
-          }
-        });
-      }
+      });
     } else {
       // This shouldn't happen as we already filtered unsupported providers
       sendToClient(ws, {
