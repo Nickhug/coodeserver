@@ -935,12 +935,13 @@ export async function streamGeminiMessage(params: {
   systemMessage?: string;
   tools?: any[];
   chatMode?: 'normal' | 'gather' | 'agent';
+  thinkingConfig?: ThinkingConfig;
   onStart?: () => void;
   onChunk: (chunk: string) => void;
   onError: (error: Error) => void;
   onComplete: (response: LLMResponse) => void;
 }): Promise<void> {
-  const { apiKey, model, prompt, temperature, maxTokens, systemMessage, tools, chatMode, onStart, onChunk, onError, onComplete } = params;
+  const { apiKey, model, prompt, temperature, maxTokens, systemMessage, tools, chatMode, thinkingConfig, onStart, onChunk, onError, onComplete } = params;
   
   // Log if tools and system message are present
   if (systemMessage) {
@@ -961,7 +962,8 @@ export async function streamGeminiMessage(params: {
       maxTokens,
       systemMessage,
       tools,
-      chatMode
+      chatMode,
+      thinkingConfig
     },
     {
       onStart,
@@ -985,8 +987,9 @@ export async function sendGeminiMessage(params: {
   systemMessage?: string;
   tools?: any[];
   chatMode?: 'normal' | 'gather' | 'agent';
+  thinkingConfig?: ThinkingConfig;
 }): Promise<LLMResponse> {
-  const { apiKey, model, prompt, temperature, maxTokens, systemMessage, tools, chatMode } = params;
+  const { apiKey, model, prompt, temperature, maxTokens, systemMessage, tools, chatMode, thinkingConfig } = params;
   
   // Log if tools and system message are present
   if (systemMessage) {
@@ -1005,7 +1008,8 @@ export async function sendGeminiMessage(params: {
     maxTokens,
     systemMessage,
     tools,
-    chatMode
+    chatMode,
+    thinkingConfig
   });
 }
 

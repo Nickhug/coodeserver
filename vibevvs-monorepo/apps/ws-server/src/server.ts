@@ -1895,6 +1895,10 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             systemMessage,
             tools,
             chatMode,
+            thinkingConfig: {
+              includeThoughts: true,
+              thinkingBudget: 32768
+            },
             onStart: () => {
               streamStats.startTime = Date.now();
               logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Stream started for model ${model}`);
@@ -2182,6 +2186,10 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
           systemMessage,
           tools,
           chatMode: message.payload.chatMode,
+          thinkingConfig: {
+            includeThoughts: true,
+            thinkingBudget: 32768
+          }
         });
 
         logger.info(`Provider Response (Non-Stream) [${safeRequestId}]: ` +
@@ -2772,9 +2780,13 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           systemMessage,
           tools,
           chatMode: requestChatMode,
+          thinkingConfig: {
+            includeThoughts: true,
+            thinkingBudget: 32768
+          },
           onStart: () => {
             streamStats.startTime = Date.now();
-            logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Continued stream started for model ${model}`);
+            logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Stream started for model ${model}`);
           },
           onChunk: (chunk: string) => {
             // Update stream stats
@@ -3024,6 +3036,10 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           systemMessage,
           tools,
           chatMode: requestChatMode,
+          thinkingConfig: {
+            includeThoughts: true,
+            thinkingBudget: 32768
+          }
         });
 
         logger.info(`Provider Response (ToolExec Non-Stream) [${safeRequestId}]: ` +
