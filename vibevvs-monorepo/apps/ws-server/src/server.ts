@@ -715,42 +715,9 @@ function sendToClient(ws: WebSocketWithData, message: ServerMessage): void {
       // Log WebSocket state before sending
       logger.debug(`WS STATE [${connectionId}] Before send: ${ws.readyState} (OPEN)`);
 
-      // Special handling for Gemini stream chunks to prevent WebSocket overload
-      if (message.type === MessageType.PROVIDER_STREAM_CHUNK) {
-        // For Gemini models, add a small delay to avoid overwhelming the connection
-        // This helps with Gemini 2.5 models which can have premature stream closure issues
-        if ((message.payload as any)?.provider === 'gemini' ||
-            (message.payload as any)?.model?.includes('gemini')) {
-          setTimeout(() => {
-            if (ws.readyState === WebSocket.OPEN) {
-              try {
-                ws.send(messageText);
-                logger.debug(
-                  `WS SENT-DELAYED [${connectionId}][${requestId}] ` +
-                  `Gemini chunk sent after delay, length: ${messageText.length}`
-                );
-              } catch (err) {
-                logger.error(
-                  `WS ERROR [${connectionId}][${requestId}] ` +
-                  `Failed to send delayed chunk: ${err instanceof Error ? err.message : String(err)}`
-                );
-              }
-            } else {
-              logger.warn(
-                `WS DROPPED [${connectionId}][${requestId}] ` +
-                `Cannot send delayed chunk, socket state: ${ws.readyState}`
-              );
-            }
-          }, 5);
-        } else {
-          ws.send(messageText);
-          logger.debug(`WS SENT [${connectionId}] ${messageType} sent, length: ${messageText.length}`);
-        }
-      } else {
-        // For non-stream chunks, send immediately
-        ws.send(messageText);
-        logger.debug(`WS SENT [${connectionId}] ${messageType} sent, length: ${messageText.length}`);
-      }
+      // Send all messages immediately - delays can cause premature termination
+      ws.send(messageText);
+      logger.debug(`WS SENT [${connectionId}] ${messageType} sent, length: ${messageText.length}`);
     } else {
       // Log details when message can't be sent
       const stateMap = {
@@ -1931,14 +1898,11 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                 );
               }
 
-              // Check if the chunk contains any function call syntax that should be parsed out
-              // Typical patterns include JSON function call syntax like {"functionCall":{...}} or similar
+              // Only check for function calls if the chunk looks like it contains complete function call syntax
+              // This prevents false positives that can interfere with normal text streaming
               if (
-                (chunk.includes('antml:function_calls') ||
-                 chunk.includes('functionCall') ||
-                 chunk.includes('"name":"') ||
-                 chunk.includes('"parameters":')) &&
-                (chunk.includes('{') && chunk.includes('}'))
+                chunk.includes('antml:function_calls') ||
+                (chunk.includes('functionCall') && chunk.includes('"name":') && chunk.includes('"args":'))
               ) {
                 // Log potential function call in stream
                 logger.warn(
@@ -2762,16 +2726,8 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
 
     // Process based on whether this is a streaming request
     if (stream) {
-      // Send notification that we're continuing the conversation
-      sendToClient(ws, {
-        type: MessageType.PROVIDER_STREAM_CHUNK,
-        payload: {
-          chunk: `\n\nProcessing result from ${toolName}...\n\n`,
-          requestId: safeRequestId,
-          provider,
-          model
-        }
-      });
+      // Don't inject artificial chunks - they cause newline markers in the UI
+      // The model will naturally continue the conversation
 
       try {
         // Setup for streaming
@@ -2828,14 +2784,11 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
               );
             }
 
-            // Check if the chunk contains any function call syntax that should be parsed out
-            // Typical patterns include JSON function call syntax like {"functionCall":{...}} or similar
+            // Only check for function calls if the chunk looks like it contains complete function call syntax
+            // This prevents false positives that can interfere with normal text streaming
             if (
-              (chunk.includes('antml:function_calls') ||
-               chunk.includes('functionCall') ||
-               chunk.includes('"name":"') ||
-               chunk.includes('"parameters":')) &&
-              (chunk.includes('{') && chunk.includes('}'))
+              chunk.includes('antml:function_calls') ||
+              (chunk.includes('functionCall') && chunk.includes('"name":') && chunk.includes('"args":'))
             ) {
               // Log potential function call in stream
               logger.warn(

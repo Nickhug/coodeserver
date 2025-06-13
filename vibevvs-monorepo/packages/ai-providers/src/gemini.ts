@@ -519,7 +519,7 @@ export async function sendStreamingRequest(
     const decoder = new TextDecoder();
     let partialLine = ''; // Store partial line if chunk is split mid-JSON
     let partialLineTimeout: NodeJS.Timeout | null = null;
-    const MAX_PARTIAL_LINE_WAIT = 5000; // Max time to wait for a partial line completion (ms)
+    const MAX_PARTIAL_LINE_WAIT = 15000; // Increased from 5000ms to 15000ms
     
     // Helper function to handle partial line timeouts
     const setupPartialLineTimeout = () => {
@@ -528,11 +528,36 @@ export async function sendStreamingRequest(
         clearTimeout(partialLineTimeout);
       }
       
-      // Set new timeout
+      // Set new timeout - increased from 5s to 15s for better reliability
       partialLineTimeout = setTimeout(() => {
         if (partialLine) {
-          logger.warn(`Partial line timed out after ${MAX_PARTIAL_LINE_WAIT}ms, discarding: ${partialLine.substring(0, 50)}...`);
-          partialLine = ''; // Discard the partial line if timeout
+          logger.warn(`Partial line timed out after ${MAX_PARTIAL_LINE_WAIT}ms, attempting final parse: ${partialLine.substring(0, 50)}...`);
+          
+          // Try to parse the partial line one more time before discarding
+          try {
+            const parsedPartial = JSON.parse(partialLine);
+            logger.info(`Successfully parsed timed-out partial line: ${JSON.stringify(parsedPartial, null, 2)}`);
+            // Process this parsed data immediately
+            if (parsedPartial.candidates && parsedPartial.candidates[0]?.content?.parts) {
+              for (const part of parsedPartial.candidates[0].content.parts) {
+                if (part.text) {
+                  if (part.thought === true) {
+                    accumulatedThoughts += part.text;
+                    if (onReasoningChunk) {
+                      onReasoningChunk(part.text);
+                    }
+                  } else {
+                    accumulatedAnswer += part.text;
+                    handlers.onChunk(part.text);
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            logger.warn(`Failed to parse timed-out partial line, discarding: ${e}`);
+          }
+          
+          partialLine = ''; // Clear the partial line
         }
       }, MAX_PARTIAL_LINE_WAIT);
     };
@@ -613,27 +638,30 @@ export async function sendStreamingRequest(
                   }
                   if (answerChunkForThisSSEEvent) {
                     accumulatedAnswer += answerChunkForThisSSEEvent;
-                    // Stream regular content chunks
-                    if (model.includes('gemini-2.5')) {
-                      await new Promise(resolve => setTimeout(resolve, 5));
-                    }
+                    // Stream regular content chunks immediately without artificial delays
                     handlers.onChunk(answerChunkForThisSSEEvent);
                   }
                 }
               } catch (jsonError: any) {
                 // This could be an incomplete JSON chunk
                 // Store it and try to combine with the next chunk
-                logger.warn(`Incomplete JSON chunk detected: ${jsonText.substring(0, 50)}...`);
-                partialLine = jsonText;
+                logger.debug(`Incomplete JSON chunk detected, buffering: ${jsonText.substring(0, 50)}...`);
+                
+                // If we already have a partial line, append to it
+                if (partialLine) {
+                  partialLine += jsonText;
+                } else {
+                  partialLine = jsonText;
+                }
                 
                 // Set up timeout to prevent hanging if we don't get the rest of the JSON
                 setupPartialLineTimeout();
                 
-                // Don't break the stream for JSON parse errors
+                // Don't break the stream for JSON parse errors - this is expected behavior
                 if (jsonError.message === 'Unexpected end of JSON input') {
-                  logger.warn('JSON parsing error due to incomplete chunk, will attempt to recover in next chunk');
+                  logger.debug('JSON parsing error due to incomplete chunk, buffering for next chunk');
                 } else {
-                  logger.error(`Error parsing JSON in SSE chunk: ${jsonError}`);
+                  logger.warn(`JSON parsing error, buffering chunk: ${jsonError.message}`);
                 }
               }
             } catch (error) {
@@ -733,9 +761,7 @@ export async function sendStreamingRequest(
       }
     }
     
-    if (model.includes('gemini-2.5')) {
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
+    // Remove artificial delays - they can cause premature termination
     
     if (!rawResponse && (accumulatedAnswer || accumulatedThoughts)) {
       logger.warn(`Stream completed without a valid raw response despite receiving text. Answer Length: ${accumulatedAnswer.length}, Thoughts Length: ${accumulatedThoughts.length}`);
