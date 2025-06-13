@@ -835,10 +835,20 @@ export async function sendStreamingRequest(
           responseObj.generatedText = toolCallPartText;
 
           if (responseObj.toolCall.name === 'edit_file') {
-            if (!responseObj.toolCall.parameters.searchReplaceBlocks) {
+            // Handle both camelCase and snake_case parameter names
+            const searchReplaceBlocksParam = responseObj.toolCall.parameters.searchReplaceBlocks || responseObj.toolCall.parameters.search_replace_blocks;
+            
+            if (!searchReplaceBlocksParam) {
               responseObj.toolCall.parameters.searchReplaceBlocks = '';
-            } else if (typeof responseObj.toolCall.parameters.searchReplaceBlocks !== 'string') {
-              responseObj.toolCall.parameters.searchReplaceBlocks = String(responseObj.toolCall.parameters.searchReplaceBlocks);
+              responseObj.toolCall.parameters.search_replace_blocks = '';
+            } else if (typeof searchReplaceBlocksParam !== 'string') {
+              const stringValue = String(searchReplaceBlocksParam);
+              responseObj.toolCall.parameters.searchReplaceBlocks = stringValue;
+              responseObj.toolCall.parameters.search_replace_blocks = stringValue;
+            } else {
+              // Ensure both parameter formats exist with the same value
+              responseObj.toolCall.parameters.searchReplaceBlocks = searchReplaceBlocksParam;
+              responseObj.toolCall.parameters.search_replace_blocks = searchReplaceBlocksParam;
             }
           }
           

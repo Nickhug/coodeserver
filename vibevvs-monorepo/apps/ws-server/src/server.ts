@@ -2045,21 +2045,31 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
 
                 // Special handling for edit_file tool to ensure searchReplaceBlocks always exists
                 if (response.toolCall.name === 'edit_file') {
+                  // Handle both camelCase and snake_case parameter names
+                  const searchReplaceBlocksParam = response.toolCall.parameters.searchReplaceBlocks || response.toolCall.parameters.search_replace_blocks;
+                  
                   // Ensure that searchReplaceBlocks parameter exists and is a string
-                  if (!response.toolCall.parameters.searchReplaceBlocks) {
+                  if (!searchReplaceBlocksParam) {
                     logger.warn(
                       `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
                       `edit_file tool missing searchReplaceBlocks parameter, adding empty default`
                     );
                     // If editing an empty file, add an empty searchReplaceBlocks parameter
                     response.toolCall.parameters.searchReplaceBlocks = '';
-                  } else if (typeof response.toolCall.parameters.searchReplaceBlocks !== 'string') {
+                    response.toolCall.parameters.search_replace_blocks = '';
+                  } else if (typeof searchReplaceBlocksParam !== 'string') {
                     logger.warn(
                       `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
                       `edit_file tool has non-string searchReplaceBlocks, converting to string`
                     );
-                    // Convert to string if it's not already
-                    response.toolCall.parameters.searchReplaceBlocks = String(response.toolCall.parameters.searchReplaceBlocks);
+                    // Convert to string if it's not already and ensure both formats exist
+                    const stringValue = String(searchReplaceBlocksParam);
+                    response.toolCall.parameters.searchReplaceBlocks = stringValue;
+                    response.toolCall.parameters.search_replace_blocks = stringValue;
+                  } else {
+                    // Ensure both parameter formats exist with the same value
+                    response.toolCall.parameters.searchReplaceBlocks = searchReplaceBlocksParam;
+                    response.toolCall.parameters.search_replace_blocks = searchReplaceBlocksParam;
                   }
                 }
 
@@ -2898,21 +2908,31 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
 
               // Special handling for edit_file tool to ensure searchReplaceBlocks always exists
               if (response.toolCall.name === 'edit_file') {
+                // Handle both camelCase and snake_case parameter names
+                const searchReplaceBlocksParam = response.toolCall.parameters.searchReplaceBlocks || response.toolCall.parameters.search_replace_blocks;
+                
                 // Ensure that searchReplaceBlocks parameter exists and is a string
-                if (!response.toolCall.parameters.searchReplaceBlocks) {
+                if (!searchReplaceBlocksParam) {
                   logger.warn(
                     `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
                     `edit_file tool missing searchReplaceBlocks parameter, adding empty default`
                   );
                   // If editing an empty file, add an empty searchReplaceBlocks parameter
                   response.toolCall.parameters.searchReplaceBlocks = '';
-                } else if (typeof response.toolCall.parameters.searchReplaceBlocks !== 'string') {
+                  response.toolCall.parameters.search_replace_blocks = '';
+                } else if (typeof searchReplaceBlocksParam !== 'string') {
                   logger.warn(
                     `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
                     `edit_file tool has non-string searchReplaceBlocks, converting to string`
                   );
-                  // Convert to string if it's not already
-                  response.toolCall.parameters.searchReplaceBlocks = String(response.toolCall.parameters.searchReplaceBlocks);
+                  // Convert to string if it's not already and ensure both formats exist
+                  const stringValue = String(searchReplaceBlocksParam);
+                  response.toolCall.parameters.searchReplaceBlocks = stringValue;
+                  response.toolCall.parameters.search_replace_blocks = stringValue;
+                } else {
+                  // Ensure both parameter formats exist with the same value
+                  response.toolCall.parameters.searchReplaceBlocks = searchReplaceBlocksParam;
+                  response.toolCall.parameters.search_replace_blocks = searchReplaceBlocksParam;
                 }
               }
 
@@ -3047,19 +3067,30 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
 
           // Special handling for edit_file tool
           if (response.toolCall.name === 'edit_file') {
+            // Handle both camelCase and snake_case parameter names
+            const searchReplaceBlocksParam = response.toolCall.parameters.searchReplaceBlocks || response.toolCall.parameters.search_replace_blocks;
+            
             // Ensure that searchReplaceBlocks parameter exists and is a string
-            if (!response.toolCall.parameters.searchReplaceBlocks) {
+            if (!searchReplaceBlocksParam) {
               logger.warn(
                 `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
                 `Non-streaming edit_file tool missing searchReplaceBlocks parameter, adding empty default`
               );
               response.toolCall.parameters.searchReplaceBlocks = '';
-            } else if (typeof response.toolCall.parameters.searchReplaceBlocks !== 'string') {
+              response.toolCall.parameters.search_replace_blocks = '';
+            } else if (typeof searchReplaceBlocksParam !== 'string') {
               logger.warn(
                 `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
                 `Non-streaming edit_file tool has non-string searchReplaceBlocks, converting to string`
               );
-              response.toolCall.parameters.searchReplaceBlocks = String(response.toolCall.parameters.searchReplaceBlocks);
+              // Convert to string if it's not already and ensure both formats exist
+              const stringValue = String(searchReplaceBlocksParam);
+              response.toolCall.parameters.searchReplaceBlocks = stringValue;
+              response.toolCall.parameters.search_replace_blocks = stringValue;
+            } else {
+              // Ensure both parameter formats exist with the same value
+              response.toolCall.parameters.searchReplaceBlocks = searchReplaceBlocksParam;
+              response.toolCall.parameters.search_replace_blocks = searchReplaceBlocksParam;
             }
           }
 
