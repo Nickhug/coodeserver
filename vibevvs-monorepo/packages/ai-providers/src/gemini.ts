@@ -128,6 +128,7 @@ interface GeminiRequestParams {
 interface GeminiStreamHandler {
   onStart?: () => void;
   onChunk: (chunk: string) => void;
+  onReasoningChunk?: (chunk: string) => void;
   onError: (error: Error) => void;
   onComplete: (response: LLMResponse) => void;
 }
@@ -359,7 +360,7 @@ export async function sendStreamingRequest(
   
   try {
     const { apiKey, model, prompt, temperature = 0.7, maxTokens, systemMessage, tools, chatMode } = params;
-    const { onStart, onChunk, onError, onComplete } = handlers;
+    const { onStart, onChunk, onReasoningChunk, onError, onComplete } = handlers;
     
     logger.info(`Starting streaming Gemini request with model: ${model}`);
     
@@ -605,20 +606,18 @@ export async function sendStreamingRequest(
                   
                   if (thoughtChunkForThisSSEEvent) {
                     accumulatedThoughts += thoughtChunkForThisSSEEvent;
+                    // Stream reasoning chunks separately if handler is provided
+                    if (onReasoningChunk) {
+                      onReasoningChunk(thoughtChunkForThisSSEEvent);
+                    }
                   }
                   if (answerChunkForThisSSEEvent) {
                     accumulatedAnswer += answerChunkForThisSSEEvent;
-                  }
-
-                  // Call onChunk handler with combined text for now (to minimize downstream changes immediately)
-                  // The final onComplete will provide the clean separation.
-                  const combinedChunkText = thoughtChunkForThisSSEEvent + answerChunkForThisSSEEvent;
-                  if (combinedChunkText) {
-                    // Add small delay when streaming from Gemini 2.5 models
+                    // Stream regular content chunks
                     if (model.includes('gemini-2.5')) {
                       await new Promise(resolve => setTimeout(resolve, 5));
                     }
-                    handlers.onChunk(combinedChunkText);
+                    handlers.onChunk(answerChunkForThisSSEEvent);
                   }
                 }
               } catch (jsonError: any) {
@@ -943,10 +942,11 @@ export async function streamGeminiMessage(params: {
   thinkingConfig?: ThinkingConfig;
   onStart?: () => void;
   onChunk: (chunk: string) => void;
+  onReasoningChunk?: (chunk: string) => void;
   onError: (error: Error) => void;
   onComplete: (response: LLMResponse) => void;
 }): Promise<void> {
-  const { apiKey, model, prompt, temperature, maxTokens, systemMessage, tools, chatMode, thinkingConfig, onStart, onChunk, onError, onComplete } = params;
+  const { apiKey, model, prompt, temperature, maxTokens, systemMessage, tools, chatMode, thinkingConfig, onStart, onChunk, onReasoningChunk, onError, onComplete } = params;
   
   // Log if tools and system message are present
   if (systemMessage) {
@@ -973,6 +973,7 @@ export async function streamGeminiMessage(params: {
     {
       onStart,
       onChunk,
+      onReasoningChunk,
       onError,
       onComplete
     }

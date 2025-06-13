@@ -34,6 +34,7 @@ export enum MessageType {
   // Streaming messages
   PROVIDER_STREAM_START = 'provider_stream_start',
   PROVIDER_STREAM_CHUNK = 'provider_stream_chunk',
+  PROVIDER_REASONING_CHUNK = 'provider_reasoning_chunk',
   PROVIDER_STREAM_END = 'provider_stream_end',
 
   // Tool messages
@@ -166,6 +167,16 @@ export interface ProviderStreamChunkPayload {
     parameters: Record<string, unknown>;
     id?: string;
   };
+}
+
+/**
+ * Provider reasoning chunk payload
+ */
+export interface ProviderReasoningChunkPayload {
+  chunk: string;
+  requestId?: string;
+  provider?: string;
+  model?: string;
 }
 
 /**

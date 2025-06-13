@@ -1903,6 +1903,18 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               streamStats.startTime = Date.now();
               logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Stream started for model ${model}`);
             },
+            onReasoningChunk: (chunk: string) => {
+              // Send reasoning chunks as separate message type
+              sendToClient(ws, {
+                type: MessageType.PROVIDER_REASONING_CHUNK,
+                payload: {
+                  chunk,
+                  requestId: safeRequestId,
+                  provider,
+                  model
+                }
+              });
+            },
             onChunk: (chunk: string) => {
               // Update stream stats
               streamStats.chunkCount++;
@@ -2787,6 +2799,18 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           onStart: () => {
             streamStats.startTime = Date.now();
             logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Stream started for model ${model}`);
+          },
+          onReasoningChunk: (chunk: string) => {
+            // Send reasoning chunks as separate message type
+            sendToClient(ws, {
+              type: MessageType.PROVIDER_REASONING_CHUNK,
+              payload: {
+                chunk,
+                requestId: safeRequestId,
+                provider,
+                model
+              }
+            });
           },
           onChunk: (chunk: string) => {
             // Update stream stats
