@@ -191,6 +191,11 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
       }
     }
     
+    if (params.thinkingConfig) {
+      requestBody.generationConfig.thinkingConfig = params.thinkingConfig;
+      logger.info(`Added thinkingConfig to request: ${JSON.stringify(params.thinkingConfig)}`);
+    }
+    
     // Direct API call to v1beta endpoint with API key in URL
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
     
@@ -461,12 +466,10 @@ export async function sendStreamingRequest(
       
       // Add toolConfig for function calling when in agent mode
       if (chatMode === 'agent') {
-        requestBody.toolConfig = {
-          functionCallingConfig: {
-            // In agent mode, set to 'auto' to allow the model to decide when to use tools
-            // This encourages tool usage without forcing it
-            mode: 'auto'
-          }
+        requestBody.generationConfig.functionCallingConfig = {
+          // In agent mode, set to 'auto' to allow the model to decide when to use tools
+          // This encourages tool usage without forcing it
+          mode: 'auto'
         };
         logger.info('Added function calling config for agent mode');
       }
@@ -479,7 +482,7 @@ export async function sendStreamingRequest(
 
     // Add thinkingConfig if present
     if (params.thinkingConfig) {
-      requestBody.config = { thinkingConfig: params.thinkingConfig };
+      requestBody.generationConfig.thinkingConfig = params.thinkingConfig;
       logger.info(`Added thinkingConfig to streaming request: ${JSON.stringify(params.thinkingConfig)}`);
     }
 
