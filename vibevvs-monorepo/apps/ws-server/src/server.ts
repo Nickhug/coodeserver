@@ -56,6 +56,7 @@ interface TurnContext {
   maxTokens?: number;
   systemMessage?: string;
   tools?: any[];
+  parallelToolCalls?: boolean; // ✅ ADDED
   stream: boolean;
   lastPrompt: string;
   messages: any[]; // Store conversation history
@@ -1719,18 +1720,17 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
     return;
   }
 
-  const { provider, model, prompt, temperature, maxTokens, stream = false, requestId, systemMessage, tools } = message.payload;
+  const { provider, model, prompt, temperature, maxTokens, stream = true, requestId, systemMessage, tools, toolChoice, parallelToolCalls, requestType } = message.payload;
 
-  // Ensure requestId is always available, generate one if needed
-  const safeRequestId = requestId || `gen-${uuidv4().substring(0, 8)}`;
-
+  const safeRequestId = requestId || uuidv4();
   const userId = ws.connectionData.userId;
 
   // Log the full request details for debugging
   logger.info(`Provider Request [${safeRequestId}]: ` +
     `Provider: ${provider}, Model: ${model}, User: ${userId || 'anonymous'}, Stream: ${stream}, ` +
     `Prompt Length: ${prompt?.length || 0}, SysMsg Length: ${systemMessage?.length || 0}, ` +
-    `Tools: ${tools ? tools.length : 0} (${tools?.map((t: any) => t.name || 'unnamed').join(', ') || 'none'})`);
+    `Tools: ${tools ? tools.length : 0} (${tools?.map((t: any) => t.name || 'unnamed').join(', ') || 'none'}), ` +
+    `ToolChoice: ${toolChoice}, ParallelToolCalls: ${parallelToolCalls}, RequestType: ${requestType}`);
 
   if (!userId && config.authEnabled) {
     logger.error(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] No user ID available for provider request`);
@@ -2112,6 +2112,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   maxTokens,
                   systemMessage,
                   tools,
+                  parallelToolCalls,
                   stream: true,
                   lastPrompt: String(prompt),
                   messages: [{
@@ -2229,6 +2230,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             maxTokens,
             systemMessage,
             tools,
+            parallelToolCalls,
             stream: false,
             lastPrompt: String(prompt),
             messages: [{
@@ -2409,11 +2411,12 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               apiKey,
               model: modelToUse,
               messages: messages || [{ role: 'user', content: String(prompt || '') }],
+              systemMessage, // ✅ ADDED: Pass system message to Mistral
               temperature,
               maxTokens,
               stream: true,
-              // tools, // Mistral tools might have a different format or not be fully supported yet
-              // tool_choice: toolChoice,
+              tools, // ✅ ADDED: Re-enable tool support
+              toolChoice, // ✅ ADDED: Re-enable tool choice support
               ...commonStreamHandlers,
               onReasoningChunk: (chunk: string) => { // ✅ ADDED: Handle reasoning chunks
                 sendToClient(ws, {
@@ -2440,8 +2443,21 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
 
                 if (toolCalls && toolCalls.length > 0) {
                   logger.info(`WS MISTRAL Chat [${ws.connectionData.connectionId}][${safeRequestId}] Tool calls received: ${JSON.stringify(toolCalls)}`);
-                  // Placeholder: Implement tool call context storage if needed for Mistral
-                  // activeTurnContexts.set(safeRequestId, { ... });
+                  // ✅ ADDED: Store context for tool execution feedback loop
+                  activeTurnContexts.set(safeRequestId, {
+                    provider: 'mistral',
+                    model: modelToUse,
+                    apiKey,
+                    temperature,
+                    maxTokens,
+                    systemMessage,
+                    tools,
+                    parallelToolCalls,
+                    stream: true,
+                    lastPrompt: String(prompt || ''),
+                    messages: [...(messages || []), { role: 'assistant', content: fullText, tool_calls: toolCalls }],
+                    createdAt: Date.now()
+                  });
                 }
 
                 sendToClient(ws, {
@@ -2530,11 +2546,13 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               apiKey,
               model: modelToUse,
               messages: messages || [{ role: 'user', content: String(prompt || '') }],
+              systemMessage, // ✅ ADDED: Pass system message to Mistral
               temperature,
               maxTokens,
               stream: false,
-              // tools, 
-              // tool_choice: toolChoice,
+              tools, // ✅ ADDED: Re-enable tool support
+              toolChoice, // ✅ ADDED: Re-enable tool choice support
+              parallelToolCalls, // ✅ ADDED
               onFinal: (fullText: string, tokensUsed?: number, toolCalls?: MistralToolCall[], finishReason?: string | null, reasoning?: string) => { // ✅ ADDED: reasoning parameter
                 logger.info(
                   `WS MISTRAL Chat (Non-Stream) [${ws.connectionData.connectionId}][${safeRequestId}] Response: ` +
@@ -2542,8 +2560,21 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                 );
                 if (toolCalls && toolCalls.length > 0) {
                   logger.info(`WS MISTRAL Chat (Non-Stream) [${ws.connectionData.connectionId}][${safeRequestId}] Tool calls received: ${JSON.stringify(toolCalls)}`);
-                  // Placeholder: Implement tool call context storage if needed for Mistral
-                  // activeTurnContexts.set(safeRequestId, { ... });
+                  // ✅ ADDED: Store context for tool execution feedback loop
+                  activeTurnContexts.set(safeRequestId, {
+                    provider: 'mistral',
+                    model: modelToUse,
+                    apiKey,
+                    temperature,
+                    maxTokens,
+                    systemMessage,
+                    tools,
+                    parallelToolCalls,
+                    stream: false,
+                    lastPrompt: String(prompt || ''),
+                    messages: [...(messages || []), { role: 'assistant', content: fullText, tool_calls: toolCalls }],
+                    createdAt: Date.now()
+                  });
                 }
                 sendToClient(ws, {
                   type: MessageType.PROVIDER_RESPONSE,
@@ -2740,7 +2771,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
     const conversationContext = activeTurnContexts.get(safeRequestId);
 
     if (!conversationContext) {
-      logger.error(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] No active conversation found for tool execution result`);
+      logger.error(`WS [${ws.connectionData.connectionId}][${safeRequestId}] No active conversation found for tool execution result`);
       sendToClient(ws, {
         type: MessageType.PROVIDER_ERROR,
         payload: {
@@ -2752,7 +2783,14 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
       return;
     }
 
-    const { provider, model, apiKey, temperature, maxTokens, systemMessage, tools, stream, lastPrompt, messages } = conversationContext;
+    // Now that we have the full tool call result, continue the conversation
+    const { provider, model, apiKey, temperature, maxTokens, systemMessage, tools, parallelToolCalls, stream, lastPrompt, messages } = conversationContext;
+    const streamStats = {
+      startTime: Date.now(),
+      chunkCount: 0,
+      totalCharsStreamed: 0,
+      lastChunkTime: Date.now()
+    };
 
     // Add tool result to messages
     const toolResponseContent = isError ?
@@ -2770,8 +2808,8 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
       content: toolResponseString
     });
 
-    // Now send the updated conversation back to Gemini
-    logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Continuing conversation with tool result for ${toolName}`);
+    // Now send the updated conversation back to the appropriate provider
+    logger.info(`WS ${provider.toUpperCase()} [${ws.connectionData.connectionId}][${safeRequestId}] Continuing conversation with tool result for ${toolName}`);
 
     // Properly initialize chatMode as a valid string value
     const userChatMode = message.payload.chatMode;
@@ -2785,16 +2823,154 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
       // The model will naturally continue the conversation
 
       try {
-        // Setup for streaming
-        const streamStats = {
-          startTime: Date.now(),
-          chunkCount: 0,
-          totalCharsStreamed: 0,
-          lastChunkTime: Date.now()
-        };
+        // Continue conversation with the appropriate provider
+        if (provider === 'mistral') {
+          // Continue with Mistral
+          await mistral.processChat({
+            apiKey,
+            model,
+            messages,
+            systemMessage,
+            temperature: temperature || 0.7,
+            maxTokens: maxTokens || 50000,
+            stream: true,
+            tools,
+            toolChoice: undefined, // Let model decide
+            parallelToolCalls, // ✅ ADDED
+            onStream: (chunk: string) => {
+              // Update stream stats
+              streamStats.chunkCount++;
+              streamStats.totalCharsStreamed += chunk.length;
+              streamStats.lastChunkTime = Date.now();
 
-        // Continue conversation with Gemini
-        await gemini.streamGeminiMessage({
+              // Log every 10th chunk to avoid log flooding
+              if (streamStats.chunkCount % 10 === 0) {
+                logger.debug(
+                  `WS MISTRAL [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                  `Streaming progress: ${streamStats.chunkCount} chunks, ` +
+                  `${streamStats.totalCharsStreamed} chars, ` +
+                  `${Date.now() - streamStats.startTime}ms elapsed`
+                );
+              }
+
+              // Send regular text chunks to the client as they arrive
+              sendToClient(ws, {
+                type: MessageType.PROVIDER_STREAM_CHUNK,
+                payload: {
+                  chunk,
+                  requestId: safeRequestId,
+                  provider,
+                  model
+                }
+              });
+            },
+            onReasoningChunk: (chunk: string) => {
+              // Send reasoning chunks as separate message type
+              sendToClient(ws, {
+                type: MessageType.PROVIDER_REASONING_CHUNK,
+                payload: {
+                  chunk,
+                  requestId: safeRequestId,
+                  provider,
+                  model
+                }
+              });
+            },
+            onFinal: (fullText: string, tokensUsed?: number, toolCalls?: MistralToolCall[], finishReason?: string | null, reasoning?: string) => {
+              // Calculate streaming metrics
+              const elapsedMs = Date.now() - streamStats.startTime;
+              const charsPerSecond = streamStats.totalCharsStreamed / (elapsedMs / 1000);
+
+              logger.info(
+                `WS MISTRAL [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                `Stream complete: ${streamStats.chunkCount} chunks, ` +
+                `${streamStats.totalCharsStreamed} chars, ` +
+                `${elapsedMs}ms total time, ` +
+                `${charsPerSecond.toFixed(1)} chars/sec, ` +
+                `${tokensUsed} tokens used`
+              );
+
+              if (toolCalls && toolCalls.length > 0) {
+                logger.info(
+                  `WS MISTRAL [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                  `Tool call detected in response: ${toolCalls[0].function?.name || 'unknown'}`
+                );
+
+                // Store the conversation context for next tool execution
+                activeTurnContexts.set(safeRequestId, {
+                  provider,
+                  model,
+                  apiKey,
+                  temperature,
+                  maxTokens,
+                  systemMessage,
+                  tools,
+                  parallelToolCalls,
+                  stream: true,
+                  lastPrompt: String(lastPrompt),
+                  messages: [...messages, { role: 'assistant', content: fullText, tool_calls: toolCalls }],
+                  createdAt: Date.now()
+                });
+
+                // Send stream end with tool call
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_STREAM_END,
+                  payload: {
+                    tokensUsed,
+                    success: true,
+                    requestId: safeRequestId,
+                    provider,
+                    model,
+                    toolCall: {
+                      id: toolCalls[0].id,
+                      name: toolCalls[0].function?.name,
+                      parameters: JSON.parse(String(toolCalls[0].function?.arguments || '{}'))
+                    },
+                    waitingForToolCall: true,
+                    reasoning
+                  }
+                });
+              } else {
+                // No more tool calls, conversation complete
+                activeTurnContexts.delete(safeRequestId);
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_STREAM_END,
+                  payload: {
+                    tokensUsed,
+                    success: true,
+                    requestId: safeRequestId,
+                    provider,
+                    model,
+                    text: fullText,
+                    reasoning
+                  }
+                });
+              }
+            },
+            onError: (error: Error) => {
+              logger.error(
+                `WS MISTRAL [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                `Streaming error after ${streamStats.chunkCount} chunks: ${error.message}`
+              );
+
+              sendToClient(ws, {
+                type: MessageType.PROVIDER_ERROR,
+                payload: {
+                  error: `Streaming error: ${error.message}`,
+                  code: 'STREAMING_ERROR',
+                  requestId: safeRequestId,
+                  provider,
+                  model
+                }
+              });
+
+              // Clean up the context
+              activeTurnContexts.delete(safeRequestId);
+            }
+          });
+        } else {
+          // Continue conversation with Gemini
+          await gemini.streamGeminiMessage({
           apiKey,
           model,
           prompt: JSON.stringify(messages),
@@ -2990,6 +3166,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
                 maxTokens,
                 systemMessage,
                 tools,
+                parallelToolCalls,
                 stream: true,
                 lastPrompt: String(prompt),
                 messages: [{
@@ -3048,6 +3225,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
             }
           }
         });
+        } // ✅ FIXED: Close the else block for Gemini
       } catch (error) {
         logger.error(
           `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +

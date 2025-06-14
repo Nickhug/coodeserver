@@ -262,12 +262,14 @@ export async function processChat({
   apiKey,
   model = 'mistral-large-latest', // ✅ FIXED: Use proper chat model instead of codestral-latest
   messages,
+  systemMessage, // ✅ ADDED: System message support
   temperature = 0.7,
   maxTokens,
   stream = false,
   stopSequences = [],
   tools, // ✅ ADDED: Tool support
   toolChoice, // ✅ ADDED: Tool choice support
+  parallelToolCalls, // ✅ ADDED
   onStream,
   onReasoningChunk, // ✅ ADDED: For reasoning tokens
   onFinal,
@@ -276,12 +278,14 @@ export async function processChat({
   apiKey: string;
   model?: string;
   messages: ChatMessage[]; // Correctly using the aliased ChatMessage
+  systemMessage?: string; // ✅ ADDED: System message support
   temperature?: number;
   maxTokens?: number;
   stream?: boolean;
   stopSequences?: string[];
   tools?: any[]; // ✅ ADDED: Tool definitions
   toolChoice?: string; // ✅ ADDED: Tool choice option
+  parallelToolCalls?: boolean; // ✅ ADDED
   onStream?: (chunk: string) => void;
   onReasoningChunk?: (chunk: string) => void; // ✅ ADDED: For reasoning tokens
   onFinal?: (fullText: string, tokensUsed?: number, toolCalls?: MistralToolCall[], finishReason?: string | null, reasoning?: string) => void; // ✅ ADDED: reasoning field
@@ -289,7 +293,18 @@ export async function processChat({
 }): Promise<void> {
   try {
     const client = new Mistral({ apiKey });
-    logger.info(`Mistral Chat request: model=${model}, stream=${stream}, temp=${temperature}, messages_count=${messages.length}`);
+    
+    // ✅ ADDED: Handle system message by prepending to messages array
+    let processedMessages = [...messages];
+    if (systemMessage) {
+      processedMessages = [
+        { role: 'system', content: systemMessage },
+        ...messages
+      ];
+      logger.info(`Mistral Chat request: model=${model}, stream=${stream}, temp=${temperature}, messages_count=${messages.length}, systemMessage_length=${systemMessage.length}`);
+    } else {
+      logger.info(`Mistral Chat request: model=${model}, stream=${stream}, temp=${temperature}, messages_count=${messages.length}`);
+    }
 
     if (stream && onStream && onFinal) {
       let fullResponseText = '';
@@ -304,12 +319,13 @@ export async function processChat({
 
       const streamResponse = await client.chat.stream({
         model,
-        messages,
+        messages: processedMessages, // ✅ FIXED: Use processedMessages with system message
         temperature,
         maxTokens,
         stop: stopSequences.length > 0 ? stopSequences : undefined,
         tools: tools && tools.length > 0 ? tools : undefined, // ✅ ADDED: Tool support
         toolChoice: toolChoice as any || undefined, // ✅ ADDED: Tool choice support (cast to any for flexibility)
+        parallelToolCalls, // ✅ ADDED
       });
 
       for await (const event of streamResponse) { // event is CompletionEvent
@@ -416,12 +432,13 @@ export async function processChat({
     } else if (onFinal) { // Non-streaming
       const response: ChatCompletionResponse = await client.chat.complete({
         model,
-        messages,
+        messages: processedMessages, // ✅ FIXED: Use processedMessages with system message
         temperature,
         maxTokens,
         stop: stopSequences.length > 0 ? stopSequences : undefined,
         tools: tools && tools.length > 0 ? tools : undefined, // ✅ ADDED: Tool support
         toolChoice: toolChoice as any || undefined, // ✅ ADDED: Tool choice support (cast to any for flexibility)
+        parallelToolCalls, // ✅ ADDED
       });
 
       const choice = response.choices && response.choices.length > 0 ? response.choices[0] : null;

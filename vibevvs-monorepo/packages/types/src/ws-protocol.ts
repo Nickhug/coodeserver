@@ -5,6 +5,11 @@
  */
 
 /**
+ * Defines the protocol for WebSocket communication between the client and server.
+ * This includes message types, payload structures, and supported providers.
+ */
+
+/**
  * Message types for WebSocket communication
  */
 export enum MessageType {
@@ -110,17 +115,19 @@ export interface AuthenticatePayload {
 export interface ProviderRequestPayload {
   provider: string;
   model: string;
-  prompt: string;
+  prompt?: string;
+  messages?: ChatMessage[];
+  suffix?: string;
   temperature?: number;
   maxTokens?: number;
   stream?: boolean;
-  systemMessage?: string;
   requestId?: string;
-  tools?: Array<{
-    name: string;
-    description: string;
-    parameters: Record<string, { description: string }>;
-  }> | null;
+  systemMessage?: string;
+  tools?: any[];
+  toolChoice?: string;
+  parallelToolCalls?: boolean;
+  requestType?: 'fim' | 'chat';
+  chatMode?: 'normal' | 'gather' | 'agent';
 }
 
 /**
@@ -448,5 +455,23 @@ export interface CodebaseDeleteVectorsResponseMessage extends ServerMessage {
     success: boolean;
     error?: string;
     deletedVectorCount?: number;
+  };
+}
+
+// Base message type for chat history
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+}
+
+// Represents a tool call from the model
+export interface ToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
   };
 }
