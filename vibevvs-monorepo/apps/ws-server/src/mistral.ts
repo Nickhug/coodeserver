@@ -63,8 +63,8 @@ function convertToolsToMistralFormat(tools: any[]): any[] {
     };
 
     // Convert parameters from Void format to Mistral JSON Schema format
-    if (tool.parameters && typeof tool.parameters === 'object') {
-      Object.entries(tool.parameters).forEach(([paramName, paramInfo]: [string, any]) => {
+    if (tool.params && typeof tool.params === 'object') {
+      Object.entries(tool.params).forEach(([paramName, paramInfo]: [string, any]) => {
         mistralTool.function.parameters.properties[paramName] = {
           type: 'string', // Default to string for Mistral
           description: paramInfo.description || ''
@@ -360,9 +360,13 @@ export async function processChat({
     // Add the conversation messages
     mistralMessages.push(...messages);
 
+    // ✅ FIXED: Convert tools to Mistral format before passing to API
+    const convertedTools = tools && tools.length > 0 ? convertToolsToMistralFormat(tools) : undefined;
+
     // ✅ FIXED: Log tools being sent to Mistral API
-    if (tools && tools.length > 0) {
-      logger.info(`Mistral Chat request: Passing ${tools.length} tools to Mistral API.`);
+    if (convertedTools && convertedTools.length > 0) {
+      logger.info(`Mistral Chat request: Passing ${convertedTools.length} tools to Mistral API.`);
+      logger.debug(`Converted tools: ${JSON.stringify(convertedTools.map(t => ({name: t.function.name, description: t.function.description})), null, 2)}`);
     } else {
       logger.info(`Mistral Chat request: No tools provided`);
     }
@@ -378,14 +382,14 @@ export async function processChat({
       let insideThinkingTags = false;
       let pendingContent = ''; // Buffer for processing content that might contain think tags
 
-      // ✅ FIXED: Correctly pass tools and toolChoice to the stream
+      // ✅ FIXED: Correctly pass converted tools and toolChoice to the stream
       const streamResponse = await client.chat.stream({
         model,
         messages: mistralMessages,
         temperature,
         maxTokens,
         stop: stopSequences.length > 0 ? stopSequences : undefined,
-        tools: tools && tools.length > 0 ? tools : undefined,
+        tools: convertedTools,
         toolChoice: toolChoice,
         parallelToolCalls,
       });
@@ -492,14 +496,14 @@ export async function processChat({
       onFinal(fullResponseText, finalUsage?.totalTokens, accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined, finalFinishReason || undefined, accumulatedReasoning || undefined); // ✅ ADDED: reasoning parameter
 
     } else if (onFinal) { // Non-streaming
-      // ✅ FIXED: Correctly pass tools and toolChoice to complete
+      // ✅ FIXED: Correctly pass converted tools and toolChoice to complete
       const response: ChatCompletionResponse = await client.chat.complete({
         model,
         messages: mistralMessages,
         temperature,
         maxTokens,
         stop: stopSequences.length > 0 ? stopSequences : undefined,
-        tools: tools && tools.length > 0 ? tools : undefined,
+        tools: convertedTools,
         toolChoice: toolChoice,
         parallelToolCalls,
       });
