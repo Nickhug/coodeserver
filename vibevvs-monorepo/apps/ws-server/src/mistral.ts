@@ -353,11 +353,15 @@ export async function processChat({
     // ✅ FIXED: Prepare messages array for Mistral API
     const mistralMessages: ChatMessage[] = [];
     
-    if (systemMessage) {
+    // ✅ FIXED: Check if the first message is already a system message
+    const hasSystemMessageInMessages = messages.length > 0 && messages[0].role === 'system';
+    
+    if (systemMessage && !hasSystemMessageInMessages) {
+        // Only add separate system message if messages don't already contain one
         mistralMessages.push({ role: 'system', content: systemMessage });
     }
     
-    // Add the conversation messages
+    // Add the conversation messages (which may already include a system message)
     mistralMessages.push(...messages);
 
     // ✅ FIXED: Convert tools to Mistral format before passing to API
@@ -452,6 +456,9 @@ export async function processChat({
             }
           }
           if (delta && delta.toolCalls) { // Corrected to toolCalls
+            // ✅ DEBUG: Log raw tool call data from Mistral
+            logger.debug(`Mistral raw tool calls delta: ${JSON.stringify(delta.toolCalls, null, 2)}`);
+            
             delta.toolCalls.forEach((tc: MistralToolCall, index: number) => { // Corrected to toolCalls and typed tc, index
               if (tc.function?.name || tc.function?.arguments) { // Check if there's something to add/update
                 let existingToolCall = accumulatedToolCalls[index]; // Use the index from forEach
@@ -492,6 +499,13 @@ export async function processChat({
       }
       
       accumulatedToolCalls = accumulatedToolCalls.filter(tc => tc && tc.function && tc.function.name);
+
+      // ✅ DEBUG: Log final accumulated tool calls
+      if (accumulatedToolCalls.length > 0) {
+        logger.info(`Mistral final accumulated tool calls: ${JSON.stringify(accumulatedToolCalls, null, 2)}`);
+      } else {
+        logger.info(`Mistral: No tool calls accumulated`);
+      }
 
       onFinal(fullResponseText, finalUsage?.totalTokens, accumulatedToolCalls.length > 0 ? accumulatedToolCalls : undefined, finalFinishReason || undefined, accumulatedReasoning || undefined); // ✅ ADDED: reasoning parameter
 
