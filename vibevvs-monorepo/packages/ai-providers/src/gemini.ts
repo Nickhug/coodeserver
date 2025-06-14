@@ -36,6 +36,34 @@ interface ThinkingConfig {
   thinkingBudget?: number;
 }
 
+/**
+ * Helper function to convert camelCase keys to snake_case
+ * This normalizes Gemini's camelCase parameter names to the snake_case format expected by the client
+ */
+function convertCamelCaseToSnakeCase(obj: any): any {
+  if (obj === null || obj === undefined || typeof obj !== 'object') {
+    return obj;
+  }
+  
+  if (Array.isArray(obj)) {
+    return obj.map(convertCamelCaseToSnakeCase);
+  }
+  
+  const converted: any = {};
+  for (const [key, value] of Object.entries(obj)) {
+    // Convert camelCase to snake_case
+    const snakeKey = key.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
+    converted[snakeKey] = convertCamelCaseToSnakeCase(value);
+    
+    // Also keep the original key for backward compatibility
+    if (snakeKey !== key) {
+      converted[key] = convertCamelCaseToSnakeCase(value);
+    }
+  }
+  
+  return converted;
+}
+
 export interface SendGeminiRequestParams {
   apiKey: string;
   model: string;
@@ -238,7 +266,7 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
           if (part.functionCall) {
             toolCall = {
               name: part.functionCall.name,
-              parameters: part.functionCall.args || {},
+              parameters: convertCamelCaseToSnakeCase(part.functionCall.args || {}),
               id: candidate.contentId || 'unknown'
             };
             logger.info(`Detected direct tool call in response: ${toolCall.name}`);
@@ -249,7 +277,7 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
         if (candidate.functionCall) {
           toolCall = {
             name: candidate.functionCall.name,
-            parameters: candidate.functionCall.args || {},
+            parameters: convertCamelCaseToSnakeCase(candidate.functionCall.args || {}),
             id: candidate.contentId || 'unknown'
           };
           logger.info(`Detected candidate-level tool call in response: ${toolCall.name}`);
@@ -257,10 +285,11 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
         
         // 3. Check for legacy function calling format
         if (candidate.content.functionCall) {
+          const legacyParams = candidate.content.functionCall.arguments ? 
+                              JSON.parse(candidate.content.functionCall.arguments) : {};
           toolCall = {
             name: candidate.content.functionCall.name,
-            parameters: candidate.content.functionCall.arguments ? 
-                       JSON.parse(candidate.content.functionCall.arguments) : {},
+            parameters: convertCamelCaseToSnakeCase(legacyParams),
             id: candidate.contentId || 'unknown'
           };
           logger.info(`Detected legacy tool call in response: ${toolCall.name}`);
@@ -301,7 +330,7 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
                 
                 toolCall = {
                   name: functionName,
-                  parameters: parameters,
+                  parameters: convertCamelCaseToSnakeCase(parameters),
                   id: `extracted-${Date.now()}`
                 };
                 
@@ -512,32 +541,50 @@ export async function sendStreamingRequest(
       throw new Error('Response body is null');
     }
     
-    // Process the SSE stream
+    // Process the SSE stream with enhanced diagnostics
     // Note: accumulatedAnswer and accumulatedThoughts will be built up here.
     const reader = response.body.getReader();
     let rawResponse = null; // Store the raw response
     const decoder = new TextDecoder();
     let partialLine = ''; // Store partial line if chunk is split mid-JSON
     let partialLineTimeout: NodeJS.Timeout | null = null;
-    const MAX_PARTIAL_LINE_WAIT = 15000; // Increased from 5000ms to 15000ms
+    const MAX_PARTIAL_LINE_WAIT = 30000; // Increased from 15000ms to 30000ms for better reliability
     
-    // Helper function to handle partial line timeouts
+    // Enhanced stream diagnostics
+    const streamDiagnostics = {
+      totalBytesReceived: 0,
+      totalChunksReceived: 0,
+      linesProcessed: 0,
+      jsonParseErrors: 0,
+      lastChunkTime: Date.now(),
+      largestChunkSize: 0,
+      streamStartTime: Date.now(),
+      partialLineOccurrences: 0,
+      errorChunksDetected: 0
+    };
+    
+    logger.info(`GEMINI STREAM DIAGNOSTICS: Starting stream processing for model ${model}`);
+    
+    // Helper function to handle partial line timeouts with retry capability
     const setupPartialLineTimeout = () => {
       // Clear any existing timeout
       if (partialLineTimeout) {
         clearTimeout(partialLineTimeout);
       }
       
-      // Set new timeout - increased from 5s to 15s for better reliability
+      // Set new timeout - increased from 15s to 30s for better reliability
       partialLineTimeout = setTimeout(() => {
         if (partialLine) {
-          logger.warn(`Partial line timed out after ${MAX_PARTIAL_LINE_WAIT}ms, attempting final parse: ${partialLine.substring(0, 50)}...`);
+          streamDiagnostics.partialLineOccurrences++;
+          logger.warn(`GEMINI STREAM DIAGNOSTICS: Partial line timeout #${streamDiagnostics.partialLineOccurrences} after ${MAX_PARTIAL_LINE_WAIT}ms: ${partialLine.substring(0, 50)}...`);
           
-          // Try to parse the partial line one more time before discarding
+          // Enhanced timeout handling - try multiple recovery strategies
           try {
+            // Strategy 1: Try to parse as-is
             const parsedPartial = JSON.parse(partialLine);
-            logger.info(`Successfully parsed timed-out partial line: ${JSON.stringify(parsedPartial, null, 2)}`);
-            // Process this parsed data immediately
+            logger.info(`GEMINI STREAM DIAGNOSTICS: Strategy 1 successful - parsed timed-out partial line`);
+            
+            // Process successful parse
             if (parsedPartial.candidates && parsedPartial.candidates[0]?.content?.parts) {
               for (const part of parsedPartial.candidates[0].content.parts) {
                 if (part.text) {
@@ -553,11 +600,39 @@ export async function sendStreamingRequest(
                 }
               }
             }
-          } catch (e) {
-            logger.warn(`Failed to parse timed-out partial line, discarding: ${e}`);
+          } catch (parseError) {
+            logger.warn(`GEMINI STREAM DIAGNOSTICS: Strategy 1 failed: ${parseError}. Trying text extraction...`);
+            
+            // Strategy 2: Try to extract text content even from malformed JSON
+            const textMatches = partialLine.match(/"text":\s*"([^"]*)/g);
+            if (textMatches && textMatches.length > 0) {
+              for (const match of textMatches) {
+                const textMatch = match.match(/"text":\s*"([^"]*)/);
+                if (textMatch && textMatch[1]) {
+                  const extractedText = textMatch[1];
+                  logger.info(`GEMINI STREAM DIAGNOSTICS: Strategy 2 successful - extracted text "${extractedText.substring(0, 30)}..."`);
+                  accumulatedAnswer += extractedText;
+                  handlers.onChunk(extractedText);
+                }
+              }
+            } else {
+              logger.warn(`GEMINI STREAM DIAGNOSTICS: Strategy 2 failed - no text found. Final attempt with regex...`);
+              
+              // Strategy 3: Try to find any quoted text content
+              const anyTextMatch = partialLine.match(/"([^"]{10,})"/);
+              if (anyTextMatch && anyTextMatch[1]) {
+                const potentialText = anyTextMatch[1];
+                // Only use if it looks like actual content (not just JSON keys)
+                if (!potentialText.match(/^(text|thought|candidates|parts|content)$/)) {
+                  logger.info(`GEMINI STREAM DIAGNOSTICS: Strategy 3 - extracted potential content "${potentialText.substring(0, 30)}..."`);
+                  accumulatedAnswer += potentialText;
+                  handlers.onChunk(potentialText);
+                }
+              }
+            }
           }
           
-          partialLine = ''; // Clear the partial line
+          partialLine = ''; // Clear the partial line after processing
         }
       }, MAX_PARTIAL_LINE_WAIT);
     };
@@ -567,8 +642,20 @@ export async function sendStreamingRequest(
       try {
         const rawText = decoder.decode(chunk.value, { stream: true });
         
-        // Log raw SSE data for debugging
-        logger.debug(`Raw SSE chunk received (${rawText.length} bytes)`);
+        // Enhanced diagnostics
+        streamDiagnostics.totalBytesReceived += rawText.length;
+        streamDiagnostics.totalChunksReceived++;
+        streamDiagnostics.lastChunkTime = Date.now();
+        streamDiagnostics.largestChunkSize = Math.max(streamDiagnostics.largestChunkSize, rawText.length);
+        
+        // Log raw SSE data for debugging with enhanced info
+        logger.debug(`GEMINI STREAM DIAGNOSTICS: Chunk #${streamDiagnostics.totalChunksReceived} received (${rawText.length} bytes, total: ${streamDiagnostics.totalBytesReceived})`);
+        
+        // Check for error indicators in raw text
+        if (rawText.includes('"error"') || rawText.includes('"code":')) {
+          streamDiagnostics.errorChunksDetected++;
+          logger.warn(`GEMINI STREAM DIAGNOSTICS: Error chunk detected #${streamDiagnostics.errorChunksDetected}: ${rawText.substring(0, 200)}...`);
+        }
         
         // Combine with any previous partial line
         const textToParse = partialLine + rawText;
@@ -590,11 +677,13 @@ export async function sendStreamingRequest(
           
           if (line === '') continue;
           
+          streamDiagnostics.linesProcessed++;
+          
           if (line.startsWith('data: ')) {
             try {
               // Skip "[DONE]" message at the end
               if (line === 'data: [DONE]') {
-                logger.info('Received [DONE] message from SSE stream');
+                logger.info('GEMINI STREAM DIAGNOSTICS: Received [DONE] message from SSE stream');
                 continue;
               }
               
@@ -604,11 +693,18 @@ export async function sendStreamingRequest(
               try {
                 const data = JSON.parse(jsonText);
                 
-                // Log the full raw chunk data for debugging
-                logger.info(`GEMINI RAW STREAM CHUNK: ${JSON.stringify(data, null, 2)}`);
+                // Enhanced logging for debugging with size info
+                const dataStr = JSON.stringify(data);
+                logger.info(`GEMINI STREAM DIAGNOSTICS: Successfully parsed chunk #${streamDiagnostics.linesProcessed} (${dataStr.length} chars): ${dataStr.substring(0, 150)}...`);
                 
                 // Store the raw response data (will use the last chunk)
                 rawResponse = data;
+                
+                // Check for API errors in this chunk
+                if (data.error) {
+                  logger.error(`GEMINI STREAM DIAGNOSTICS: API error detected in chunk: ${JSON.stringify(data.error)}`);
+                  streamDiagnostics.errorChunksDetected++;
+                }
                 
                 // Extract text content, differentiating thoughts and answers
                 if (data.candidates && 
@@ -635,64 +731,91 @@ export async function sendStreamingRequest(
                     if (onReasoningChunk) {
                       onReasoningChunk(thoughtChunkForThisSSEEvent);
                     }
+                    logger.debug(`GEMINI STREAM DIAGNOSTICS: Processed ${thoughtChunkForThisSSEEvent.length} chars of reasoning`);
                   }
                   if (answerChunkForThisSSEEvent) {
                     accumulatedAnswer += answerChunkForThisSSEEvent;
                     // Stream regular content chunks immediately without artificial delays
                     handlers.onChunk(answerChunkForThisSSEEvent);
+                    logger.debug(`GEMINI STREAM DIAGNOSTICS: Processed ${answerChunkForThisSSEEvent.length} chars of answer`);
                   }
                 }
-              } catch (jsonError: any) {
+              } catch (jsonError) {
+                // Enhanced JSON error handling with diagnostics
+                streamDiagnostics.jsonParseErrors++;
+                const errorMessage = jsonError instanceof Error ? jsonError.message : String(jsonError);
+                logger.debug(`GEMINI STREAM DIAGNOSTICS: JSON parse error #${streamDiagnostics.jsonParseErrors} (chunk #${streamDiagnostics.linesProcessed}): ${errorMessage}`);
+                
                 // This could be an incomplete JSON chunk
                 // Store it and try to combine with the next chunk
-                logger.debug(`Incomplete JSON chunk detected, buffering: ${jsonText.substring(0, 50)}...`);
+                logger.debug(`GEMINI STREAM DIAGNOSTICS: Incomplete JSON detected, buffering ${jsonText.length} chars: ${jsonText.substring(0, 50)}...`);
                 
                 // If we already have a partial line, append to it
                 if (partialLine) {
                   partialLine += jsonText;
+                  logger.debug(`GEMINI STREAM DIAGNOSTICS: Appended to existing partial line, now ${partialLine.length} chars total`);
                 } else {
                   partialLine = jsonText;
+                  logger.debug(`GEMINI STREAM DIAGNOSTICS: Started new partial line with ${partialLine.length} chars`);
                 }
                 
                 // Set up timeout to prevent hanging if we don't get the rest of the JSON
                 setupPartialLineTimeout();
                 
                 // Don't break the stream for JSON parse errors - this is expected behavior
-                if (jsonError.message === 'Unexpected end of JSON input') {
-                  logger.debug('JSON parsing error due to incomplete chunk, buffering for next chunk');
+                if (errorMessage === 'Unexpected end of JSON input') {
+                  logger.debug('GEMINI STREAM DIAGNOSTICS: Standard incomplete chunk behavior');
                 } else {
-                  logger.warn(`JSON parsing error, buffering chunk: ${jsonError.message}`);
+                  logger.warn(`GEMINI STREAM DIAGNOSTICS: Unusual JSON error: ${errorMessage}`);
                 }
               }
             } catch (error) {
-              logger.error(`Error processing SSE data line: ${error}`);
+              logger.error(`GEMINI STREAM DIAGNOSTICS: Error processing SSE data line: ${error}`);
               // Don't throw errors here to keep the stream going
             }
           } else if (line.startsWith('event:')) {
             // Handle SSE events according to spec (https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)
-            logger.info(`Received SSE event: ${line.slice(6).trim()}`);
+            logger.info(`GEMINI STREAM DIAGNOSTICS: Received SSE event: ${line.slice(6).trim()}`);
           } else if (line.startsWith('id:')) {
             // Handle SSE event ID
-            logger.info(`Received SSE ID: ${line.slice(3).trim()}`);
+            logger.info(`GEMINI STREAM DIAGNOSTICS: Received SSE ID: ${line.slice(3).trim()}`);
           } else if (line.startsWith(':')) {
             // This is a comment, typically used as a keep-alive
-            logger.debug(`Received SSE comment: ${line.slice(1).trim()}`);
+            logger.debug(`GEMINI STREAM DIAGNOSTICS: Received SSE comment: ${line.slice(1).trim()}`);
           } else {
             // This might be a continuation of a previous line that was split
             // Add it to partialLine if it looks like it could be part of JSON
             if (line.includes('{') || line.includes('}') || line.includes('"')) {
               partialLine += line;
+              logger.debug(`GEMINI STREAM DIAGNOSTICS: Added orphaned line to partial buffer: ${line.substring(0, 50)}...`);
               // Set up timeout when we detect a partial line
               setupPartialLineTimeout();
+            } else {
+              logger.warn(`GEMINI STREAM DIAGNOSTICS: Ignoring unrecognized line: ${line.substring(0, 50)}...`);
             }
           }
         }
       } catch (streamError) {
-        // Catch any errors in the outer stream processing
-        logger.error(`Error processing stream chunk: ${streamError}`);
+        // Enhanced stream error logging
+        logger.error(`GEMINI STREAM DIAGNOSTICS: Error processing stream chunk #${streamDiagnostics.totalChunksReceived}: ${streamError}`);
+        logger.error(`GEMINI STREAM DIAGNOSTICS: Stream stats at error - Bytes: ${streamDiagnostics.totalBytesReceived}, Chunks: ${streamDiagnostics.totalChunksReceived}, Lines: ${streamDiagnostics.linesProcessed}, JSON Errors: ${streamDiagnostics.jsonParseErrors}`);
         // Continue processing to maintain stream resilience, but don't break the flow
       }
     }
+    
+    // Final diagnostics summary
+    const totalElapsedMs = Date.now() - streamDiagnostics.streamStartTime;
+    logger.info(
+      `GEMINI STREAM DIAGNOSTICS: Stream completed - ` +
+      `${streamDiagnostics.totalChunksReceived} chunks, ` +
+      `${streamDiagnostics.totalBytesReceived} bytes, ` +
+      `${streamDiagnostics.linesProcessed} lines processed, ` +
+      `${streamDiagnostics.jsonParseErrors} JSON errors, ` +
+      `${streamDiagnostics.partialLineOccurrences} partial line timeouts, ` +
+      `${streamDiagnostics.errorChunksDetected} error chunks, ` +
+      `${totalElapsedMs}ms total, ` +
+      `largest chunk: ${streamDiagnostics.largestChunkSize} bytes`
+    );
     
     // Clean up any remaining timeout
     if (partialLineTimeout) {
@@ -700,19 +823,50 @@ export async function sendStreamingRequest(
       partialLineTimeout = null;
     }
     
-    // If we still have a partial line at the end, try to use it
+    // Enhanced partial line handling with better error recovery
     if (partialLine) {
       logger.warn(`Stream ended with remaining partial line: ${partialLine.substring(0, 100)}...`);
+      
+      // First, try to detect if this is a truncated error response from Gemini API
+      if (partialLine.includes('"error"') && partialLine.includes('"code"')) {
+        logger.error(`Detected truncated error response from Gemini API: ${partialLine.substring(0, 200)}...`);
+        
+        // Try to extract what we can from the partial error
+        let errorCode = 'GEMINI_API_ERROR';
+        let errorMessage = 'Gemini API returned an error but the response was truncated';
+        
+        const codeMatch = partialLine.match(/"code":\s*(\d+)/);
+        if (codeMatch) {
+          errorCode = `GEMINI_${codeMatch[1]}`;
+        }
+        
+        const messageMatch = partialLine.match(/"message":\s*"([^"]*)/);
+        if (messageMatch) {
+          errorMessage = messageMatch[1];
+          // If message seems incomplete, indicate truncation
+          if (!partialLine.includes(messageMatch[1] + '"')) {
+            errorMessage += ' [response truncated]';
+          }
+        }
+        
+        // Throw a proper error that will be caught by the outer try-catch
+        throw new Error(`${errorMessage} (Code: ${errorCode})`);
+      }
+      
+      // Try to parse as complete JSON first
       try {
         const parsedPartial = JSON.parse(partialLine);
         rawResponse = parsedPartial;
-        logger.info(`Successfully parsed final partial line as JSON: ${JSON.stringify(parsedPartial, null, 2)}`);
+        logger.info(`Successfully parsed final partial line as complete JSON`);
 
         if (parsedPartial.error) {
           logger.error(`Error detected in final parsed partial line: ${JSON.stringify(parsedPartial.error)}`);
+          // Clear accumulated content since we have an API error
           accumulatedAnswer = ''; 
           accumulatedThoughts = '';
+          throw new Error(`Gemini API Error: ${parsedPartial.error.message || 'Unknown error'} (Code: ${parsedPartial.error.code || 'Unknown'})`);
         } else if (parsedPartial.candidates && parsedPartial.candidates[0]?.content?.parts) {
+          // Process valid content normally
           let finalThoughtChunk = '';
           let finalAnswerChunk = '';
           for (const part of parsedPartial.candidates[0].content.parts) {
@@ -725,38 +879,34 @@ export async function sendStreamingRequest(
             }
           }
           if (finalThoughtChunk) {
-            logger.info(`Extracted thoughts from final parsed partial line: ${finalThoughtChunk}`);
+            logger.info(`Extracted thoughts from final parsed partial line: ${finalThoughtChunk.substring(0, 50)}...`);
             accumulatedThoughts += finalThoughtChunk;
           }
           if (finalAnswerChunk) {
-            logger.info(`Extracted answer from final parsed partial line: ${finalAnswerChunk}`);
-            // Call onChunk for the answer part, as the main loop might have missed it
+            logger.info(`Extracted answer from final parsed partial line: ${finalAnswerChunk.substring(0, 50)}...`);
             handlers.onChunk(finalAnswerChunk); 
             accumulatedAnswer += finalAnswerChunk;
           }
         }
-      } catch (e) {
-        logger.error(`Final partial line is not valid JSON: ${partialLine.substring(0, 100)}... Error: ${e}`);
-        if (!partialLine.toLowerCase().includes("\"error\"")) {
-          const textMatch = partialLine.match(/"text":\s*"([^\"]*)"/);
+      } catch (jsonError) {
+        // JSON parsing failed, try text extraction as fallback
+        logger.warn(`Final partial line is not valid JSON, attempting text extraction: ${jsonError}`);
+        
+        // Only attempt text extraction if this doesn't look like an error response
+        if (!partialLine.toLowerCase().includes('"error"') && !partialLine.includes('"code"')) {
+          const textMatch = partialLine.match(/"text":\s*"([^"]*)"/);
           if (textMatch && textMatch[1]) {
             const extractedText = textMatch[1];
             logger.info(`Extracted text via regex from non-JSON final partial line: ${extractedText}`);
             handlers.onChunk(extractedText);
             accumulatedAnswer += extractedText;
+          } else {
+            logger.warn(`Could not extract any useful content from partial line, discarding: ${partialLine.substring(0, 100)}...`);
           }
         } else {
-            logger.error(`Final partial line contained 'error' but was not valid JSON: ${partialLine.substring(0, 150)}`);
-            let errorMessage = 'Incomplete error response from API.';
-            let errorCode = 'PARTIAL_API_ERROR';
-            const messageMatch = partialLine.match(/"message":\s*"([^\"]*)/);
-            if (messageMatch && messageMatch[1]) errorMessage = messageMatch[1] + "...";
-            const codeMatch = partialLine.match(/"code":\s*(\d+)/);
-            if (codeMatch && codeMatch[1]) errorCode = `API_CODE_${codeMatch[1]}`;
-            rawResponse = { error: { message: errorMessage, code: errorCode, details: partialLine } };
-            accumulatedAnswer = '';
-            accumulatedThoughts = '';
-            logger.info('Set rawResponse to a synthesized error due to partial error JSON at stream end.');
+          // This looks like a truncated error response
+          logger.error(`Truncated error response detected in partial line: ${partialLine.substring(0, 150)}`);
+          throw new Error(`Gemini API error response was truncated. Partial response: ${partialLine.substring(0, 100)}...`);
         }
       }
     }
@@ -819,7 +969,7 @@ export async function sendStreamingRequest(
 
           responseObj.toolCall = {
             name: part.functionCall.name,
-            parameters: part.functionCall.args || {},
+            parameters: convertCamelCaseToSnakeCase(part.functionCall.args || {}),
             id: rawResponse.candidates[0].contentId || `fc-${Date.now()}`
           };
           
@@ -834,23 +984,7 @@ export async function sendStreamingRequest(
           responseObj.text = toolCallPartText; // Main text is only what's in this part if tool call found
           responseObj.generatedText = toolCallPartText;
 
-          if (responseObj.toolCall.name === 'edit_file') {
-            // Handle both camelCase and snake_case parameter names
-            const searchReplaceBlocksParam = responseObj.toolCall.parameters.searchReplaceBlocks || responseObj.toolCall.parameters.search_replace_blocks;
-            
-            if (!searchReplaceBlocksParam) {
-              responseObj.toolCall.parameters.searchReplaceBlocks = '';
-              responseObj.toolCall.parameters.search_replace_blocks = '';
-            } else if (typeof searchReplaceBlocksParam !== 'string') {
-              const stringValue = String(searchReplaceBlocksParam);
-              responseObj.toolCall.parameters.searchReplaceBlocks = stringValue;
-              responseObj.toolCall.parameters.search_replace_blocks = stringValue;
-            } else {
-              // Ensure both parameter formats exist with the same value
-              responseObj.toolCall.parameters.searchReplaceBlocks = searchReplaceBlocksParam;
-              responseObj.toolCall.parameters.search_replace_blocks = searchReplaceBlocksParam;
-            }
-          }
+
           
           responseObj.waitingForToolCall = true;
           toolCallFoundInParts = true;
@@ -879,8 +1013,7 @@ export async function sendStreamingRequest(
               const paramMatch = textToSearchForToolCall.match(/"parameters":\s*(\{[\s\S]*?\})/);
               if (paramMatch && paramMatch[1]) { try { parameters = JSON.parse(paramMatch[1]); } catch (e) { logger.error(`Failed to parse parameters from text: ${e}`); } }
               
-              responseObj.toolCall = { name: functionName, parameters: parameters, id: `extracted-${Date.now()}` };
-              if (responseObj.toolCall.name === 'edit_file') { /* ... edit_file handling ... */ }
+              responseObj.toolCall = { name: functionName, parameters: convertCamelCaseToSnakeCase(parameters), id: `extracted-${Date.now()}` };
               responseObj.waitingForToolCall = true;
               toolCallFoundInParts = true;
               logger.info(`Extracted toolCall from text. Reasoning (final): "${tempReasoningForToolCall}", Text: "${responseObj.text}"`);
@@ -897,10 +1030,10 @@ export async function sendStreamingRequest(
         responseObj.generatedText = '';
         responseObj.toolCall = {
           name: rawResponse.candidates[0].functionCall.name,
-          parameters: rawResponse.candidates[0].functionCall.args || {},
+          parameters: convertCamelCaseToSnakeCase(rawResponse.candidates[0].functionCall.args || {}),
           id: rawResponse.candidates[0].contentId || `cand-fc-${Date.now()}`
         };
-        if (responseObj.toolCall.name === 'edit_file') { /* ... edit_file handling ... */ }
+
         responseObj.waitingForToolCall = true;
         logger.info(`Set candidate-level toolCall. Reasoning (final): "${tempReasoningForToolCall}", Text: "${responseObj.text}"`);
       }
