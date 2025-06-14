@@ -1961,48 +1961,21 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                 `Streaming error after ${streamStats.chunkCount} chunks: ${error.message}`
               );
 
-              // Enhanced error analysis for better debugging
-              const errorMessage = error.message || 'Unknown streaming error';
-              let errorCode = 'STREAMING_ERROR';
-              
-              // Detect specific error types for better handling
-              if (errorMessage.includes('truncated') || errorMessage.includes('partial line')) {
-                errorCode = 'STREAM_TRUNCATED';
-                logger.warn(
-                  `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-                  `Detected stream truncation error - this may indicate API issues or network problems`
-                );
-              } else if (errorMessage.includes('Gemini API Error') || errorMessage.includes('GEMINI_')) {
-                errorCode = 'GEMINI_API_ERROR';
-                logger.error(
-                  `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-                  `Gemini API returned an error: ${errorMessage}`
-                );
-              } else if (errorMessage.includes('timeout') || errorMessage.includes('TIMEOUT')) {
-                errorCode = 'STREAM_TIMEOUT';
-                logger.warn(
-                  `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-                  `Stream timeout detected - possibly due to slow API response`
-                );
-              }
-
               sendToClient(ws, {
                 type: MessageType.PROVIDER_ERROR,
                 payload: {
-                  error: `Streaming error: ${errorMessage}`,
-                  code: errorCode,
+                  error: `Streaming error: ${error.message}`,
+                  code: 'STREAMING_ERROR',
                   requestId: safeRequestId,
                   provider,
-                  model: model, // Correct for Gemini's commonStreamHandlers.onError
-                  streamStats: {
-                    chunksReceived: streamStats.chunkCount,
-                    totalCharsStreamed: streamStats.totalCharsStreamed,
-                    elapsedMs: Date.now() - streamStats.startTime
-                  }
+                  model
                 }
               });
+
+              // Clean up the context
+              activeTurnContexts.delete(safeRequestId);
             },
-            onComplete: async (response: LLMResponse) => {
+            onComplete: (response: LLMResponse) => {
               // Calculate streaming metrics
               const elapsedMs = Date.now() - streamStats.startTime;
               const charsPerSecond = streamStats.totalCharsStreamed / (elapsedMs / 1000);
@@ -3001,90 +2974,39 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           });
         } else {
           // Continue conversation with Gemini
-          await gemini.streamGeminiMessage({
-          apiKey,
-          model,
-          prompt: JSON.stringify(messages),
-          temperature: temperature || 0.7,
-          maxTokens: maxTokens || 50000,
-          systemMessage,
-          tools,
-          chatMode: requestChatMode,
-          thinkingConfig: {
-            includeThoughts: true,
-            thinkingBudget: 24576
-          },
-          onStart: () => {
-            streamStats.startTime = Date.now();
-            logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Stream started for model ${model}`);
-          },
-          onReasoningChunk: (chunk: string) => {
-            // Send reasoning chunks as separate message type
-            sendToClient(ws, {
-              type: MessageType.PROVIDER_REASONING_CHUNK,
-              payload: {
-                chunk,
-                requestId: safeRequestId,
-                provider,
-                model
-              }
-            });
-          },
-          onChunk: (chunk: string) => {
-            // Update stream stats
-            streamStats.chunkCount++;
-            streamStats.totalCharsStreamed += chunk.length;
-            streamStats.lastChunkTime = Date.now();
-
-            // Log every 10th chunk to avoid log flooding
-            if (streamStats.chunkCount % 10 === 0) {
-              logger.debug(
-                `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-                `Streaming progress: ${streamStats.chunkCount} chunks, ` +
-                `${streamStats.totalCharsStreamed} chars, ` +
-                `${Date.now() - streamStats.startTime}ms elapsed`
-              );
+          // Convert messages array to a prompt string for Gemini
+          const conversationPrompt = messages.map(msg => {
+            if (msg.role === 'user') {
+              return `User: ${msg.content}`;
+            } else if (msg.role === 'model' || msg.role === 'assistant') {
+              return `Assistant: ${msg.content}`;
+            } else if (msg.role === 'tool') {
+              return `Tool ${msg.name} result: ${msg.content}`;
             }
+            return `${msg.role}: ${msg.content}`;
+          }).join('\n\n');
 
-            // Only check for function calls if the chunk looks like it contains complete function call syntax
-            // This prevents false positives that can interfere with normal text streaming
-            if (
-              chunk.includes('antml:function_calls') ||
-              (chunk.includes('functionCall') && chunk.includes('"name":') && chunk.includes('"args":'))
-            ) {
-              // Log potential function call in stream
-              logger.warn(
-                `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-                `Function call detected in stream chunk, will be handled properly at stream end. ` +
-                `Length: ${chunk.length}, preview: "${chunk.substring(0, 50)}..."`
-              );
-
-              // Instead of skipping this chunk entirely, let's still send the text content
-              // but mark that a tool call was detected in the stream
-              const cleanedChunk = chunk
-                .replace(/<function_calls>[\s\S]*?<\/antml:function_calls>/g, '')
-                .replace(/```(json)?\s*\{\s*"name"\s*:[\s\S]*?\}\s*```/g, '')
-                .replace(/\{\s*"functionCall"\s*:[\s\S]*?\}/g, '');
-
-              if (cleanedChunk.trim()) {
-                // If there's still content after removing function call syntax, send it
-                sendToClient(ws, {
-                  type: MessageType.PROVIDER_STREAM_CHUNK,
-                  payload: {
-                    chunk: cleanedChunk,
-                    requestId: safeRequestId,
-                    provider,
-                    model
-                  }
-                });
-              }
-
-              // Don't return early - continue processing stream
-              // The function call will be properly extracted in onComplete
-            } else {
-              // Send regular text chunks to the client as they arrive
+          await gemini.streamGeminiMessage({
+            apiKey,
+            model,
+            prompt: conversationPrompt,
+            temperature: temperature || 0.7,
+            maxTokens: maxTokens || 50000,
+            systemMessage,
+            tools,
+            chatMode: requestChatMode,
+            thinkingConfig: {
+              includeThoughts: true,
+              thinkingBudget: 24576
+            },
+            onStart: () => {
+              streamStats.startTime = Date.now();
+              logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Stream started for model ${model}`);
+            },
+            onReasoningChunk: (chunk: string) => {
+              // Send reasoning chunks as separate message type
               sendToClient(ws, {
-                type: MessageType.PROVIDER_STREAM_CHUNK,
+                type: MessageType.PROVIDER_REASONING_CHUNK,
                 payload: {
                   chunk,
                   requestId: safeRequestId,
@@ -3092,170 +3014,233 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
                   model
                 }
               });
-            }
-          },
-          onError: (error: Error) => {
-            logger.error(
-              `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-              `Streaming error after ${streamStats.chunkCount} chunks: ${error.message}`
-            );
+            },
+            onChunk: (chunk: string) => {
+              // Update stream stats
+              streamStats.chunkCount++;
+              streamStats.totalCharsStreamed += chunk.length;
+              streamStats.lastChunkTime = Date.now();
 
-            sendToClient(ws, {
-              type: MessageType.PROVIDER_ERROR,
-              payload: {
-                error: `Streaming error: ${error.message}`,
-                code: 'STREAMING_ERROR',
-                requestId: safeRequestId,
-                provider,
-                model
+              // Log every 10th chunk to avoid log flooding
+              if (streamStats.chunkCount % 10 === 0) {
+                logger.debug(
+                  `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                  `Streaming progress: ${streamStats.chunkCount} chunks, ` +
+                  `${streamStats.totalCharsStreamed} chars, ` +
+                  `${Date.now() - streamStats.startTime}ms elapsed`
+                );
               }
-            });
 
-            // Clean up the context
-            activeTurnContexts.delete(safeRequestId);
-          },
-          onComplete: (response: LLMResponse) => {
-            // Calculate streaming metrics
-            const elapsedMs = Date.now() - streamStats.startTime;
-            const charsPerSecond = streamStats.totalCharsStreamed / (elapsedMs / 1000);
+              // Only check for function calls if the chunk looks like it contains complete function call syntax
+              // This prevents false positives that can interfere with normal text streaming
+              if (
+                chunk.includes('antml:function_calls') ||
+                (chunk.includes('functionCall') && chunk.includes('"name":') && chunk.includes('"args":'))
+              ) {
+                // Log potential function call in stream
+                logger.warn(
+                  `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                  `Function call detected in stream chunk, will be handled properly at stream end. ` +
+                  `Length: ${chunk.length}, preview: "${chunk.substring(0, 50)}..."`
+                );
 
-            logger.info(
-              `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-              `Stream complete: ${streamStats.chunkCount} chunks, ` +
-              `${streamStats.totalCharsStreamed} chars, ` +
-              `${elapsedMs}ms total time, ` +
-              `${charsPerSecond.toFixed(1)} chars/sec, ` +
-              `${response.tokensUsed} tokens used`
-            );
+                // Instead of skipping this chunk entirely, let's still send the text content
+                // but mark that a tool call was detected in the stream
+                const cleanedChunk = chunk
+                  .replace(/<function_calls>[\s\S]*?<\/antml:function_calls>/g, '')
+                  .replace(/```(json)?\s*\{\s*"name"\s*:[\s\S]*?\}\s*```/g, '')
+                  .replace(/\{\s*"functionCall"\s*:[\s\S]*?\}/g, '');
 
-            // Log full response details for debugging
-            logger.info(`Provider Response (ToolExec Stream) [${safeRequestId}]: ` +
-              `Success: ${response.success}, Tokens Used: ${response.tokensUsed}, Text Length: ${response.text?.length || 0}, ` +
-              `ToolCall: ${response.toolCall ? response.toolCall.name : 'none'}, WaitingForToolCall: ${!!response.waitingForToolCall}`);
-
-            // Process response to extract and handle any function calls that might be in the text
-            // Strip out any remaining function call text from the response
-            if (response.text) {
-              const cleanedText = response.text
-                .replace(/<function_calls>[\s\S]*?<\/antml:function_calls>/g, '')
-                .replace(/```(json)?\s*\{\s*"name"\s*:[\s\S]*?\}\s*```/g, '')
-                .replace(/\{\s*"functionCall"\s*:[\s\S]*?\}/g, '');
-
-              if (cleanedText !== response.text) {
-                logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Cleaned function call text from response`);
-                response.text = cleanedText.trim();
-              }
-            }
-
-            // Log tool call information if present
-            if (response.toolCall) {
-              logger.info(
-                `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-                `Tool call detected in response: ${response.toolCall.name}, ` +
-                `parameters: ${JSON.stringify(response.toolCall.parameters)}`
-              );
-
-              // Always ensure waitingForToolCall is true when a tool call is detected
-              response.waitingForToolCall = true;
-
-              // Special handling for edit_file tool to ensure searchReplaceBlocks always exists
-              if (response.toolCall.name === 'edit_file') {
-                // Handle both camelCase and snake_case parameter names
-                const searchReplaceBlocksParam = response.toolCall.parameters.searchReplaceBlocks || response.toolCall.parameters.search_replace_blocks;
-                
-                // Ensure that searchReplaceBlocks parameter exists and is a string
-                if (!searchReplaceBlocksParam) {
-                  logger.warn(
-                    `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-                    `edit_file tool missing searchReplaceBlocks parameter, adding empty default`
-                  );
-                  // If editing an empty file, add an empty searchReplaceBlocks parameter
-                  response.toolCall.parameters.searchReplaceBlocks = '';
-                  response.toolCall.parameters.search_replace_blocks = '';
-                } else if (typeof searchReplaceBlocksParam !== 'string') {
-                  logger.warn(
-                    `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-                    `edit_file tool has non-string searchReplaceBlocks, converting to string`
-                  );
-                  // Convert to string if it's not already and ensure both formats exist
-                  const stringValue = String(searchReplaceBlocksParam);
-                  response.toolCall.parameters.searchReplaceBlocks = stringValue;
-                  response.toolCall.parameters.search_replace_blocks = stringValue;
-                } else {
-                  // Ensure both parameter formats exist with the same value
-                  response.toolCall.parameters.searchReplaceBlocks = searchReplaceBlocksParam;
-                  response.toolCall.parameters.search_replace_blocks = searchReplaceBlocksParam;
+                if (cleanedChunk.trim()) {
+                  // If there's still content after removing function call syntax, send it
+                  sendToClient(ws, {
+                    type: MessageType.PROVIDER_STREAM_CHUNK,
+                    payload: {
+                      chunk: cleanedChunk,
+                      requestId: safeRequestId,
+                      provider,
+                      model
+                    }
+                  });
                 }
+
+                // Don't return early - continue processing stream
+                // The function call will be properly extracted in onComplete
+              } else {
+                // Send regular text chunks to the client as they arrive
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_STREAM_CHUNK,
+                  payload: {
+                    chunk,
+                    requestId: safeRequestId,
+                    provider,
+                    model
+                  }
+                });
               }
-
-              // Store the conversation context
-              activeTurnContexts.set(safeRequestId, {
-                provider,
-                model,
-                apiKey,
-                temperature,
-                maxTokens,
-                systemMessage,
-                tools,
-                parallelToolCalls,
-                stream: true,
-                lastPrompt: String(prompt),
-                messages: [{
-                  role: 'user',
-                  content: String(prompt)
-                }, {
-                  role: 'model',
-                  content: response.text || '',
-                  toolCalls: [{
-                    id: response.toolCall.id || `tool-${Date.now()}`,
-                    name: response.toolCall.name,
-                    parameters: response.toolCall.parameters
-                  }]
-                }],
-                createdAt: Date.now()
-              });
-
-              logger.info(
+            },
+            onError: (error: Error) => {
+              logger.error(
                 `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-                `Stored conversation context for future tool call results`
+                `Streaming error after ${streamStats.chunkCount} chunks: ${error.message}`
               );
 
-              // Finalize the stream, directly forwarding the toolCall object
               sendToClient(ws, {
-                type: MessageType.PROVIDER_STREAM_END,
+                type: MessageType.PROVIDER_ERROR,
                 payload: {
-                  tokensUsed: response.tokensUsed,
-                  success: true,
+                  error: `Streaming error: ${error.message}`,
+                  code: 'STREAMING_ERROR',
                   requestId: safeRequestId,
                   provider,
-                  model,
-                  toolCall: response.toolCall,
-                  waitingForToolCall: true,
-                  reasoning: response.reasoning
+                  model
                 }
               });
-            } else {
+
+              // Clean up the context
+              activeTurnContexts.delete(safeRequestId);
+            },
+            onComplete: (response: LLMResponse) => {
+              // Calculate streaming metrics
+              const elapsedMs = Date.now() - streamStats.startTime;
+              const charsPerSecond = streamStats.totalCharsStreamed / (elapsedMs / 1000);
+
               logger.info(
                 `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-                `No tool call detected in response`
+                `Stream complete: ${streamStats.chunkCount} chunks, ` +
+                `${streamStats.totalCharsStreamed} chars, ` +
+                `${elapsedMs}ms total time, ` +
+                `${charsPerSecond.toFixed(1)} chars/sec, ` +
+                `${response.tokensUsed} tokens used`
               );
 
-              // Finalize the stream without tool call
-              sendToClient(ws, {
-                type: MessageType.PROVIDER_STREAM_END,
-                payload: {
-                  tokensUsed: response.tokensUsed,
-                  success: true,
-                  requestId: safeRequestId,
+              // Log full response details for debugging
+              logger.info(`Provider Response (ToolExec Stream) [${safeRequestId}]: ` +
+                `Success: ${response.success}, Tokens Used: ${response.tokensUsed}, Text Length: ${response.text?.length || 0}, ` +
+                `ToolCall: ${response.toolCall ? response.toolCall.name : 'none'}, WaitingForToolCall: ${!!response.waitingForToolCall}`);
+
+              // Process response to extract and handle any function calls that might be in the text
+              // Strip out any remaining function call text from the response
+              if (response.text) {
+                const cleanedText = response.text
+                  .replace(/<function_calls>[\s\S]*?<\/antml:function_calls>/g, '')
+                  .replace(/```(json)?\s*\{\s*"name"\s*:[\s\S]*?\}\s*```/g, '')
+                  .replace(/\{\s*"functionCall"\s*:[\s\S]*?\}/g, '');
+
+                if (cleanedText !== response.text) {
+                  logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Cleaned function call text from response`);
+                  response.text = cleanedText.trim();
+                }
+              }
+
+              // Log tool call information if present
+              if (response.toolCall) {
+                logger.info(
+                  `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                  `Tool call detected in response: ${response.toolCall.name}, ` +
+                  `parameters: ${JSON.stringify(response.toolCall.parameters)}`
+                );
+
+                // Always ensure waitingForToolCall is true when a tool call is detected
+                response.waitingForToolCall = true;
+
+                // Special handling for edit_file tool to ensure searchReplaceBlocks always exists
+                if (response.toolCall.name === 'edit_file') {
+                  // Handle both camelCase and snake_case parameter names
+                  const searchReplaceBlocksParam = response.toolCall.parameters.searchReplaceBlocks || response.toolCall.parameters.search_replace_blocks;
+                  
+                  // Ensure that searchReplaceBlocks parameter exists and is a string
+                  if (!searchReplaceBlocksParam) {
+                    logger.warn(
+                      `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                      `edit_file tool missing searchReplaceBlocks parameter, adding empty default`
+                    );
+                    // If editing an empty file, add an empty searchReplaceBlocks parameter
+                    response.toolCall.parameters.searchReplaceBlocks = '';
+                    response.toolCall.parameters.search_replace_blocks = '';
+                  } else if (typeof searchReplaceBlocksParam !== 'string') {
+                    logger.warn(
+                      `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                      `edit_file tool has non-string searchReplaceBlocks, converting to string`
+                    );
+                    // Convert to string if it's not already and ensure both formats exist
+                    const stringValue = String(searchReplaceBlocksParam);
+                    response.toolCall.parameters.searchReplaceBlocks = stringValue;
+                    response.toolCall.parameters.search_replace_blocks = stringValue;
+                  } else {
+                    // Ensure both parameter formats exist with the same value
+                    response.toolCall.parameters.searchReplaceBlocks = searchReplaceBlocksParam;
+                    response.toolCall.parameters.search_replace_blocks = searchReplaceBlocksParam;
+                  }
+                }
+
+                // Store the conversation context
+                activeTurnContexts.set(safeRequestId, {
                   provider,
                   model,
-                  text: response.text,
-                  reasoning: response.reasoning
-                }
-              });
+                  apiKey,
+                  temperature,
+                  maxTokens,
+                  systemMessage,
+                  tools,
+                  parallelToolCalls,
+                  stream: true,
+                  lastPrompt: String(prompt),
+                  messages: [{
+                    role: 'user',
+                    content: String(prompt)
+                  }, {
+                    role: 'model',
+                    content: response.text || '',
+                    toolCalls: [{
+                      id: response.toolCall.id || `tool-${Date.now()}`,
+                      name: response.toolCall.name,
+                      parameters: response.toolCall.parameters
+                    }]
+                  }],
+                  createdAt: Date.now()
+                });
+
+                logger.info(
+                  `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                  `Stored conversation context for future tool call results`
+                );
+
+                // Finalize the stream, directly forwarding the toolCall object
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_STREAM_END,
+                  payload: {
+                    tokensUsed: response.tokensUsed,
+                    success: true,
+                    requestId: safeRequestId,
+                    provider,
+                    model,
+                    toolCall: response.toolCall,
+                    waitingForToolCall: true,
+                    reasoning: response.reasoning
+                  }
+                });
+              } else {
+                logger.info(
+                  `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
+                  `No tool call detected in response`
+                );
+
+                // Finalize the stream without tool call
+                sendToClient(ws, {
+                  type: MessageType.PROVIDER_STREAM_END,
+                  payload: {
+                    tokensUsed: response.tokensUsed,
+                    success: true,
+                    requestId: safeRequestId,
+                    provider,
+                    model,
+                    text: response.text,
+                    reasoning: response.reasoning
+                  }
+                });
+              }
             }
-          }
-        });
+          });
         } // ✅ FIXED: Close the else block for Gemini
       } catch (error) {
         logger.error(
@@ -3278,10 +3263,22 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
     } else {
       // Handle non-streaming response with improved logging
       try {
+        // Convert messages array to a prompt string for Gemini
+        const conversationPrompt = messages.map(msg => {
+          if (msg.role === 'user') {
+            return `User: ${msg.content}`;
+          } else if (msg.role === 'model' || msg.role === 'assistant') {
+            return `Assistant: ${msg.content}`;
+          } else if (msg.role === 'tool') {
+            return `Tool ${msg.name} result: ${msg.content}`;
+          }
+          return `${msg.role}: ${msg.content}`;
+        }).join('\n\n');
+
         const response = await gemini.sendGeminiMessage({
           apiKey,
           model,
-          prompt: JSON.stringify(messages),
+          prompt: conversationPrompt,
           temperature: temperature || 0.7,
           maxTokens: maxTokens || 50000,
           systemMessage,
@@ -3290,8 +3287,8 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           thinkingConfig: {
             includeThoughts: true,
             thinkingBudget: 24576
-          }
-        });
+                      }
+          });
 
         logger.info(`Provider Response (ToolExec Non-Stream) [${safeRequestId}]: ` +
           `Success: ${response.success}, Tokens Used: ${response.tokensUsed}, Text Length: ${response.text?.length || 0}, ` +
