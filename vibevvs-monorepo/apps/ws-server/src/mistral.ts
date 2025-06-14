@@ -27,6 +27,58 @@ function ensureStringContent(content: string | any[] | null | undefined): string
   }
   return '';
 }
+
+// Helper to check if model is a reasoning model
+function isReasoningModel(model: string): boolean {
+  const reasoningModels = [
+    'magistral-small-2506',
+    'magistral-medium-2506',
+    'magistral-large-2506',
+    // Add other reasoning models as they become available
+  ];
+  return reasoningModels.some(reasoningModel => model.includes(reasoningModel));
+}
+
+// Helper to convert tools to Mistral's expected format
+function convertToolsToMistralFormat(tools: any[]): any[] {
+  if (!tools || !Array.isArray(tools)) {
+    return [];
+  }
+
+  return tools.map(tool => {
+    // Convert Void tool format to Mistral tool format
+    const mistralTool = {
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: {
+          type: 'object',
+          properties: {} as any,
+          required: [] as string[]
+        }
+      }
+    };
+
+    // Convert parameters from Void format to Mistral JSON Schema format
+    if (tool.parameters && typeof tool.parameters === 'object') {
+      Object.entries(tool.parameters).forEach(([paramName, paramInfo]: [string, any]) => {
+        mistralTool.function.parameters.properties[paramName] = {
+          type: 'string', // Default to string for Mistral
+          description: paramInfo.description || ''
+        };
+        
+        // Add to required if it seems required (you can adjust this logic)
+        if (paramInfo.required !== false) {
+          mistralTool.function.parameters.required.push(paramName);
+        }
+      });
+    }
+
+    return mistralTool;
+  });
+}
+
 import logger from '@repo/logger';
 // Dynamically import node-fetch as it is an ES Module
 
@@ -270,6 +322,7 @@ export async function processChat({
   tools, // ✅ ADDED: Tool support
   toolChoice, // ✅ ADDED: Tool choice support
   parallelToolCalls, // ✅ ADDED
+  chatMode, // ✅ ADDED: Missing chatMode parameter
   onStream,
   onReasoningChunk, // ✅ ADDED: For reasoning tokens
   onFinal,
@@ -286,6 +339,7 @@ export async function processChat({
   tools?: any[]; // ✅ ADDED: Tool definitions
   toolChoice?: string; // ✅ ADDED: Tool choice option
   parallelToolCalls?: boolean; // ✅ ADDED
+  chatMode?: 'normal' | 'gather' | 'agent'; // ✅ ADDED: Missing chatMode parameter
   onStream?: (chunk: string) => void;
   onReasoningChunk?: (chunk: string) => void; // ✅ ADDED: For reasoning tokens
   onFinal?: (fullText: string, tokensUsed?: number, toolCalls?: MistralToolCall[], finishReason?: string | null, reasoning?: string) => void; // ✅ ADDED: reasoning field
@@ -294,16 +348,57 @@ export async function processChat({
   try {
     const client = new Mistral({ apiKey });
     
-    // ✅ ADDED: Handle system message by prepending to messages array
-    let processedMessages = [...messages];
+    // ✅ ADDED: Prepare messages array for Mistral API
+    const mistralMessages: ChatMessage[] = [];
+    
+    // ✅ ADDED: Add enhanced system message if present (like Gemini does)
     if (systemMessage) {
-      processedMessages = [
-        { role: 'system', content: systemMessage },
-        ...messages
-      ];
-      logger.info(`Mistral Chat request: model=${model}, stream=${stream}, temp=${temperature}, messages_count=${messages.length}, systemMessage_length=${systemMessage.length}`);
+      let enhancedSystemMessage = systemMessage;
+      
+      // If we have tools and a chatMode, explicitly tell the model what mode it's in
+      if (tools && tools.length > 0 && chatMode) {
+        logger.info(`Adding chatMode (${chatMode}) context to Mistral system message`);
+        // Include specific tool names in the system message
+        const toolNames = tools.map(t => t.name).join(', ');
+        
+        // For Mistral, we need to explicitly tell it to use native function calling
+        // instead of XML format when tools are available
+        enhancedSystemMessage = `${systemMessage}
+
+IMPORTANT: You are currently in ${chatMode} mode and have access to the following tools: ${toolNames}. 
+
+TOOL CALLING INSTRUCTIONS:
+- You have access to function calling capabilities
+- When you need to use a tool, use the native function calling format
+- DO NOT use XML format like [tool_name] or <tool_name>
+- The system will automatically execute your tool calls and return results
+- After calling a tool, wait for the result before continuing
+- In agent mode, you SHOULD use tools to complete tasks including file creation and editing
+
+${isReasoningModel(model) ? `
+REASONING INSTRUCTIONS:
+- You are a reasoning model - use <think> tags to show your reasoning process
+- Put your step-by-step thinking inside <think></think> tags
+- After your reasoning, provide your final response outside the think tags
+- Use reasoning to plan your approach before taking actions
+` : ''}`;
+      }
+      
+      mistralMessages.push({ role: 'system', content: enhancedSystemMessage });
+      logger.info(`Added enhanced system message to Mistral request, total length: ${enhancedSystemMessage.length}`);
+    }
+    
+    // Add the conversation messages
+    mistralMessages.push(...messages);
+
+    // ✅ ADDED: Log tools being sent to Mistral API
+    if (tools && tools.length > 0) {
+      const convertedTools = convertToolsToMistralFormat(tools);
+      logger.info(`Mistral Chat request: Converting ${tools.length} tools to Mistral format`);
+      logger.info(`Original tools sample: ${JSON.stringify(tools[0], null, 2)}`);
+      logger.info(`Converted tools sample: ${JSON.stringify(convertedTools[0], null, 2)}`);
     } else {
-      logger.info(`Mistral Chat request: model=${model}, stream=${stream}, temp=${temperature}, messages_count=${messages.length}`);
+      logger.info(`Mistral Chat request: No tools provided`);
     }
 
     if (stream && onStream && onFinal) {
@@ -319,11 +414,11 @@ export async function processChat({
 
       const streamResponse = await client.chat.stream({
         model,
-        messages: processedMessages, // ✅ FIXED: Use processedMessages with system message
+        messages: mistralMessages,
         temperature,
         maxTokens,
         stop: stopSequences.length > 0 ? stopSequences : undefined,
-        tools: tools && tools.length > 0 ? tools : undefined, // ✅ ADDED: Tool support
+        tools: tools && tools.length > 0 ? convertToolsToMistralFormat(tools) : undefined, // ✅ ADDED: Tool support
         toolChoice: toolChoice as any || undefined, // ✅ ADDED: Tool choice support (cast to any for flexibility)
         parallelToolCalls, // ✅ ADDED
       });
@@ -432,11 +527,11 @@ export async function processChat({
     } else if (onFinal) { // Non-streaming
       const response: ChatCompletionResponse = await client.chat.complete({
         model,
-        messages: processedMessages, // ✅ FIXED: Use processedMessages with system message
+        messages: mistralMessages,
         temperature,
         maxTokens,
         stop: stopSequences.length > 0 ? stopSequences : undefined,
-        tools: tools && tools.length > 0 ? tools : undefined, // ✅ ADDED: Tool support
+        tools: tools && tools.length > 0 ? convertToolsToMistralFormat(tools) : undefined, // ✅ ADDED: Tool support
         toolChoice: toolChoice as any || undefined, // ✅ ADDED: Tool choice support (cast to any for flexibility)
         parallelToolCalls, // ✅ ADDED
       });

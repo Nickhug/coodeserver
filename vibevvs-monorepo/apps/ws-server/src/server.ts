@@ -1774,6 +1774,15 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
       // logger.info(`Processed tools for Gemini, ensuring parameter types for request ${safeRequestId}`);
       logger.debug(`TOOLS AFTER PROCESSING for Gemini [${safeRequestId}]: ${JSON.stringify(tools, null, 2)}`); // Changed to debug
     }
+
+    // For Mistral, ensure tools are in the correct format
+    if (provider === 'mistral') {
+      // Mistral will handle tool conversion internally, but let's log what we're sending
+      if (tools && tools.length > 0) {
+        logger.info(`Passing ${tools.length} tools to Mistral for request ${safeRequestId}`);
+        logger.debug(`TOOLS for Mistral [${safeRequestId}]: ${JSON.stringify(tools.map(t => ({name: t.name, description: t.description, paramCount: Object.keys(t.parameters || {}).length})), null, 2)}`);
+      }
+    }
   }
 
   logger.info(`Processing ${provider} request for model ${model} from user ${userId || 'anonymous'}`);
@@ -2314,6 +2323,12 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
       // modelToUse is already defined above.
       const userId = ws.connectionData.userId; // Get userId for logging usage
 
+      // Properly initialize chatMode as a valid string value (like Gemini does)
+      const userChatMode = message.payload.chatMode;
+      const chatMode: 'normal' | 'gather' | 'agent' =
+        userChatMode === 'gather' ? 'gather' :
+        userChatMode === 'normal' ? 'normal' : 'agent';
+
       logger.info(
         `WS MISTRAL [${ws.connectionData.connectionId}][${safeRequestId}] Request: ` +
         `Model=${modelToUse}, Type=${requestType || 'chat'}, Stream=${stream}, Temp=${temperature}, ` +
@@ -2417,6 +2432,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               stream: true,
               tools, // ✅ ADDED: Re-enable tool support
               toolChoice, // ✅ ADDED: Re-enable tool choice support
+              chatMode, // ✅ ADDED: Missing chatMode parameter
               ...commonStreamHandlers,
               onReasoningChunk: (chunk: string) => { // ✅ ADDED: Handle reasoning chunks
                 sendToClient(ws, {
@@ -2553,6 +2569,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               tools, // ✅ ADDED: Re-enable tool support
               toolChoice, // ✅ ADDED: Re-enable tool choice support
               parallelToolCalls, // ✅ ADDED
+              chatMode, // ✅ ADDED: Missing chatMode parameter
               onFinal: (fullText: string, tokensUsed?: number, toolCalls?: MistralToolCall[], finishReason?: string | null, reasoning?: string) => { // ✅ ADDED: reasoning parameter
                 logger.info(
                   `WS MISTRAL Chat (Non-Stream) [${ws.connectionData.connectionId}][${safeRequestId}] Response: ` +
@@ -2837,6 +2854,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
             tools,
             toolChoice: undefined, // Let model decide
             parallelToolCalls, // ✅ ADDED
+            chatMode: requestChatMode, // ✅ ADDED: Missing chatMode parameter
             onStream: (chunk: string) => {
               // Update stream stats
               streamStats.chunkCount++;
