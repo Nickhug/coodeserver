@@ -350,19 +350,18 @@ export async function processChat({
   try {
     const client = new Mistral({ apiKey });
     
-    // ✅ FIXED: Prepare messages array for Mistral API
-    const mistralMessages: ChatMessage[] = [];
+    // ✅ FIXED: Correctly prepare the messages array for the Mistral API.
+    // The client sends the system message as the first element in the `messages` array
+    // for providers that support the 'system-role'. We use the `messages` array directly
+    // as the source of truth. The `systemMessage` parameter is only for other models.
+    const mistralMessages: ChatMessage[] = [...messages];
+    const hasSystemMessageInClientArray = mistralMessages.length > 0 && mistralMessages[0].role === 'system';
     
-    // ✅ FIXED: Check if the first message is already a system message
-    const hasSystemMessageInMessages = messages.length > 0 && messages[0].role === 'system';
-    
-    if (systemMessage && !hasSystemMessageInMessages) {
-        // Only add separate system message if messages don't already contain one
-        mistralMessages.push({ role: 'system', content: systemMessage });
+    // This logic handles cases where a system message might be passed separately,
+    // ensuring we don't add it if one already exists in the messages array.
+    if (systemMessage && !hasSystemMessageInClientArray) {
+        mistralMessages.unshift({ role: 'system', content: systemMessage });
     }
-    
-    // Add the conversation messages (which may already include a system message)
-    mistralMessages.push(...messages);
 
     // ✅ FIXED: Convert tools to Mistral format before passing to API
     const convertedTools = tools && tools.length > 0 ? convertToolsToMistralFormat(tools) : undefined;

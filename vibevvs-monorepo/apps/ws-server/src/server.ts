@@ -2476,6 +2476,12 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   });
                 }
 
+                const toolCallPayload = toolCalls && toolCalls.length > 0 ? {
+                  id: toolCalls[0].id,
+                  name: toolCalls[0].function?.name,
+                  parameters: JSON.parse(String(toolCalls[0].function?.arguments || '{}'))
+                } : undefined;
+
                 sendToClient(ws, {
                   type: MessageType.PROVIDER_STREAM_END,
                   payload: {
@@ -2484,10 +2490,10 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                     requestId: safeRequestId,
                     provider,
                     model: modelToUse,
-                    text: fullText, // Include the accumulated text in the correct field
-                    reasoning: reasoning, // ✅ ADDED: Include reasoning in stream end
-                    toolCall: toolCalls && toolCalls.length > 0 ? toolCalls[0] : undefined, // Simplified: Pass first tool call if any
-                    waitingForToolCall: !!(toolCalls && toolCalls.length > 0)
+                    text: fullText,
+                    reasoning: reasoning,
+                    toolCall: toolCallPayload,
+                    waitingForToolCall: !!toolCallPayload
                   }
                 });
                 if (userId && tokensUsed) {
@@ -2593,6 +2599,12 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                     createdAt: Date.now()
                   });
                 }
+                const toolCallPayload = toolCalls && toolCalls.length > 0 ? {
+                  id: toolCalls[0].id,
+                  name: toolCalls[0].function?.name,
+                  parameters: JSON.parse(String(toolCalls[0].function?.arguments || '{}'))
+                } : undefined;
+
                 sendToClient(ws, {
                   type: MessageType.PROVIDER_RESPONSE,
                   payload: {
@@ -2603,8 +2615,8 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                     provider,
                     model: modelToUse,
                     reasoning: reasoning, // ✅ ADDED: Include reasoning in non-streaming response
-                    toolCall: toolCalls && toolCalls.length > 0 ? toolCalls[0] : undefined, // Simplified
-                    waitingForToolCall: !!(toolCalls && toolCalls.length > 0)
+                    toolCall: toolCallPayload,
+                    waitingForToolCall: !!toolCallPayload
                   }
                 });
                 if (userId && tokensUsed) {
