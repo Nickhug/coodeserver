@@ -2833,7 +2833,8 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
 
     messages.push({
       role: 'tool',
-      toolCallId: toolCallId,
+      tool_call_id: toolCallId,
+      name: toolName,
       content: toolResponseString
     });
 
