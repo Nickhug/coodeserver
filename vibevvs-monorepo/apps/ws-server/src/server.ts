@@ -1980,6 +1980,8 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               // Calculate streaming metrics
               const elapsedMs = Date.now() - streamStats.startTime;
               const charsPerSecond = streamStats.totalCharsStreamed / (elapsedMs / 1000);
+              
+              logger.info(`[GEMINI_ONCOMPLETE_DEBUG] Received response object: ${JSON.stringify(response, null, 2)}`);
 
               logger.info(
                 `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
