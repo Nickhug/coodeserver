@@ -1993,7 +1993,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               // Log tool call information if present
               const toolCall = response.tool_calls && response.tool_calls[0];
               if (toolCall) {
-                logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Tool call detected in onComplete: ${toolCall.function.name}, args: ${toolCall.function.arguments}`);
+                logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Tool call detected in onComplete: ${toolCall.name}, args: ${JSON.stringify(toolCall.parameters)}`);
                 if (!activeTurnContexts.has(safeRequestId)) {
                   logger.warn(`No active turn context for ${safeRequestId}, cannot store tool call`);
                 } else {
@@ -2016,7 +2016,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                   text: response.text,
                   tokensUsed: response.tokensUsed,
                   toolCall: toolCall ? {
-                    id: toolCall.id,
+                    id: toolCall.id || `tc-${uuidv4()}`,
                     name: toolCall.name,
                     args: toolCall.parameters
                   } : undefined,
