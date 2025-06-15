@@ -1980,8 +1980,6 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
               // Calculate streaming metrics
               const elapsedMs = Date.now() - streamStats.startTime;
               const charsPerSecond = streamStats.totalCharsStreamed / (elapsedMs / 1000);
-              
-              logger.info(`[GEMINI_ONCOMPLETE_DEBUG] Received response object: ${JSON.stringify(response, null, 2)}`);
 
               logger.info(
                 `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
@@ -1992,8 +1990,8 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                 `${response.tokensUsed} tokens used`
               );
 
-              // Log tool call information if present
-              const toolCall = response.tool_calls && response.tool_calls[0];
+              // The Gemini provider now returns a single 'toolCall' object, not an array.
+              const toolCall = response.toolCall;
               if (toolCall) {
                 logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Tool call detected in onComplete: ${toolCall.name}, args: ${JSON.stringify(toolCall.parameters)}`);
                 if (!activeTurnContexts.has(safeRequestId)) {
@@ -2004,7 +2002,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
                     provider, model, apiKey, temperature, maxTokens, systemMessage, tools, parallelToolCalls, stream, lastPrompt: String(prompt),
                     messages: [
                       { role: 'user', content: String(prompt) },
-                      { role: 'model', content: response.text || '', tool_calls: response.tool_calls }
+                      { role: 'model', content: response.text || '', tool_calls: [toolCall] } // Store as array for consistency
                     ],
                     createdAt: Date.now()
                   });
