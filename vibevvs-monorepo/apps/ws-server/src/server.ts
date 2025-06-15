@@ -1762,17 +1762,18 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
       tools.forEach(tool => {
         if (tool.parameters) {
           Object.keys(tool.parameters).forEach(paramName => {
-            // @ts-ignore
-            if (!tool.parameters[paramName].type) {
-              // @ts-ignore
-              tool.parameters[paramName].type = 'STRING'; // Default to STRING
+            const param = tool.parameters[paramName];
+            // Convert from client format { description: string } to Gemini format { type: string, description: string }
+            if (typeof param === 'object' && param.description && !param.type) {
+              tool.parameters[paramName] = {
+                type: 'STRING',
+                description: param.description
+              };
             }
           });
         }
       });
-      // Remove TOOLS AFTER PROCESSING log, or make it debug level if necessary
-      // logger.info(`Processed tools for Gemini, ensuring parameter types for request ${safeRequestId}`);
-      logger.debug(`TOOLS AFTER PROCESSING for Gemini [${safeRequestId}]: ${JSON.stringify(tools, null, 2)}`); // Changed to debug
+      logger.debug(`TOOLS AFTER PROCESSING for Gemini [${safeRequestId}]: ${JSON.stringify(tools, null, 2)}`);
     }
 
     // For Mistral, ensure tools are in the correct format
