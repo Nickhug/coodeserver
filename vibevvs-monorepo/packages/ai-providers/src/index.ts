@@ -128,12 +128,12 @@ export async function sendLLMRequest(params: LLMRequestParams): Promise<LLMRespo
         // Import here to avoid circular dependencies
         const gemini = await import('./gemini');
         return await gemini.sendRequest({
-      apiKey,
-      model,
-      prompt,
-      temperature,
-      maxTokens,
-    });
+          apiKey,
+          model,
+          messages: [{ role: 'user', parts: [{ text: prompt }] }],
+          temperature,
+          maxTokens,
+        });
 
       // Add other providers as they are implemented
       
