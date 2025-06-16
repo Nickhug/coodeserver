@@ -566,23 +566,150 @@ export async function processChat({
 }
 
 /**
- * List available Mistral models (for compatibility with other provider interfaces)
+ * List available Mistral models dynamically from the API
  */
 export async function listModels(apiKey: string): Promise<any[]> {
+  try {
+    const client = new Mistral({ apiKey });
+    
+    // Fetch models from Mistral API
+    const response = await client.models.list();
+    
+    if (!response.data || !Array.isArray(response.data)) {
+      logger.warn('Invalid response format from Mistral models API, using fallback models');
+      return getFallbackMistralModels();
+    }
+
+    // Format models for our interface
+    const availableModels = response.data.map((model: any) => {
+      // Determine capabilities based on model name/type
+      const capabilities = [];
+      const features = ['chat'];
+      
+      if (model.id.includes('embed')) {
+        capabilities.push('embedding');
+        features.push('embedding');
+      }
+      
+      if (model.id.includes('codestral')) {
+        capabilities.push('fim', 'completion');
+        features.push('code', 'completion');
+      } else {
+        capabilities.push('chat');
+      }
+      
+      if (model.id.includes('large') || model.id.includes('medium') || model.id.includes('magistral')) {
+        capabilities.push('reasoning');
+        features.push('reasoning', 'tools');
+      }
+
+      // Estimate context window based on model name
+      let contextWindow = 32768; // Default
+      if (model.id.includes('8x22b')) contextWindow = 65536;
+      else if (model.id.includes('8x7b')) contextWindow = 32768;
+      else if (model.id.includes('large')) contextWindow = 128000;
+      else if (model.id.includes('medium')) contextWindow = 128000;
+
+      return {
+        id: model.id,
+        name: model.name || model.id,
+        provider: 'mistral',
+        available: true,
+        contextWindow,
+        maxOutputTokens: 8192,
+        features,
+        capabilities // Keep for backward compatibility
+      };
+    });
+
+    logger.info(`Successfully fetched ${availableModels.length} Mistral models from API`);
+    return availableModels;
+
+  } catch (error) {
+    logger.error(`Error fetching Mistral models: ${error instanceof Error ? error.message : String(error)}`);
+    return getFallbackMistralModels();
+  }
+}
+
+/**
+ * Fallback models in case API call fails
+ */
+function getFallbackMistralModels(): any[] {
   return [
     // Embedding models
-    { id: 'codestral-embed', name: 'Codestral Embed', capabilities: ['embedding'] },
+    { 
+      id: 'codestral-embed', 
+      name: 'Codestral Embed', 
+      provider: 'mistral',
+      available: true,
+      contextWindow: 8192,
+      maxOutputTokens: 8192,
+      features: ['embedding'],
+      capabilities: ['embedding'] 
+    },
     
     // Code models (for FIM)
-    { id: 'codestral-latest', name: 'Codestral Latest', capabilities: ['fim', 'completion'] },
+    { 
+      id: 'codestral-latest', 
+      name: 'Codestral Latest', 
+      provider: 'mistral',
+      available: true,
+      contextWindow: 32768,
+      maxOutputTokens: 8192,
+      features: ['code', 'completion'],
+      capabilities: ['fim', 'completion'] 
+    },
     
     // Chat models
-    { id: 'mistral-large-latest', name: 'Mistral Large Latest', capabilities: ['chat', 'reasoning'] },
-    { id: 'mistral-small-latest', name: 'Mistral Small Latest', capabilities: ['chat'] },
-    { id: 'mistral-medium-2506', name: 'Mistral Medium 2506', capabilities: ['chat', 'reasoning'] }, // ✅ ADDED: New model
-    { id: 'magistral-medium-2506', name: 'Magistral Medium 2506', capabilities: ['chat', 'reasoning'] }, // ✅ ADDED: New model
-    { id: 'open-mistral-7b', name: 'Open Mistral 7B', capabilities: ['chat'] },
-    { id: 'open-mixtral-8x7b', name: 'Open Mixtral 8x7B', capabilities: ['chat'] },
-    { id: 'open-mixtral-8x22b', name: 'Open Mixtral 8x22B', capabilities: ['chat'] },
+    { 
+      id: 'mistral-large-latest', 
+      name: 'Mistral Large Latest', 
+      provider: 'mistral',
+      available: true,
+      contextWindow: 128000,
+      maxOutputTokens: 8192,
+      features: ['chat', 'reasoning', 'tools'],
+      capabilities: ['chat', 'reasoning'] 
+    },
+    { 
+      id: 'mistral-small-latest', 
+      name: 'Mistral Small Latest', 
+      provider: 'mistral',
+      available: true,
+      contextWindow: 32768,
+      maxOutputTokens: 8192,
+      features: ['chat'],
+      capabilities: ['chat'] 
+    },
+    { 
+      id: 'open-mistral-7b', 
+      name: 'Open Mistral 7B', 
+      provider: 'mistral',
+      available: true,
+      contextWindow: 32768,
+      maxOutputTokens: 8192,
+      features: ['chat'],
+      capabilities: ['chat'] 
+    },
+    { 
+      id: 'open-mixtral-8x7b', 
+      name: 'Open Mixtral 8x7B', 
+      provider: 'mistral',
+      available: true,
+      contextWindow: 32768,
+      maxOutputTokens: 8192,
+      features: ['chat'],
+      capabilities: ['chat'] 
+    },
+    { 
+      id: 'open-mixtral-8x22b', 
+      name: 'Open Mixtral 8x22B', 
+      provider: 'mistral',
+      available: true,
+      contextWindow: 65536,
+      maxOutputTokens: 8192,
+      features: ['chat'],
+      capabilities: ['chat'] 
+    },
   ];
 }

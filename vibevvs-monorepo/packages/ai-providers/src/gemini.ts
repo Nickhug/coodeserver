@@ -214,8 +214,8 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
       logger.info(`Added thinkingConfig to request: ${JSON.stringify(params.thinkingConfig)}`);
     }
     
-    // Direct API call to v1beta endpoint with API key in URL
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    // Direct API call to v1alpha endpoint with API key in URL
+    const endpoint = `https://generativelanguage.googleapis.com/v1alpha/models/${model}:generateContent?key=${apiKey}`;
     
     // Using node-fetch or native fetch depending on environment
     const fetch = globalThis.fetch;
@@ -495,8 +495,8 @@ export async function sendStreamingRequest(
     }
 
     
-    // Direct API call to v1beta endpoint with API key in URL
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
+    // Direct API call to v1alpha endpoint with API key in URL
+    const endpoint = `https://generativelanguage.googleapis.com/v1alpha/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
     
     // Using node-fetch or native fetch depending on environment
     const fetch = globalThis.fetch;
@@ -1052,23 +1052,130 @@ export async function sendStreamingRequest(
 }
 
 /**
- * List available Gemini models
+ * List available Gemini models dynamically from the API
  */
-export async function listModels(apiKey: string): Promise<Array<{ id: string; name: string }>> {
+export async function listModels(apiKey: string): Promise<Array<{ 
+  id: string; 
+  name: string; 
+  provider: string;
+  available: boolean;
+  contextWindow: number;
+  maxOutputTokens: number;
+  features: string[];
+}>> {
   try {
-    // Google doesn't provide a direct API for listing models
-    // Return a static list of commonly used models
-    return [
-      { id: 'gemini-2.5-flash-preview-04-17', name: 'Gemini 2.5 Flash Preview' },
-      { id: 'gemini-2.5-pro-preview-05-06', name: 'Gemini 2.5 Pro Preview' },
-      { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash' },
-      { id: 'gemini-1.5-pro', name: 'Gemini 1.5 Pro' },
-      { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash' },
-    ];
+    // Use v1alpha endpoint for model listing
+    const response = await fetch('https://generativelanguage.googleapis.com/v1alpha/models', {
+      method: 'GET',
+      headers: {
+        'x-goog-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      logger.error(`Failed to fetch Gemini models: ${response.status} ${response.statusText}`);
+      // Return fallback models if API call fails
+      return getFallbackGeminiModels();
+    }
+
+    const data = await response.json();
+    
+    if (!data.models || !Array.isArray(data.models)) {
+      logger.warn('Invalid response format from Gemini models API, using fallback models');
+      return getFallbackGeminiModels();
+    }
+
+    // Filter and format models for generateContent capability
+    const availableModels = data.models
+      .filter((model: any) => {
+        // Only include models that support generateContent
+        return model.supportedGenerationMethods && 
+               model.supportedGenerationMethods.includes('generateContent') &&
+               model.name && 
+               model.baseModelId;
+      })
+      .map((model: any) => {
+        // Extract features based on model capabilities
+        const features = ['chat'];
+        
+        // Add features based on model name and capabilities
+        if (model.name.includes('flash')) features.push('fast');
+        if (model.name.includes('pro')) features.push('advanced');
+        if (model.name.includes('2.0') || model.name.includes('2.5')) {
+          features.push('tools', 'thinking', 'structured-output');
+        }
+        if (model.name.includes('1.5')) {
+          features.push('tools', 'vision', 'code');
+        }
+
+        return {
+          id: model.baseModelId,
+          name: model.displayName || model.baseModelId,
+          provider: 'gemini',
+          available: true,
+          contextWindow: model.inputTokenLimit || 128000,
+          maxOutputTokens: model.outputTokenLimit || 8192,
+          features
+        };
+      })
+      // Remove duplicates based on baseModelId
+      .filter((model: any, index: number, array: any[]) => 
+        array.findIndex(m => m.id === model.id) === index
+      )
+      // Sort by name for consistent ordering
+      .sort((a: any, b: any) => a.name.localeCompare(b.name));
+
+    logger.info(`Successfully fetched ${availableModels.length} Gemini models from API`);
+    return availableModels;
+
   } catch (error) {
-    logger.error('Error listing Gemini models:', error);
-    return [];
+    logger.error(`Error fetching Gemini models: ${error instanceof Error ? error.message : String(error)}`);
+    return getFallbackGeminiModels();
   }
+}
+
+/**
+ * Fallback models in case API call fails
+ */
+function getFallbackGeminiModels(): Array<{ 
+  id: string; 
+  name: string; 
+  provider: string;
+  available: boolean;
+  contextWindow: number;
+  maxOutputTokens: number;
+  features: string[];
+}> {
+  return [
+    {
+      id: 'gemini-2.0-flash',
+      name: 'Gemini 2.0 Flash',
+      provider: 'gemini',
+      available: true,
+      contextWindow: 128000,
+      maxOutputTokens: 8192,
+      features: ['chat', 'tools', 'thinking', 'fast']
+    },
+    {
+      id: 'gemini-1.5-flash',
+      name: 'Gemini 1.5 Flash',
+      provider: 'gemini',
+      available: true,
+      contextWindow: 1048576,
+      maxOutputTokens: 8192,
+      features: ['chat', 'tools', 'vision', 'code', 'fast']
+    },
+    {
+      id: 'gemini-1.5-pro',
+      name: 'Gemini 1.5 Pro',
+      provider: 'gemini',
+      available: true,
+      contextWindow: 2097152,
+      maxOutputTokens: 8192,
+      features: ['chat', 'tools', 'vision', 'code', 'advanced']
+    }
+  ];
 }
 
 /**
@@ -1136,12 +1243,12 @@ export async function generateEmbedding(params: {
   model: string;
   error?: string;
 }> {
-  const { apiKey, content, model = 'text-embedding-004', apiVersion = 'v1beta' } = params;
+  const { apiKey, content, model = 'text-embedding-004', apiVersion = 'v1alpha' } = params;
   
   try {
     logger.info(`Generating embedding with model: ${model}, API version: ${apiVersion}`);
     
-    // Use v1alpha for experimental models, v1beta for stable models
+    // Use v1alpha for all models as it provides better features
     const endpoint = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:embedContent?key=${apiKey}`;
     
     const requestBody = {
@@ -1211,7 +1318,7 @@ export async function generateBatchEmbeddings(params: {
   totalTokensUsed: number;
   model: string;
 }> {
-  const { apiKey, contents, model = 'text-embedding-004', batchSize = 5, apiVersion = 'v1beta' } = params;
+  const { apiKey, contents, model = 'text-embedding-004', batchSize = 5, apiVersion = 'v1alpha' } = params;
   
   logger.info(`Generating batch embeddings for ${contents.length} items with batch size ${batchSize}, API version: ${apiVersion}`);
   
@@ -1312,7 +1419,7 @@ export async function generateAnswer(params: {
     logger.info(`Generating answer with Semantic Retrieval API, model: ${model}, passages: ${passages.length}`);
     
     // Semantic Retrieval API endpoint
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateAnswer?key=${apiKey}`;
+    const endpoint = `https://generativelanguage.googleapis.com/v1alpha/models/${model}:generateAnswer?key=${apiKey}`;
     
     const requestBody = {
       contents: [{

@@ -1428,41 +1428,14 @@ async function handleProviderModels(ws: WebSocketWithData, message: ClientMessag
       case 'gemini':
         if (config.geminiApiKey) {
           available = true;
-          models = [
-            {
-              id: 'gemini-2.5-flash-preview-04-17',
-              name: 'Gemini 2.5 Flash Preview',
-              provider: 'gemini',
-              available: true,
-              contextWindow: 1048576,
-              maxOutputTokens: 65536,
-              features: ['chat', 'tools', 'structured-output', 'caching', 'code-execution', 'search-grounding', 'thinking']
-            },
-            {
-              id: 'gemini-2.5-pro-preview-05-06',
-              name: 'Gemini 2.5 Pro Preview',
-              provider: 'gemini',
-              available: true,
-              contextWindow: 2097152,
-              maxOutputTokens: 65536,
-              features: ['chat', 'tools', 'structured-output', 'caching', 'code-execution', 'search-grounding', 'thinking']
-            },
-            {
-              id: 'gemini-2.0-flash',
-              name: 'Gemini 2.0 Flash',
-              provider: 'gemini',
-              available: true,
-              contextWindow: 128000,
-              maxOutputTokens: 8192,
-              features: ['chat', 'tools', 'thinking']
-            }
-          ];
+          models = await gemini.listModels(config.geminiApiKey);
         }
         break;
 
       case 'openai':
         if (config.openaiApiKey) {
           available = true;
+          // TODO: Implement dynamic model listing for OpenAI
           models = [
             {
               id: 'gpt-4o',
@@ -1498,6 +1471,7 @@ async function handleProviderModels(ws: WebSocketWithData, message: ClientMessag
       case 'groq':
         if (config.groqApiKey) {
           available = true;
+          // TODO: Implement dynamic model listing for Groq
           models = [
             {
               id: 'llama3-8b-8192',

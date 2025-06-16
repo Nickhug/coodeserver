@@ -49,32 +49,72 @@ export interface Provider {
   models: ProviderModel[];
 }
 
-// List of available providers
+// Dynamic provider functions
+export async function getGeminiProvider(apiKey?: string): Promise<Provider | null> {
+  if (!apiKey) return null;
+  
+  try {
+    const gemini = await import('./gemini');
+    const models = await gemini.listModels(apiKey);
+    
+    return {
+      id: 'gemini',
+      name: 'Google Gemini',
+      available: true,
+      models
+    };
+  } catch (error) {
+    logger.error('Failed to load Gemini provider:', error);
+    return null;
+  }
+}
+
+export async function getMistralProvider(apiKey?: string): Promise<Provider | null> {
+  if (!apiKey) return null;
+  
+  try {
+    // Import mistral from the server directory since it's not in this package
+    // This will need to be handled differently in the actual implementation
+    return {
+      id: 'mistral',
+      name: 'Mistral AI',
+      available: true,
+      models: [] // Will be populated by server-side mistral.listModels()
+    };
+  } catch (error) {
+    logger.error('Failed to load Mistral provider:', error);
+    return null;
+  }
+}
+
+// Dynamic providers list function
+export async function getAvailableProviders(apiKeys: {
+  gemini?: string;
+  mistral?: string;
+  openai?: string;
+  groq?: string;
+}): Promise<Provider[]> {
+  const providers: Provider[] = [];
+  
+  // Add Gemini if API key is available
+  if (apiKeys.gemini) {
+    const geminiProvider = await getGeminiProvider(apiKeys.gemini);
+    if (geminiProvider) providers.push(geminiProvider);
+  }
+  
+  // Add other providers as they become available
+  // Note: Mistral, OpenAI, and Groq would need similar implementations
+  
+  return providers;
+}
+
+// Legacy static providers list (kept for backward compatibility)
 export const providers: Provider[] = [
   {
     id: 'gemini',
     name: 'Google Gemini',
-    available: true,
-    models: [
-      {
-        id: 'gemini-1.5-flash',
-        name: 'Gemini 1.5 Flash',
-        provider: 'gemini',
-        available: true,
-        contextWindow: 1_048_576,
-        maxOutputTokens: 8_192,
-        features: ['text', 'code', 'vision', 'tools']
-      },
-      {
-        id: 'gemini-1.5-pro',
-        name: 'Gemini 1.5 Pro',
-        provider: 'gemini',
-        available: true,
-        contextWindow: 2_097_152,
-        maxOutputTokens: 8_192,
-        features: ['text', 'code', 'vision', 'tools']
-      }
-    ]
+    available: false, // Will be determined dynamically
+    models: [] // Will be populated dynamically
   }
 ];
 
