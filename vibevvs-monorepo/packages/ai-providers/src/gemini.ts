@@ -1089,11 +1089,11 @@ export async function listModels(apiKey: string): Promise<Array<{
     // Filter and format models for generateContent capability
     const availableModels = data.models
       .filter((model: any) => {
-        // Only include models that support generateContent
-        return model.supportedGenerationMethods && 
-               model.supportedGenerationMethods.includes('generateContent') &&
-               model.name && 
-               model.baseModelId;
+        // Log the raw model object for inspection
+        logger.info(`Inspecting Gemini model from API: ${JSON.stringify(model, null, 2)}`);
+
+        // Relaxed filtering: only check for essential properties for now
+        return model.name && model.baseModelId;
       })
       .map((model: any) => {
         // Extract features based on model capabilities
