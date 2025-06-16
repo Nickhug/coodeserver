@@ -192,4 +192,35 @@ export function validateToolConversion(originalTool: InternalToolInfo, converted
     logger.error(`Error validating tool conversion for ${originalTool.name}:`, error);
     return false;
   }
+}
+
+/**
+ * Convert ChatMessage array to GeminiMessage array format
+ */
+export function convertChatMessagesToGeminiFormat(messages: any[]): any[] {
+  return messages.map(message => {
+    if (message.role === 'user') {
+      return {
+        role: 'user',
+        parts: [{ text: message.content }]
+      };
+    } else if (message.role === 'assistant' || message.role === 'model') {
+      return {
+        role: 'model',
+        parts: [{ text: message.content }]
+      };
+    } else if (message.role === 'tool') {
+      // Tool responses are handled differently in Gemini
+      return {
+        role: 'model',
+        parts: [{ text: `Tool result: ${message.content}` }]
+      };
+    } else {
+      // Default to user role for unknown roles
+      return {
+        role: 'user',
+        parts: [{ text: message.content }]
+      };
+    }
+  });
 } 
