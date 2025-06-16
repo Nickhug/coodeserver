@@ -175,6 +175,19 @@ function handleConnection(ws: WebSocket): void {
   connections.set(connectionId, wsWithData.connectionData);
   logger.info(`🔌 New connection established: ${connectionId}`);
 
+  // Send CONNECT_SUCCESS message immediately
+  sendToClient(wsWithData, {
+    type: MessageType.CONNECT_SUCCESS,
+    payload: {
+      connectionId,
+      userId: null,
+      serverTime: new Date().toISOString(),
+      serverInfo: {
+        environment: process.env.NODE_ENV || 'development'
+      }
+    }
+  });
+
   ws.on('message', (message: string) => handleIncomingMessage(wsWithData, message));
   ws.on('pong', () => { wsWithData.connectionData.lastPingTime = Date.now(); });
   ws.on('close', () => { 
@@ -196,6 +209,22 @@ async function handleIncomingMessage(ws: WebSocketWithData, messageStr: string):
     switch (message.type) {
       case MessageType.AUTHENTICATE:
         await handleAuthentication(ws, message);
+        break;
+        
+      case MessageType.PING:
+        // Respond to client ping with pong
+        sendToClient(ws, {
+          type: MessageType.PONG,
+          payload: {}
+        });
+        break;
+        
+      case MessageType.PROVIDER_LIST:
+        await handleProviderListRequest(ws, message);
+        break;
+        
+      case MessageType.PROVIDER_MODELS:
+        await handleProviderModelsRequest(ws, message);
         break;
         
       case MessageType.PROVIDER_REQUEST:
@@ -309,6 +338,102 @@ async function handleAuthentication(ws: WebSocketWithData, message: ClientMessag
           success: false,
         error: 'Authentication service error' 
       } 
+    });
+  }
+}
+
+// --- PROVIDER LIST HANDLER ---
+
+async function handleProviderListRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
+  if (message.type !== MessageType.PROVIDER_LIST) return;
+
+  const { connectionId } = ws.connectionData;
+  logger.info(`📋 Fetching provider list for connection ${connectionId}`);
+
+  try {
+    // Import providers from ai-providers package
+    const { providers } = await import('@repo/ai-providers');
+    
+    // Filter to only available providers that we support on the server
+    const availableProviders = providers
+      .filter(provider => provider.available)
+      .map(provider => ({
+        id: provider.id,
+        name: provider.name,
+        available: provider.available
+      }));
+
+    sendToClient(ws, {
+      type: MessageType.PROVIDER_LIST,
+      payload: {
+        providers: availableProviders,
+        defaultProvider: 'gemini' // Set Gemini as default
+      }
+    });
+
+    logger.info(`✅ Sent ${availableProviders.length} providers to ${connectionId}`);
+  } catch (error) {
+    logger.error(`❌ Error fetching provider list for ${connectionId}:`, error);
+    sendToClient(ws, {
+      type: MessageType.ERROR,
+      payload: {
+        message: 'Failed to fetch provider list',
+        error: error instanceof Error ? error.message : String(error),
+        code: 'PROVIDER_LIST_ERROR'
+      }
+    });
+  }
+}
+
+// --- PROVIDER MODELS HANDLER ---
+
+async function handleProviderModelsRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
+  if (message.type !== MessageType.PROVIDER_MODELS) return;
+
+  const { provider } = message.payload;
+  const { connectionId } = ws.connectionData;
+  
+  logger.info(`🔧 Fetching models for provider ${provider} for connection ${connectionId}`);
+
+  try {
+    // Import providers from ai-providers package
+    const { providers } = await import('@repo/ai-providers');
+    
+    // Find the requested provider
+    const providerInfo = providers.find(p => p.id === provider);
+    
+    if (!providerInfo) {
+      sendToClient(ws, {
+        type: MessageType.PROVIDER_MODELS,
+        payload: {
+          provider,
+          available: false,
+          models: []
+        }
+      });
+      return;
+    }
+
+    // Return the models for this provider
+    sendToClient(ws, {
+      type: MessageType.PROVIDER_MODELS,
+      payload: {
+        provider,
+        available: providerInfo.available,
+        models: providerInfo.models
+      }
+    });
+
+    logger.info(`✅ Sent ${providerInfo.models.length} models for ${provider} to ${connectionId}`);
+  } catch (error) {
+    logger.error(`❌ Error fetching models for provider ${provider} for ${connectionId}:`, error);
+    sendToClient(ws, {
+      type: MessageType.PROVIDER_MODELS,
+      payload: {
+        provider,
+        available: false,
+        models: []
+      }
     });
   }
 }
