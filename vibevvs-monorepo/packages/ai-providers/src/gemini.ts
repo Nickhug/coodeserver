@@ -190,16 +190,17 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
     
     // Add tools if present
     if (tools && Array.isArray(tools) && tools.length > 0) {
-      requestBody.tools = tools.map(tool => ({
-        functionDeclarations: [{
-          name: tool.name,
-          description: tool.description,
-          parameters: {
-            type: 'OBJECT',
-            properties: tool.parameters || {}
-          }
-        }]
+      const functionDeclarations = tools.map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        parameters: {
+          type: 'OBJECT',
+          properties: tool.parameters || {},
+          required: tool.required || []
+        }
       }));
+      
+      requestBody.tools = [{ functionDeclarations }];
       
       logger.info(`Added ${tools.length} tools to request: ${tools.map(t => t.name).join(', ')}`);
       
@@ -407,54 +408,19 @@ export async function sendStreamingRequest(
 
     // Add tools if present
     if (tools && Array.isArray(tools) && tools.length > 0) {
-      const functionDeclarations = tools.map(tool => {
-        const requiredParams = Object.keys(tool.parameters || {});
-        const formattedProperties: Record<string, any> = {};
-
-        if (tool.parameters) {
-          for (const [key, paramValue] of Object.entries(tool.parameters)) {
-            const param = paramValue as { description?: string };
-            let paramType = 'STRING';
-            const description = param.description || '';
-            if (description.toLowerCase().includes('array') || description.includes('[]')) {
-              paramType = 'ARRAY';
-            } else if (description.toLowerCase().includes('number') || 
-                      description.toLowerCase().includes('integer') || 
-                      description.includes('count')) {
-              paramType = 'NUMBER';
-            } else if (description.toLowerCase().includes('boolean') || 
-                      description.toLowerCase().includes('true/false')) {
-              paramType = 'BOOLEAN';
-            }
-            
-            formattedProperties[key] = {
-              type: paramType,
-              description: param.description || ''
-            };
-            
-            if (paramType === 'ARRAY') {
-              formattedProperties[key].items = { type: 'STRING' };
-            }
-          }
+      const functionDeclarations = tools.map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        parameters: {
+          type: 'OBJECT',
+          properties: tool.parameters || {},
+          required: tool.required || []
         }
-
-        return {
-          name: tool.name,
-          description: tool.description,
-          parameters: {
-            type: 'OBJECT',
-            properties: formattedProperties,
-            required: requiredParams
-          }
-        };
-      });
-
+      }));
+      
       requestBody.tools = [{ functionDeclarations }];
       
       logger.info(`Added ${tools.length} tools to streaming request: ${tools.map(t => t.name).join(', ')}`);
-      if (tools.length > 0) {
-        logger.debug(`Example tool format: ${JSON.stringify(requestBody.tools[0], null, 2)}`);
-      }
       
       // Add toolConfig for function calling when in agent mode
       if (chatMode === 'agent') {

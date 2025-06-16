@@ -1780,10 +1780,9 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
     // Remove full tool definitions log
     // logger.info(`FULL TOOLS [${safeRequestId}]: ${JSON.stringify(tools, null, 2)}`);
 
-    // For Gemini, ensure all tool parameters have a 'type' defined, default to 'STRING'
-    if (provider === 'gemini') {
-      const geminiTools = convertToolsToGeminiFormat(tools);
-      logger.debug(`TOOLS AFTER PROCESSING for Gemini [${safeRequestId}]: ${JSON.stringify(geminiTools, null, 2)}`);
+    // For Gemini, tools will be converted internally by the provider
+    if (provider === 'gemini' && tools && tools.length > 0) {
+      logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Passing ${tools.length} tools: ${tools.map((t: any) => t.name).join(', ')}`);
     }
 
     // For Mistral, ensure tools are in the correct format
@@ -1871,7 +1870,6 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
           // Log chat mode and tools for debugging
           logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ChatMode: ${userChatMode} -> ${chatMode}, Tools: ${tools ? tools.map((t: any) => t.name).join(', ') : 'none'}`);
 
-          const geminiTools = convertToolsToGeminiFormat(tools);
           // Use Gemini's streaming API with proper handlers
           await gemini.streamGeminiMessage({
             apiKey,
@@ -1880,7 +1878,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
             temperature: temperature || 0.7,
             maxTokens: maxTokens || 50000,
             systemMessage,
-            tools: geminiTools,
+            tools: tools, // Pass raw tools, not pre-converted ones
             chatMode,
             thinkingConfig: {
               includeThoughts: true,
@@ -2002,15 +2000,14 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
         }
       } else {
         // Handle non-streaming response with improved logging
-        const geminiTools = convertToolsToGeminiFormat(tools);
-        const response: any = await gemini.sendGeminiMessage({
+        const response: any = await gemini.sendRequest({
           apiKey,
           model,
           messages: convertChatMessagesToGeminiFormat(messages),
           temperature: temperature || 0.7,
           maxTokens: maxTokens || 50000,
           systemMessage,
-          tools: geminiTools,
+          tools: tools, // Pass raw tools, not pre-converted ones
           chatMode: promptContext.chatMode,
           thinkingConfig: {
             includeThoughts: true,
@@ -2457,9 +2454,8 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
       if (provider === 'mistral') {
         // ... (Mistral logic)
       } else { // Gemini
-        const geminiTools = convertToolsToGeminiFormat(tools || []);
         await gemini.streamGeminiMessage({
-          apiKey, model, messages: convertChatMessagesToGeminiFormat(messages), temperature: temperature || 0.7, maxTokens: maxTokens || 50000, systemMessage, tools: geminiTools, chatMode: requestChatMode,
+          apiKey, model, messages: convertChatMessagesToGeminiFormat(messages), temperature: temperature || 0.7, maxTokens: maxTokens || 50000, systemMessage, tools: tools || [], chatMode: requestChatMode,
           thinkingConfig: { includeThoughts: true, thinkingBudget: 24576 },
           onStart: () => { streamStats.startTime = Date.now(); logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Continued stream started for model ${model}`); },
           onReasoningChunk: (chunk: string) => { sendToClient(ws, { type: MessageType.PROVIDER_REASONING_CHUNK, payload: { chunk, requestId: safeRequestId, provider, model } }); },
