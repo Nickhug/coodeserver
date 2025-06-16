@@ -144,7 +144,7 @@ export function estimateTokenCount(text: string): number {
 interface GeminiRequestParams {
   apiKey: string;
   model: string;
-  prompt: string;
+  messages: GeminiMessage[];
   temperature?: number;
   maxTokens?: number;
   systemMessage?: string;
@@ -166,18 +166,13 @@ interface GeminiStreamHandler {
  */
 export async function sendRequest(params: GeminiRequestParams): Promise<LLMResponse> {
   try {
-    const { apiKey, model, prompt, temperature = 0.7, maxTokens, systemMessage, tools, chatMode } = params;
+    const { apiKey, model, messages, temperature = 0.7, maxTokens, systemMessage, tools, chatMode } = params;
     
     logger.info(`Starting Gemini request with model: ${model}`);
     
     // Format request body
     let requestBody: any = {
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: prompt }]
-        }
-      ],
+      contents: messages,
       generationConfig: {
         temperature,
         ...(maxTokens && { maxOutputTokens: maxTokens })
@@ -186,17 +181,11 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
     
     // Add system message if present
     if (systemMessage) {
-      // For Gemini API, we prefix system messages to user messages
-      let enhancedSystemMessage = systemMessage;
-      
-      // If we have tools and a chatMode, explicitly tell the model what mode it's in
-      if (tools && tools.length > 0 && chatMode) {
-        logger.info(`Adding chatMode (${chatMode}) context to system message`);
-        enhancedSystemMessage = `${systemMessage}\n\nIMPORTANT: You are currently in ${chatMode} mode and have access to the tools provided. In agent mode, you SHOULD use all available tools including file creation and editing tools.`;
-      }
-      
-      requestBody.contents[0].parts[0].text = `${enhancedSystemMessage}\n\n${prompt}`;
-      logger.info(`Added system message to request, total prompt length: ${requestBody.contents[0].parts[0].text.length}`);
+      requestBody.systemInstruction = {
+        role: 'model',
+        parts: [{ text: systemMessage }]
+      };
+      logger.info(`Added system message to request, length: ${systemMessage.length}`);
     }
     
     // Add tools if present
@@ -349,7 +338,7 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
     }
     
     // Estimate token usage (Google doesn't provide token counts directly)
-    const inputTokens = Math.ceil(prompt.length / 4);
+    const inputTokens = Math.ceil(messages.reduce((total, message) => total + message.parts.reduce((partTotal, part) => partTotal + (part.text?.length || 0), 0), 0) / 4);
     const outputTokens = Math.ceil(text.length / 4);
     const totalTokens = inputTokens + outputTokens;
     
@@ -388,7 +377,7 @@ export async function sendStreamingRequest(
   let accumulatedThoughts = '';
   
   try {
-    const { apiKey, model, prompt, temperature = 0.7, maxTokens, systemMessage, tools, chatMode } = params;
+    const { apiKey, model, messages, temperature = 0.7, maxTokens, systemMessage, tools, chatMode } = params;
     const { onStart, onChunk, onReasoningChunk, onError, onComplete } = handlers;
     
     logger.info(`Starting streaming Gemini request with model: ${model}`);
@@ -400,12 +389,7 @@ export async function sendStreamingRequest(
     
     // Format request body
     let requestBody: any = {
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: prompt }]
-        }
-      ],
+      contents: messages,
       generationConfig: {
         temperature,
         ...(maxTokens && { maxOutputTokens: maxTokens })
@@ -414,19 +398,11 @@ export async function sendStreamingRequest(
     
     // Add system message if present
     if (systemMessage) {
-      // For Gemini API, we prefix system messages to user messages
-      let enhancedSystemMessage = systemMessage;
-      
-      // If we have tools and a chatMode, explicitly tell the model what mode it's in
-      if (tools && tools.length > 0 && chatMode) {
-        logger.info(`Adding chatMode (${chatMode}) context to streaming system message`);
-        // Include specific tool names in the system message
-        const toolNames = tools.map(t => t.name).join(', ');
-        enhancedSystemMessage = `${systemMessage}\n\nIMPORTANT: You are currently in ${chatMode} mode and have access to the following tools: ${toolNames}. In agent mode, you SHOULD use all available tools including file creation and editing tools. The create_ai_comment tool allows you to create comments in the code.`;
-      }
-      
-      requestBody.contents[0].parts[0].text = `${enhancedSystemMessage}\n\n${prompt}`;
-      logger.info(`Added system message to streaming request, total prompt length: ${requestBody.contents[0].parts[0].text.length}`);
+      requestBody.systemInstruction = {
+        role: 'model',
+        parts: [{ text: systemMessage }]
+      };
+      logger.info(`Added system message to streaming request, length: ${systemMessage.length}`);
     }
 
     // Add tools if present
@@ -917,7 +893,7 @@ export async function sendStreamingRequest(
       logger.warn(`Stream completed without a valid raw response despite receiving text. Answer Length: ${accumulatedAnswer.length}, Thoughts Length: ${accumulatedThoughts.length}`);
     }
     
-    const inputTokens = Math.ceil(prompt.length / 4);
+    const inputTokens = Math.ceil(messages.reduce((total, message) => total + message.parts.reduce((partTotal, part) => partTotal + (part.text?.length || 0), 0), 0) / 4);
     const outputTokens = Math.ceil(accumulatedAnswer.length / 4);
     const thoughtsTokens = rawResponse?.usageMetadata?.thoughtsTokenCount || Math.ceil(accumulatedThoughts.length / 4); // Estimate if not provided
     const totalTokens = inputTokens + outputTokens + thoughtsTokens;
@@ -1102,7 +1078,7 @@ export async function listModels(apiKey: string): Promise<Array<{ id: string; na
 export async function streamGeminiMessage(params: {
   apiKey: string;
   model: string;
-  prompt: string;
+  messages: GeminiMessage[];
   temperature?: number;
   maxTokens?: number;
   systemMessage?: string;
@@ -1115,38 +1091,17 @@ export async function streamGeminiMessage(params: {
   onError: (error: Error) => void;
   onComplete: (response: LLMResponse) => void;
 }): Promise<void> {
-  const { apiKey, model, prompt, temperature, maxTokens, systemMessage, tools, chatMode, thinkingConfig, onStart, onChunk, onReasoningChunk, onError, onComplete } = params;
-  
-  // Log if tools and system message are present
-  if (systemMessage) {
-    logger.info(`Gemini API request includes system message, length: ${systemMessage.length}`);
+  try {
+    await sendStreamingRequest(params, {
+      onStart: params.onStart,
+      onChunk: params.onChunk,
+      onReasoningChunk: params.onReasoningChunk,
+      onError: params.onError,
+      onComplete: params.onComplete
+    });
+  } catch (error) {
+    params.onError(error as Error);
   }
-  
-  if (tools && Array.isArray(tools) && tools.length > 0) {
-    logger.info(`Gemini API request includes ${tools.length} tools: ${tools.map(t => t.name).join(', ')}`);
-  }
-  
-  
-  await sendStreamingRequest(
-    {
-      apiKey,
-      model,
-      prompt,
-      temperature,
-      maxTokens,
-      systemMessage,
-      tools,
-      chatMode,
-      thinkingConfig
-    },
-    {
-      onStart,
-      onChunk,
-      onReasoningChunk,
-      onError,
-      onComplete
-    }
-  );
 }
 
 /**
@@ -1156,7 +1111,7 @@ export async function streamGeminiMessage(params: {
 export async function sendGeminiMessage(params: {
   apiKey: string;
   model: string;
-  prompt: string;
+  messages: GeminiMessage[];
   temperature?: number;
   maxTokens?: number;
   systemMessage?: string;
@@ -1164,28 +1119,7 @@ export async function sendGeminiMessage(params: {
   chatMode?: 'normal' | 'gather' | 'agent';
   thinkingConfig?: ThinkingConfig;
 }): Promise<LLMResponse> {
-  const { apiKey, model, prompt, temperature, maxTokens, systemMessage, tools, chatMode, thinkingConfig } = params;
-  
-  // Log if tools and system message are present
-  if (systemMessage) {
-    logger.info(`Gemini API request includes system message, length: ${systemMessage.length}`);
-  }
-  
-  if (tools && Array.isArray(tools) && tools.length > 0) {
-    logger.info(`Gemini API request includes ${tools.length} tools: ${tools.map(t => t.name).join(', ')}`);
-  }
-  
-  return await sendRequest({
-    apiKey,
-    model,
-    prompt,
-    temperature,
-    maxTokens,
-    systemMessage,
-    tools,
-    chatMode,
-    thinkingConfig
-  });
+  return await sendRequest(params);
 }
 
 /**

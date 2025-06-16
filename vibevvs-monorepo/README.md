@@ -13,6 +13,11 @@ The monorepo includes the following projects:
 - `packages/logger`: Shared logging functionality
 - `packages/types`: Shared TypeScript types
 - `packages/ai-providers`: AI provider integrations
+- `packages/ai`: AI-related utilities and functions
+- `packages/utils`: Shared utility functions
+- `packages/config`: Shared configuration and constants
+- `packages/config/ai`: AI-related configuration
+    - `packages/config/ws`: WebSocket-related configuration
 
 ## Development
 
@@ -96,6 +101,14 @@ The VibeVVS platform follows a modular architecture:
 1. **Frontend (Next.js)**: Serves the UI and handles user interactions
 2. **WebSocket Server**: Manages real-time communication and LLM requests
 3. **Shared Packages**: Provide reusable functionality across services
+4. **AI Providers**: Integrate with various AI models for LLM capabilities
+
+## Key Features
+- Real-time chat with AI models
+- Multi-user support
+- Secure authentication using Clerk
+- Extensible AI provider integration
+- Scalable WebSocket server architecture
 
 ### Authentication Flow
 
@@ -109,9 +122,48 @@ The platform supports multiple AI providers through the `@repo/ai-providers` pac
 
 - Google Gemini
 - OpenAI
-- Groq
-- Mistral
+-
+- 
 
 ## Contributing
 
-Please see the [CONTRIBUTING.md](./CONTRIBUTING.md) file for contribution guidelines. 
+Please see the [CONTRIBUTING.md](./CONTRIBUTING.md) file for contribution guidelines. Please read the contributing guide before making a pull request. Thank you!
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file for details.
+
+## Acknowledgments
+
+- [Clerk](https://clerk.dev/) for authentication
+- [Next.js](https://nextjs.org/) for the web framework
+- [React](https://reactjs.org/) for the UI library
+- [WebSocket](https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API) for real-time communication
+
+## Contact
+
+For any inquiries, please contact [your-email@example.com](mailto:your-email@example.com).
+
+## Roadmap
+
+- [ ] Add more features
+- [ ] Improve performance
+- [ ] Add tests
+
+## Contributors
+
+- [Your Name](https://github.com/your-username) - Initial work
+
+## Changelog
+
+- [CHANGELOG.md](./CHANGELOG.md)
+
+## License
+
+This project is licensed under the [MIT License](./LICENSE).
+
+---
+
+This README.md file was generated with ❤️ by [Your Name](https://github.com/your-username).
+
+magistral is the best
