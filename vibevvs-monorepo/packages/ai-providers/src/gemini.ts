@@ -1086,48 +1086,49 @@ export async function listModels(apiKey: string): Promise<Array<{
       return getFallbackGeminiModels();
     }
 
-    // Filter and format models for generateContent capability
     const availableModels = data.models
       .filter((model: any) => {
-        // Log the raw model object for inspection
         logger.info(`Inspecting Gemini model from API: ${JSON.stringify(model, null, 2)}`);
-
-        // Relaxed filtering: only check for essential properties for now
-        return model.name && model.baseModelId;
+        const isSupported = model.supportedGenerationMethods?.includes('generateContent');
+        const isNotDeprecated = !(model.description?.toLowerCase().includes('deprecated') || model.displayName?.toLowerCase().includes('deprecated'));
+        const isNotEmbedding = !model.name.includes('embedding') && !model.displayName?.toLowerCase().includes('embedding');
+        const isChatModel = model.name.includes('gemini');
+        
+        return isSupported && isNotDeprecated && isNotEmbedding && isChatModel;
       })
       .map((model: any) => {
-        // Extract features based on model capabilities
         const features = ['chat'];
-        
-        // Add features based on model name and capabilities
         if (model.name.includes('flash')) features.push('fast');
         if (model.name.includes('pro')) features.push('advanced');
-        if (model.name.includes('2.0') || model.name.includes('2.5')) {
-          features.push('tools', 'thinking', 'structured-output');
+        if (model.name.includes('vision') || model.description?.toLowerCase().includes('multimodal')) {
+            features.push('vision');
         }
-        if (model.name.includes('1.5')) {
-          features.push('tools', 'vision', 'code');
+        if (model.inputTokenLimit > 200000) {
+            features.push('long-context');
+        }
+        if (model.name.includes('1.5') || model.name.includes('2.0') || model.name.includes('2.5')) {
+            features.push('tools');
         }
 
         return {
-          id: model.baseModelId,
-          name: model.displayName || model.baseModelId,
+          id: model.name.replace('models/', ''),
+          name: model.displayName,
           provider: 'gemini',
           available: true,
           contextWindow: model.inputTokenLimit || 128000,
           maxOutputTokens: model.outputTokenLimit || 8192,
-          features
+          features: [...new Set(features)], // remove duplicate features
         };
       })
-      // Remove duplicates based on baseModelId
-      .filter((model: any, index: number, array: any[]) => 
-        array.findIndex(m => m.id === model.id) === index
+      // remove duplicates by name
+      .filter((model: any, index: number, self: any[]) =>
+        index === self.findIndex((t: any) => t.name === model.name)
       )
-      // Sort by name for consistent ordering
       .sort((a: any, b: any) => a.name.localeCompare(b.name));
 
+
     logger.info(`Successfully fetched ${availableModels.length} Gemini models from API`);
-    return availableModels;
+    return availableModels.length > 0 ? availableModels : getFallbackGeminiModels();
 
   } catch (error) {
     logger.error(`Error fetching Gemini models: ${error instanceof Error ? error.message : String(error)}`);
