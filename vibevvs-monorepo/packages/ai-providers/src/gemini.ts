@@ -407,23 +407,14 @@ export async function sendStreamingRequest(
 
     // Add tools if present
     if (tools && Array.isArray(tools) && tools.length > 0) {
-      requestBody.tools = tools.map(tool => {
-        // Extract required parameters (assuming all are required for now)
+      const functionDeclarations = tools.map(tool => {
         const requiredParams = Object.keys(tool.parameters || {});
-        
-        // Format parameters to match Gemini's expected structure
         const formattedProperties: Record<string, any> = {};
-        
-        // Only process if parameters exist
+
         if (tool.parameters) {
           for (const [key, paramValue] of Object.entries(tool.parameters)) {
-            // Safe type assertion as we know the structure
             const param = paramValue as { description?: string };
-            
-            // Determine parameter type - default to STRING if not specified
             let paramType = 'STRING';
-            
-            // Check if parameter description contains type hint
             const description = param.description || '';
             if (description.toLowerCase().includes('array') || description.includes('[]')) {
               paramType = 'ARRAY';
@@ -436,36 +427,31 @@ export async function sendStreamingRequest(
               paramType = 'BOOLEAN';
             }
             
-            // Create properly formatted parameter
             formattedProperties[key] = {
               type: paramType,
               description: param.description || ''
             };
             
-            // Add items property for arrays
             if (paramType === 'ARRAY') {
               formattedProperties[key].items = { type: 'STRING' };
             }
           }
         }
 
-        // Return properly formatted tool declaration
         return {
-          functionDeclarations: [{
-            name: tool.name,
-            description: tool.description,
-            parameters: {
-              type: 'OBJECT',
-              properties: formattedProperties,
-              required: requiredParams
-            }
-          }]
+          name: tool.name,
+          description: tool.description,
+          parameters: {
+            type: 'OBJECT',
+            properties: formattedProperties,
+            required: requiredParams
+          }
         };
       });
 
-      // Log formatted tools with more detail
+      requestBody.tools = [{ functionDeclarations }];
+      
       logger.info(`Added ${tools.length} tools to streaming request: ${tools.map(t => t.name).join(', ')}`);
-      // Add debug logging for the first tool to verify format
       if (tools.length > 0) {
         logger.debug(`Example tool format: ${JSON.stringify(requestBody.tools[0], null, 2)}`);
       }
