@@ -74,7 +74,17 @@ export enum MessageType {
   DOCUMENT_REMOVE_ERROR = 'document-remove-error',
 
   // General error
-  ERROR = 'error'
+  ERROR = 'error',
+
+  // New standardized LLM messages
+  SEND_LLM_MESSAGE = 'send_llm_message', // Client to Server
+  LLM_RESPONSE = 'llm_response',         // Server to Client (non-streaming)
+  LLM_STREAM_START = 'llm_stream_start', // Server to Client
+  LLM_MESSAGE_CHUNK = 'llm_message_chunk', // Server to Client
+  LLM_REASONING_CHUNK = 'llm_reasoning_chunk', // Server to Client
+  LLM_STREAM_END = 'llm_stream_end',     // Server to Client
+  TOOL_CALL = 'tool_call',               // Server to Client
+  CANCEL_LLM_REQUEST = 'cancel_llm_request' // Client to Server
 }
 
 /**
@@ -83,23 +93,21 @@ export enum MessageType {
 interface BaseMessage {
   type: MessageType;
   timestamp?: number;
-  payload: Record<string, any>;
+  requestId?: string; // Standardized request ID
 }
 
 /**
  * Client message interface - messages sent from client to server
  */
 export interface ClientMessage extends BaseMessage {
-  type: MessageType;
-  payload: any;
+  payload?: any; // Keep payload for backward compatibility if needed
 }
 
 /**
  * Server message interface - messages sent from server to client
  */
 export interface ServerMessage extends BaseMessage {
-  type: MessageType;
-  payload: any;
+  payload?: any; // Keep payload for backward compatibility if needed
 }
 
 /**
@@ -474,4 +482,48 @@ export interface ToolCall {
     name: string;
     arguments: string;
   };
+}
+
+// ========================================================
+// NEW Standardized LLM Message Payloads
+// ========================================================
+
+export interface SendLLMMessagePayload {
+  provider: string;
+  model: string;
+  messages: ChatMessage[];
+  temperature?: number;
+  maxTokens?: number;
+  stream?: boolean;
+  systemMessage?: string;
+  tools?: any[];
+  toolChoice?: string;
+  parallelToolCalls?: boolean;
+  chatMode?: 'normal' | 'gather' | 'agent';
+  promptContext: any; // Context for generating system prompt
+}
+
+export interface LLMResponsePayload {
+  content: string;
+}
+
+export interface LLMStreamStartPayload {}
+
+export interface LLMMessageChunkPayload {
+  content: string;
+}
+
+export interface LLMReasoningChunkPayload {
+  content: string;
+}
+
+export interface LLMStreamEndPayload {}
+
+export interface ToolCallPayload {
+  toolCall: {
+    id: string;
+    name: string;
+    parameters: Record<string, unknown>;
+  };
+  reasoning?: string;
 }

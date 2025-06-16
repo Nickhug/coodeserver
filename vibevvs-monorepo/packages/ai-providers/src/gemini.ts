@@ -185,7 +185,10 @@ export async function sendRequest(params: GeminiRequestParams): Promise<LLMRespo
         role: 'model',
         parts: [{ text: systemMessage }]
       };
+      requestBody.contents = messages; // contents should not include the system message
       logger.info(`Added system message to request, length: ${systemMessage.length}`);
+    } else {
+      requestBody.contents = messages;
     }
     
     // Add tools if present
@@ -403,7 +406,10 @@ export async function sendStreamingRequest(
         role: 'model',
         parts: [{ text: systemMessage }]
       };
+      requestBody.contents = messages; // contents should not include the system message
       logger.info(`Added system message to streaming request, length: ${systemMessage.length}`);
+    } else {
+      requestBody.contents = messages;
     }
 
     // Add tools if present

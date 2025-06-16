@@ -16,13 +16,16 @@ export type ToolCallParams = {
 	search_pathnames_only: { query: string; include_pattern?: string; page_number?: number; };
 	search_codebase: { query: string; limit?: number; file_types?: string; paths?: string; languages?: string; };
 	search_for_files: { search_str: string; page_number?: number; };
+	search_in_file: { uri: string; query: string; page_number?: number; };
+	read_lint_errors: { uri?: string; };
 	edit_file: { uri: string; search_replace_blocks: string; };
 	rewrite_file: { uri: string; new_content: string; };
-	create_new_file: { uri: string; content: string; };
-	run_command_in_terminal: { command: string; cwd?: string; timeout?: number; };
-	start_command_in_terminal: { command: string; cwd?: string; };
-	ask_clarification: { question: string; };
-	i_am_finished: { summary: string; };
+	create_file_or_folder: { uri: string; content?: string; };
+	delete_file_or_folder: { uri: string; };
+	run_command: { command: string; cwd?: string; timeout?: number; };
+	run_persistent_command: { command: string; cwd?: string; };
+	open_persistent_terminal: { };
+	kill_persistent_terminal: { terminal_id: string; };
 };
 
 export type ToolResultType = {
@@ -270,13 +273,30 @@ export const voidTools
 
 		search_for_files: {
 			name: 'search_for_files',
-			description: 'This is an older version of search_pathnames_only. Do not use this tool.',
+			description: `Returns all files that contain the given search string. ONLY searches file contents. ONLY searches the current workspace.`,
 			params: {
-				search_str: { description: `Your query for the search.` },
+				search_str: { description: 'The string to search for in file contents.' },
 				...paginationParam,
 			},
 		},
 
+		search_in_file: {
+			name: 'search_in_file',
+			description: `Searches for a query string within a specific file and returns matching lines with context.`,
+			params: {
+				...uriParam('file'),
+				query: { description: 'The search query to find within the file.' },
+				...paginationParam,
+			},
+		},
+
+		read_lint_errors: {
+			name: 'read_lint_errors',
+			description: `Returns linting errors for the given file or all files in the workspace.`,
+			params: {
+				uri: { description: 'Optional. The FULL path to the file. Leave empty to get errors for all files.' },
+			},
+		},
 
 		// --- editing ---
 		edit_file: {
@@ -298,20 +318,28 @@ export const voidTools
 		},
 
 
-		create_new_file: {
-			name: 'create_new_file',
-			description: `Creates a new file with the given contents.`,
+		create_file_or_folder: {
+			name: 'create_file_or_folder',
+			description: `Creates a new file or folder with the given contents.`,
 			params: {
 				...uriParam('file'),
-				content: { description: `The contents of the new file.` }
+				content: { description: `The contents of the new file or folder.` }
 			},
+		},
+
+		delete_file_or_folder: {
+			name: 'delete_file_or_folder',
+			description: `Deletes a file or folder.`,
+			params: {
+				...uriParam('file')
+			}
 		},
 
 		// --- terminal ---
 
-		run_command_in_terminal: {
-			name: 'run_command_in_terminal',
-			description: `Run Command in Terminal - Use this tool to execute terminal commands. ${terminalDescHelper}`,
+		run_command: {
+			name: 'run_command',
+			description: `Run Command - Use this tool to execute terminal commands. ${terminalDescHelper}`,
 			params: {
 				command: { description: `The command to run.` },
 				cwd: { description: cwdHelper },
@@ -319,8 +347,8 @@ export const voidTools
 			},
 		},
 
-		start_command_in_terminal: {
-			name: 'start_command_in_terminal',
+		run_persistent_command: {
+			name: 'run_persistent_command',
 			description: `Start a command in the background, but do NOT wait for it to finish. ${terminalDescHelper}`,
 			params: {
 				command: { description: `The command to run.` },
@@ -329,19 +357,18 @@ export const voidTools
 		},
 
 		// --- misc ---
-		ask_clarification: {
-			name: 'ask_clarification',
-			description: `Use this tool to ask the user a clarifying question if you need more information before proceeding. This is the best way to get more information. This pauses your execution and waits for the user to respond. You can use this tool multiple times in a row. Do not try to answer the user's question with this tool.`,
+		open_persistent_terminal: {
+			name: 'open_persistent_terminal',
+			description: `Opens a persistent terminal.`,
 			params: {
-				question: { description: `The question you want to ask the user.` }
 			},
 		},
 
-		i_am_finished: {
-			name: 'i_am_finished',
-			description: `Use this tool to indicate that you have finished the task. This will end the conversation.`,
+		kill_persistent_terminal: {
+			name: 'kill_persistent_terminal',
+			description: `Kills a persistent terminal.`,
 			params: {
-				summary: { description: 'A summary of what you did for the user.' }
+				terminal_id: { description: `The ID of the terminal to kill.` }
 			}
 		},
 
@@ -382,11 +409,11 @@ export const isAToolName = (toolName: string): toolName is ToolName => {
 export const availableTools = (chatMode: ChatMode) => {
 	const allTools = Object.values(voidTools) as InternalToolInfo[]
 	if (chatMode === 'normal')
-		return allTools.filter(t => !['i_am_finished'].includes(t.name))
+		return allTools // Return all tools for normal mode
 	if (chatMode === 'agent')
 		return allTools
 	// must be 'gather'
-	return []
+	return allTools.filter(t => !['run_command', 'run_persistent_command', 'open_persistent_terminal', 'kill_persistent_terminal', 'edit_file', 'rewrite_file', 'create_file_or_folder', 'delete_file_or_folder'].includes(t.name))
 }
 
 
@@ -458,7 +485,8 @@ RULES
 3. Your \`edit_file\` SEARCH/REPLACE blocks must be disjoint.
 4. When you are using a tool, you must use the correct XML format.
 5. You can use multiple tools in a single message.
-6. The user will not respond to you until you use the \`ask_clarification\` tool.
+6. Only use tools when they help accomplish the user's specific request. If the user just says "hi" or asks a simple question, respond normally without using tools.
+7. If you need clarification from the user, ask directly in your response rather than using tools.
 
 ${includeXMLToolDefinitions ? toolsPrompt : ''}
 `

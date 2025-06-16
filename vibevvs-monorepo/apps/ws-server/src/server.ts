@@ -18,7 +18,8 @@ import {
   CodebaseDeleteVectorsRequestMessage,
   CodebaseDeleteVectorsResponseMessage,
   ChatMessage,
-  ToolCall
+  ToolCall,
+  SendLLMMessagePayload
 } from '@repo/types';
 import { deleteVectors as pineconeDeleteVectors } from './pinecone-service';
 import * as documentProcessingService from './document-processing-service';
@@ -81,7 +82,7 @@ interface TurnContext {
   systemMessage?: string;
   tools?: any[];
   parallelToolCalls?: boolean;
-  stream: boolean;
+  stream: boolean; // Must be a boolean
   lastPrompt: string;
   messages: ChatMessage[]; // Store conversation history
   createdAt: number; // Timestamp for cleanup
@@ -95,6 +96,9 @@ let globalWss: WebSocketServer;
 
 // Store active conversation contexts for multi-turn tool usage
 const activeTurnContexts = new Map<string, TurnContext>();
+
+// Store AbortControllers for active LLM requests
+const abortControllers = new Map<string, Map<string, AbortController>>();
 
 // Set up a cleanup interval for stale turn contexts (30 minutes timeout)
 const TURN_CONTEXT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
@@ -382,291 +386,96 @@ function handleConnection(ws: WebSocket, req: http.IncomingMessage): void {
 /**
  * Handle incoming WebSocket message
  */
-async function handleIncomingMessage(ws: WebSocketWithData, message: string): Promise<void> {
-  const { connectionId, userId, isAuthenticated } = ws.connectionData;
-
+async function handleIncomingMessage(ws: WebSocketWithData, messageStr: string): Promise<void> {
   try {
-    // Parse message
-    const clientMessage = JSON.parse(message) as ClientMessage;
+    const message: ClientMessage = JSON.parse(messageStr);
+    const { type, payload, requestId } = message;
+    const { connectionId, userId, isAuthenticated } = ws.connectionData;
+    const safeRequestId = requestId || 'no-request-id';
 
-    // Update last ping time for all message types
-    ws.connectionData.lastPingTime = Date.now();
-    connections.set(connectionId, ws.connectionData);
+    logger.info(`WS MSG [${connectionId}][${safeRequestId}] Received message type: ${type}`);
 
-    // Get the message type as string for safer comparison
-    const messageType = clientMessage.type as string;
-    const requestId = clientMessage.payload?.requestId || 'no-request-id';
+    // Route message to the appropriate handler
+    switch (type) {
+      case MessageType.AUTHENTICATE:
+        await handleAuthentication(ws, message);
+        break;
+      
+      case MessageType.PROVIDER_LIST:
+        await handleProviderList(ws);
+        break;
 
-    // Log based on message type
-    if (messageType === MessageType.PING) {
-      logger.debug(`WS MSG [${connectionId}] Ping received`);
-      // Immediately respond with PONG to keep connection alive
-      sendToClient(ws, {
-        type: MessageType.PONG,
-        payload: {
-          timestamp: Date.now(),
-          serverTime: new Date().toISOString(),
-          connectionId: connectionId // Echo back the connection ID for verification
+      case MessageType.PROVIDER_MODELS:
+        await handleProviderModels(ws, message);
+        break;
+
+      case MessageType.SEND_LLM_MESSAGE:
+        if (!isAuthenticated) {
+          sendToClient(ws, { type: MessageType.AUTH_FAILURE, requestId });
+          return;
         }
-      });
-    } else if (messageType === MessageType.AUTHENTICATE) {
-      logger.info(`WS MSG [${connectionId}] Authentication request`);
-      await handleAuthentication(ws, clientMessage);
-    } else if (messageType === MessageType.PROVIDER_LIST) {
-      logger.info(`WS MSG [${connectionId}] Provider list request`);
-      await handleProviderList(ws);
-    } else if (messageType === MessageType.PROVIDER_MODELS) {
-      logger.info(`WS MSG [${connectionId}] Provider models request`);
-      await handleProviderModels(ws, clientMessage);
-    } else if (messageType === MessageType.USER_DATA_REQUEST) {
-      logger.info(`WS MSG [${connectionId}][${requestId}] User data request`);
-      await handleUserDataRequest(ws, clientMessage);
-    } else if (messageType === MessageType.PROVIDER_REQUEST) {
-      const provider = clientMessage.payload?.provider || 'unknown';
-      const model = clientMessage.payload?.model || 'unknown';
-      logger.info(`WS MSG [${connectionId}][${requestId}] Provider request: ${provider}/${model}, streaming: ${!!clientMessage.payload?.stream}`);
-      if (config.authEnabled && !isAuthenticated) {
-        logger.warn(`WS AUTH [${connectionId}] Unauthorized provider request rejected`);
-        sendToClient(ws, {
-          type: MessageType.PROVIDER_ERROR,
-          payload: {
-            error: 'Authentication required',
-            code: 'UNAUTHORIZED',
-            requestId: clientMessage.payload?.requestId
-          }
-        });
-        return;
-      }
-      await handleProviderRequest(ws, clientMessage);
-    } else if (messageType === MessageType.TOOL_EXECUTION_RESULT) {
-      const toolName = clientMessage.payload?.toolName || 'unknown';
-      const toolId = clientMessage.payload?.toolCallId || 'unknown';
-      logger.info(`WS MSG [${connectionId}][${requestId}] Tool execution result: ${toolName}, id: ${toolId}, error: ${!!clientMessage.payload?.isError}`);
-      if (config.authEnabled && !isAuthenticated) {
-        logger.warn(`WS AUTH [${connectionId}] Unauthorized tool execution result rejected`);
-        sendToClient(ws, {
-          type: MessageType.PROVIDER_ERROR,
-          payload: {
-            error: 'Authentication required',
-            code: 'UNAUTHORIZED',
-            requestId: clientMessage.payload?.requestId
-          }
-        });
-        return;
-      }
-      await handleToolExecutionResult(ws, clientMessage);
-    } else if (messageType === MessageType.FIM_REQUEST) {
-      const provider = clientMessage.payload?.provider || 'unknown';
-      const model = clientMessage.payload?.model || 'unknown';
-      logger.info(`WS MSG [${connectionId}][${requestId}] FIM request: ${provider}/${model}, streaming: ${!!clientMessage.payload?.stream}`);
-      if (config.authEnabled && !isAuthenticated) {
-        logger.warn(`WS AUTH [${connectionId}] Unauthorized FIM request rejected`);
-        sendToClient(ws, {
-          type: MessageType.PROVIDER_ERROR,
-          payload: {
-            error: 'Authentication required',
-            code: 'UNAUTHORIZED',
-            requestId: clientMessage.payload?.requestId
-          }
-        });
-        return;
-      }
-      await handleFimRequest(ws, clientMessage);
-    } else if (messageType === MessageType.CODEBASE_EMBEDDING_REQUEST) {
-      logger.info(`WS MSG [${connectionId}][${requestId}] Codebase embedding request`);
-      if (config.authEnabled && !isAuthenticated) {
-        logger.warn(`WS AUTH [${connectionId}] Unauthorized embedding request rejected`);
-        sendToClient(ws, {
-          type: MessageType.ERROR,
-          payload: {
-            error: 'Authentication required',
-            code: 'UNAUTHORIZED',
-            requestId: clientMessage.payload?.requestId
-          }
-        });
-        return;
-      }
-      await handleCodebaseEmbeddingRequest(ws, clientMessage);
-    } else if (messageType === MessageType.CODEBASE_EMBEDDING_BATCH_REQUEST) {
-      const chunkCount = clientMessage.payload?.chunks?.length || 0;
-      logger.info(`WS MSG [${connectionId}][${requestId}] Codebase embedding batch request for ${chunkCount} chunks`);
-      if (config.authEnabled && !isAuthenticated) {
-        logger.warn(`WS AUTH [${connectionId}] Unauthorized batch embedding request rejected`);
-        sendToClient(ws, {
-          type: MessageType.ERROR,
-          payload: {
-            error: 'Authentication required',
-            code: 'UNAUTHORIZED',
-            requestId: clientMessage.payload?.requestId
-          }
-        });
-        return;
-      }
-      await handleCodebaseEmbeddingBatchRequest(ws, clientMessage);
-    } else if (messageType === MessageType.CODEBASE_SEARCH_REQUEST) {
-      logger.info(`WS MSG [${connectionId}][${requestId}] Codebase search request`);
-      if (config.authEnabled && !isAuthenticated) {
-        logger.warn(`WS AUTH [${connectionId}] Unauthorized codebase search request rejected`);
-        sendToClient(ws, {
-          type: MessageType.ERROR,
-          payload: {
-            error: 'Authentication required',
-            code: 'UNAUTHORIZED',
-            requestId: clientMessage.payload?.requestId
-          }
-        });
-        return;
-      }
-      await handleCodebaseSearchRequest(ws, clientMessage);
-    } else if (messageType === MessageType.CODEBASE_CLEAR_INDEX_REQUEST) {
-      logger.info(`WS MSG [${connectionId}][${requestId}] Codebase clear index request`);
-      if (config.authEnabled && !isAuthenticated) {
-        logger.warn(`WS AUTH [${connectionId}] Unauthorized clear index request rejected`);
-        sendToClient(ws, {
-          type: MessageType.ERROR,
-          payload: {
-            error: 'Authentication required',
-            code: 'UNAUTHORIZED',
-            requestId: clientMessage.payload?.requestId
-          }
-        } as ServerMessage);
-        return;
-      }
-      await handleCodebaseClearIndexRequest(ws, clientMessage);
-    } else if (messageType === MessageType.CODEBASE_DELETE_VECTORS_REQUEST) {
-      logger.info(`WS MSG [${connectionId}][${requestId}] Codebase delete vectors request`);
-      if (config.authEnabled && !isAuthenticated) {
-        logger.warn(`WS AUTH [${connectionId}] Unauthorized codebase delete vectors request rejected`);
-        sendToClient(ws, {
-          type: MessageType.CODEBASE_DELETE_VECTORS_RESPONSE, 
-          payload: {
-            requestId: clientMessage.payload.requestId,
-            success: false,
-            error: 'Authentication required',
-            code: 'UNAUTHORIZED' // Added for consistency, though not in original plan
-          }
-        } as CodebaseDeleteVectorsResponseMessage);
-        return;
-      }
-
-      const deleteRequest = clientMessage as CodebaseDeleteVectorsRequestMessage;
-      const { workspaceId, chunkIds } = deleteRequest.payload;
-
-      if (!workspaceId || !chunkIds || chunkIds.length === 0) {
-        logger.warn(`WS MSG [${connectionId}][${requestId}] Invalid payload for delete vectors request: workspaceId or chunkIds missing.`);
-        sendToClient(ws, {
-          type: MessageType.CODEBASE_DELETE_VECTORS_RESPONSE,
-          payload: {
-            requestId: deleteRequest.payload.requestId,
-            success: false,
-            error: 'Invalid payload: workspaceId and chunkIds are required.'
-          }
-        } as CodebaseDeleteVectorsResponseMessage);
-        return;
-      }
-
-      try {
-        await pineconeDeleteVectors(workspaceId, chunkIds);
-        logger.info(`WS MSG [${connectionId}][${requestId}] Successfully processed delete vectors request for workspace ${workspaceId}, ${chunkIds.length} chunks.`);
-        sendToClient(ws, {
-          type: MessageType.CODEBASE_DELETE_VECTORS_RESPONSE,
-          payload: {
-            requestId: deleteRequest.payload.requestId,
-            success: true,
-          }
-        } as CodebaseDeleteVectorsResponseMessage);
-      } catch (error) {
-        logger.error(`WS ERROR [${connectionId}][${requestId}] Error deleting vectors for workspace ${workspaceId}:`, error);
-        sendToClient(ws, {
-          type: MessageType.CODEBASE_DELETE_VECTORS_RESPONSE,
-          payload: {
-            requestId: deleteRequest.payload.requestId,
-            success: false,
-            error: error instanceof Error ? error.message : 'Failed to delete vectors'
-          }
-        } as CodebaseDeleteVectorsResponseMessage);
-      }
-
-    } else if (messageType === MessageType.INDEX_DOCUMENT) {
-      logger.info(`WS MSG [${connectionId}][${requestId}] Document indexing request`);
-      if (config.authEnabled && !isAuthenticated) {
-        logger.warn(`WS AUTH [${connectionId}] Unauthorized document indexing request rejected`);
-        sendToClient(ws, {
-          type: MessageType.DOCUMENT_INDEX_ERROR,
-          payload: {
-            error: 'Authentication required',
-            code: 'UNAUTHORIZED'
-          }
-        });
-        return;
-      }
+        await handleProviderRequest(ws, message);
+        break;
       
-      // Ensure we have a userId before proceeding
-      if (!userId) {
-        logger.warn(`WS AUTH [${connectionId}] Document indexing request missing userId`);
-        sendToClient(ws, {
-          type: MessageType.DOCUMENT_INDEX_ERROR,
-          payload: {
-            error: 'User identification required',
-            code: 'UNAUTHORIZED'
-          }
-        });
-        return;
-      }
-      
-      await handleIndexDocument(ws, userId, clientMessage);
-    } else if (messageType === MessageType.REMOVE_DOCUMENT) {
-      logger.info(`WS MSG [${connectionId}][${requestId}] Document removal request`);
-      if (config.authEnabled && !isAuthenticated) {
-        logger.warn(`WS AUTH [${connectionId}] Unauthorized document removal request rejected`);
-        sendToClient(ws, {
-          type: MessageType.ERROR,
-          payload: {
-            error: 'Authentication required',
-            code: 'UNAUTHORIZED',
-            requestId: clientMessage.payload?.requestId
-          }
-        });
-        return;
-      }
-      
-      // Ensure we have a userId before proceeding
-      if (!userId) {
-        logger.warn(`WS AUTH [${connectionId}] Document removal request missing userId`);
-        sendToClient(ws, {
-          type: MessageType.DOCUMENT_REMOVE_ERROR,
-          payload: {
-            error: 'User identification required',
-            code: 'UNAUTHORIZED'
-          }
-        });
-        return;
-      }
-      
-      await handleRemoveDocument(ws, userId, clientMessage);
-    } else {
-      logger.warn(`WS MSG [${connectionId}] Unknown message type: ${messageType}`);
-      sendToClient(ws, {
-        type: MessageType.ERROR,
-        payload: {
-          error: `Unknown message type: ${messageType}`,
-          code: 'UNKNOWN_MESSAGE_TYPE'
+      case MessageType.CANCEL_LLM_REQUEST:
+        handleCancelRequest(ws, message);
+        break;
+
+      case MessageType.TOOL_EXECUTION_RESULT:
+        if (!isAuthenticated) {
+          sendToClient(ws, { type: MessageType.AUTH_FAILURE, requestId });
+          return;
         }
-      });
+        await handleToolExecutionResult(ws, message);
+        break;
+
+      case MessageType.PING:
+        logger.debug(`WS MSG [${connectionId}] Ping received`);
+        sendToClient(ws, { type: MessageType.PONG, requestId, payload: { timestamp: Date.now(), serverTime: new Date().toISOString(), connectionId } });
+        break;
+
+      case MessageType.USER_DATA_REQUEST:
+        logger.info(`WS MSG [${connectionId}][${safeRequestId}] User data request`);
+        await handleUserDataRequest(ws, message);
+        break;
+
+      case MessageType.FIM_REQUEST: {
+        const { provider, model } = message.payload || {};
+        logger.info(`WS MSG [${connectionId}][${safeRequestId}] FIM request: ${provider || 'unknown'}/${model || 'unknown'}`);
+        if (config.authEnabled && !isAuthenticated) {
+           logger.warn(`WS AUTH [${connectionId}][${safeRequestId}] Unauthorized FIM request rejected`);
+           sendToClient(ws, { type: MessageType.ERROR, requestId: safeRequestId, payload: { error: 'Authentication required', code: 'UNAUTHORIZED' }});
+           return;
+        }
+        await handleFimRequest(ws, message);
+        break;
+      }
+      
+      // Handle other specific cases like CODEBASE_... requests here, ensuring auth checks
+      case MessageType.CODEBASE_SEARCH_REQUEST: {
+        logger.info(`WS MSG [${connectionId}][${safeRequestId}] Codebase search request`);
+        if (config.authEnabled && !isAuthenticated) {
+            logger.warn(`WS AUTH [${connectionId}][${safeRequestId}] Unauthorized codebase search request rejected`);
+            sendToClient(ws, { type: MessageType.ERROR, requestId: safeRequestId, payload: { error: 'Authentication required', code: 'UNAUTHORIZED' } });
+            return;
+        }
+        await handleCodebaseSearchRequest(ws, message);
+        break;
+      }
+
+      default:
+        // Generic catch-all for legacy or unhandled messages.
+        // Add auth checks for sensitive legacy messages if any.
+        logger.warn(`WS MSG [${connectionId}] Unhandled or unknown message type: ${type}`);
+        sendToClient(ws, { type: MessageType.ERROR, requestId, payload: { error: `Unknown or unhandled message type: ${type}`, code: 'UNKNOWN_MESSAGE_TYPE' } });
+        break;
     }
   } catch (error) {
+    const { connectionId = 'unknown' } = (ws as WebSocketWithData).connectionData || {};
     logger.error(`WS ERROR [${connectionId}] Error processing message: ${error instanceof Error ? error.message : String(error)}`, error);
-    // Log a preview of the problematic message
-    const messagePreview = message.length > 100 ? `${message.substring(0, 100)}...` : message;
+    const messagePreview = messageStr.length > 200 ? `${messageStr.substring(0, 200)}...` : messageStr;
     logger.debug(`WS ERROR [${connectionId}] Problematic message preview: ${messagePreview}`);
-
-    sendToClient(ws, {
-      type: MessageType.ERROR,
-      payload: {
-        error: 'Failed to process message',
-        code: 'INTERNAL_ERROR'
-      }
-    });
+    sendToClient(ws, { type: MessageType.ERROR, payload: { error: 'Failed to process message on server.', code: 'MESSAGE_PROCESSING_ERROR' } });
   }
 }
 
@@ -674,96 +483,13 @@ async function handleIncomingMessage(ws: WebSocketWithData, message: string): Pr
  * Send message to client with optimizations for streaming
  */
 function sendToClient(ws: WebSocketWithData, message: ServerMessage): void {
-  try {
-    const messageText = JSON.stringify({
-      ...message,
-      timestamp: Date.now()
-    });
-
-    // Debug logging for all messages
-    const { connectionId = 'unknown' } = ws.connectionData || {};
-    const messageType = message.type;
-    const requestId = (message.payload as any)?.requestId || 'no-request-id';
-
-    // For PROVIDER_STREAM_END, add extra logging of toolCall if present
-    if (messageType === MessageType.PROVIDER_STREAM_END && (message.payload as any)?.toolCall) {
-      const toolCall = (message.payload as any).toolCall;
-      const waitingForToolCall = (message.payload as any).waitingForToolCall;
-
-      logger.info(
-        `WS SEND TOOL CALL [${connectionId}][${requestId}] ` +
-        `Tool call in payload: name=${toolCall.name}, ` +
-        `parameters=${JSON.stringify(toolCall.parameters)}, ` +
-        `id=${toolCall.id}, ` +
-        `waitingForToolCall=${waitingForToolCall}`
-      );
-    }
-
-    // Log message being sent with different detail levels based on type
-    if (messageType === MessageType.PROVIDER_STREAM_CHUNK) {
-      const chunk = (message.payload as any)?.chunk || '';
-      const provider = (message.payload as any)?.provider || 'unknown';
-      const model = (message.payload as any)?.model || 'unknown';
-      // Log chunks with truncated content to avoid flooding logs
-      const chunkPreview = chunk.length > 50 ? `${chunk.substring(0, 50)}...` : chunk;
-      logger.debug(
-        `WS SEND [${connectionId}][${requestId}] Stream chunk for ${provider}/${model}, ` +
-        `length: ${chunk.length}, preview: "${chunkPreview}"`
-      );
-    } else if (messageType === MessageType.PROVIDER_STREAM_START) {
-      const provider = (message.payload as any)?.provider || 'unknown';
-      const model = (message.payload as any)?.model || 'unknown';
-      logger.info(
-        `WS SEND [${connectionId}][${requestId}] Stream start for ${provider}/${model}`
-      );
-    } else if (messageType === MessageType.PROVIDER_STREAM_END) {
-      const provider = (message.payload as any)?.provider || 'unknown';
-      const model = (message.payload as any)?.model || 'unknown';
-      const tokensUsed = (message.payload as any)?.tokensUsed || 0;
-      logger.info(
-        `WS SEND [${connectionId}][${requestId}] Stream end for ${provider}/${model}, ` +
-        `tokens: ${tokensUsed}, success: ${(message.payload as any)?.success}`
-      );
-    } else if (messageType === MessageType.PROVIDER_ERROR || messageType === MessageType.ERROR) {
-      // Log errors with full details
-      logger.warn(
-        `WS SEND [${connectionId}][${requestId}] Error message: ${JSON.stringify(message.payload)}`
-      );
-    } else {
-      // Basic logging for other message types
-      logger.debug(`WS SEND [${connectionId}] Message type: ${messageType}`);
-    }
-
-    // Send the message, checking for state
-    if (ws.readyState === WebSocket.OPEN) {
-      // Log WebSocket state before sending
-      logger.debug(`WS STATE [${connectionId}] Before send: ${ws.readyState} (OPEN)`);
-
-      // Send all messages immediately - delays can cause premature termination
-      ws.send(messageText);
-      logger.debug(`WS SENT [${connectionId}] ${messageType} sent, length: ${messageText.length}`);
-    } else {
-      // Log details when message can't be sent
-      const stateMap = {
-        0: 'CONNECTING',
-        1: 'OPEN',
-        2: 'CLOSING',
-        3: 'CLOSED'
-      };
-      const stateStr = stateMap[ws.readyState as keyof typeof stateMap] || ws.readyState;
-
-      logger.warn(
-        `WS DROPPED [${connectionId}][${requestId}] ` +
-        `Cannot send ${messageType}, WebSocket state: ${stateStr}`
-      );
-    }
-  } catch (error) {
-    // Enhanced error logging
-    const { connectionId = 'unknown' } = ws.connectionData || {};
-    logger.error(
-      `WS ERROR [${connectionId}] Send failed: ${error instanceof Error ? error.message : String(error)}`,
-      error
-    );
+  if (ws.readyState === WebSocket.OPEN) {
+    // Add timestamp to all outgoing messages
+    const messageWithTimestamp = { ...message, timestamp: Date.now() };
+    ws.send(JSON.stringify(messageWithTimestamp));
+    logger.info(`WS MSG OUT [${ws.connectionData.connectionId}][${message.requestId}] Sent message type: ${message.type}`);
+  } else {
+    logger.warn(`WS MSG OUT [${ws.connectionData.connectionId}][${message.requestId}] Attempted to send to closed socket, type: ${message.type}`);
   }
 }
 
@@ -1200,54 +926,12 @@ export function setupHttpRoutes(server: http.Server, wss?: WebSocketServer): voi
  * Start the WebSocket server
  */
 export function startWebSocketServer(): http.Server {
-  // Validate configuration first
-  const configValidation = validateConfig();
-
-  logger.info('=== Server Configuration Validation ===');
-  logger.info(`Configuration valid: ${configValidation.isValid}`);
-
-  if (configValidation.errors.length > 0) {
-    logger.error('Configuration errors:');
-    configValidation.errors.forEach((error: string) => logger.error(`  - ${error}`));
-  }
-
-  if (configValidation.warnings.length > 0) {
-    logger.warn('Configuration warnings:');
-    configValidation.warnings.forEach((warning: string) => logger.warn(`  - ${warning}`));
-  }
-
-  // Log environment variables for debugging (without exposing full keys)
-  logger.info('=== Environment Variables Check ===');
-  logger.info(`NODE_ENV: ${process.env.NODE_ENV || 'not set'}`);
-  logger.info(`PINECONE_API_KEY: ${process.env.PINECONE_API_KEY ? 'SET (' + process.env.PINECONE_API_KEY.length + ' chars)' : 'NOT SET'}`);
-  logger.info(`GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? 'SET (' + process.env.GEMINI_API_KEY.length + ' chars)' : 'NOT SET'}`);
-  logger.info(`MISTRAL_API_KEY: ${process.env.MISTRAL_API_KEY ? 'SET (' + process.env.MISTRAL_API_KEY.length + ' chars)' : 'NOT SET'}`);
-  logger.info(`PINECONE_INDEX_NAME: ${process.env.PINECONE_INDEX_NAME || 'not set (using default)'}`);
-  logger.info(`PINECONE_NAMESPACE: ${process.env.PINECONE_NAMESPACE || 'not set (using default)'}`);
-  logger.info('=====================================');
-
-  // Set up the HTTP server
   const server = setupServer();
-
-  // Set up the WebSocket server
-  const wss = setupWebSocketServer(server);
-
-  // Set up HTTP routes
-  setupHttpRoutes(server, wss);
-
-  // Log host configuration information
-  if (config.host === '::') {
-    logger.info('Server configured to listen on dual-stack IPv4/IPv6 (::)');
-  } else if (config.host === '0.0.0.0') {
-    logger.info('Server configured to listen on IPv4 only (0.0.0.0)');
-    logger.info('Using Railway TCP Proxy at wss://gondola.proxy.rlwy.net:28028/ws');
-  }
-
-  // Start the server
+  setupWebSocketServer(server);
+  setupHttpRoutes(server); // Pass server instance here
+  
   server.listen(config.port, config.host, () => {
-    logger.info(`WebSocket server listening on ${config.host}:${config.port}`);
-    logger.info(`WebSocket path: ${config.wsPath}`);
-    logger.info(`Environment: ${config.environment}`);
+    logger.info(`🚀 Server listening on ${config.host}:${config.port}`);
   });
 
   return server;
@@ -1704,404 +1388,118 @@ async function handleFimRequest(ws: WebSocketWithData, message: ClientMessage): 
  * Handle provider request from client
  */
 async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
-  if (message.type !== MessageType.PROVIDER_REQUEST) {
-    logger.error('Invalid message type passed to handleProviderRequest');
-    return;
-  }
-
-  const { 
-    provider, 
-    model, 
-    prompt, 
-    temperature, 
-    maxTokens, 
-    stream = true, 
-    requestId, 
-    toolChoice, 
-    parallelToolCalls, 
-    requestType,
-    messages: clientMessages,
-    promptContext
-  } = message.payload;
-
-  const safeRequestId = requestId || uuidv4();
+  const { payload, requestId } = message;
+  const {
+    provider,
+    model,
+    messages,
+    temperature,
+    maxTokens,
+    stream,
+    promptContext,
+    parallelToolCalls
+  } = payload as SendLLMMessagePayload;
+  
   const userId = ws.connectionData.userId;
+  const safeRequestId = requestId || 'no-request-id';
 
-  // Log the full request details for debugging
-  logger.info(`Provider Request [${safeRequestId}]: ` +
-    `Provider: ${provider}, Model: ${model}, User: ${userId || 'anonymous'}, Stream: ${stream}, ` +
-    `Prompt Length: ${prompt?.length || 0}, ` +
-    `ToolChoice: ${toolChoice}, ParallelToolCalls: ${parallelToolCalls}, RequestType: ${requestType}`);
-
-  if (!userId && config.authEnabled) {
-    logger.error(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] No user ID available for provider request`);
-    sendToClient(ws, {
-      type: MessageType.PROVIDER_ERROR,
-      payload: {
-        error: 'User ID not available',
-        code: 'NO_USER_ID',
-        requestId: safeRequestId
-      }
-    });
+  if (!userId) {
+    sendToClient(ws, { type: MessageType.AUTH_FAILURE, requestId });
     return;
   }
-
-  // --- SERVER-SIDE PROMPT/TOOL GENERATION ---
-  if (!promptContext) {
-    logger.error(`WS  [${ws.connectionData.connectionId}][${safeRequestId}] No promptContext provided for provider request`);
-    sendToClient(ws, {
-      type: MessageType.PROVIDER_ERROR,
-      payload: {
-        error: 'promptContext is required for provider requests',
-        code: 'BAD_REQUEST',
-        requestId: safeRequestId
-      }
-    });
-    return;
-  }
-
-  const systemMessage = chat_systemMessage(promptContext);
-  const tools: InternalToolInfo[] = availableTools(promptContext.chatMode);
-  const messages = clientMessages || [{ role: 'user', content: prompt }];
-
-  logger.info(`[${safeRequestId}] Generated system prompt (len: ${systemMessage.length}) and ${tools.length} tools for chatMode: ${promptContext.chatMode}`);
-  // --- END ---
-
-
-  // Log if system message and tools are present
-  if (systemMessage) {
-    // No need for redundant logging of systemMessage.length, already in the main request log
-    // logger.info(`Request ${safeRequestId} includes system message, length: ${systemMessage.length}`);
-  }
-
-  if (tools && Array.isArray(tools) && tools.length > 0) {
-    // No need for redundant logging of tool count and names, already in the main request log
-    // logger.info(`Request ${safeRequestId} includes ${tools.length} tools: ${tools.map(t => t.name).join(', ')}`);
-    // Remove full tool definitions log
-    // logger.info(`FULL TOOLS [${safeRequestId}]: ${JSON.stringify(tools, null, 2)}`);
-
-    // For Gemini, tools will be converted internally by the provider
-    if (provider === 'gemini' && tools && tools.length > 0) {
-      logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Passing ${tools.length} tools: ${tools.map((t: any) => t.name).join(', ')}`);
-    }
-
-    // For Mistral, ensure tools are in the correct format
-    if (provider === 'mistral') {
-      // Mistral will handle tool conversion internally, but let's log what we're sending
-      if (tools && tools.length > 0) {
-        logger.info(`Passing ${tools.length} tools to Mistral for request ${safeRequestId}`);
-        logger.debug(`TOOLS for Mistral [${safeRequestId}]: ${JSON.stringify(tools.map(t => ({name: t.name, description: t.description})), null, 2)}`);
-      }
-    }
-  }
-
-  logger.info(`Processing ${provider} request for model ${model} from user ${userId || 'anonymous'}`);
 
   try {
-    // Check if provider is configured
-    let apiKey: string;
-    switch (provider) {
-      case 'gemini':
-        apiKey = config.geminiApiKey;
-        break;
-      case 'openai':
-        apiKey = config.openaiApiKey;
-        break;
-      case 'groq':
-        apiKey = config.groqApiKey;
-        break;
-      case 'mistral':
-        apiKey = config.mistralApiKey;
-        break;
-      default:
-        sendToClient(ws, {
-          type: MessageType.PROVIDER_ERROR,
-          payload: {
-            error: `Unknown provider: ${provider}`,
-            code: 'UNKNOWN_PROVIDER'
-          }
-        });
-        return;
-    }
+    // Generate the system prompt using the client-provided context
+    const systemMessage = chat_systemMessage(promptContext);
+    const tools = availableTools(promptContext.chatMode);
+    const chatMode = promptContext.chatMode;
+    const apiKey = process.env.GEMINI_API_KEY || ''; // Use a single key for now
 
-    if (!apiKey) {
-      sendToClient(ws, {
-        type: MessageType.PROVIDER_ERROR,
-        payload: {
-          error: `Provider ${provider} is not configured`,
-          code: 'PROVIDER_NOT_CONFIGURED',
-          requestId: safeRequestId
-        }
-      });
-      return;
-    }
+    const llmRequestParams = {
+      apiKey,
+      model,
+      messages,
+      temperature,
+      maxTokens,
+      systemMessage,
+      tools,
+      chatMode,
+      parallelToolCalls,
+      stream
+    };
 
-    // Process based on provider
     if (provider === 'gemini') {
+      const { apiKey, model, messages, temperature, maxTokens, systemMessage, tools, chatMode, parallelToolCalls, stream } = llmRequestParams;
+      
+      // Detailed logging for Gemini requests
+      logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Handling request for model: ${model}`);
+      logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] System Message Length: ${systemMessage?.length || 0}`);
+      logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Available Tools: ${tools ? tools.map((t: any) => t.name).join(', ') : 'none'}`);
+      logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Message History Count: ${messages.length}`);
+      logger.debug(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Full System Message: ${systemMessage?.substring(0, 500)}...`);
+
+
       if (stream) {
-        // Handle streaming response using the proper streaming API
+        // Use Gemini's streaming API with proper handlers
         logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Initiating request to model ${model}`);
 
+        // Create a new AbortController for this request
+        const abortController = new AbortController();
+        const { signal } = abortController;
+
+        // Store the abort controller
+        const safeConnectionId = ws.connectionData.connectionId || 'unknown';
+        if (!abortControllers.has(safeConnectionId)) {
+          abortControllers.set(safeConnectionId, new Map());
+        }
+        abortControllers.get(safeConnectionId)?.set(safeRequestId, abortController);
+        
         try {
-          // First, notify client that streaming has started
-          sendToClient(ws, {
-            type: MessageType.PROVIDER_STREAM_START,
-            payload: {
-              provider,
-              model,
-              requestId: safeRequestId
-            }
-          });
-
-          // Track streaming stats for this request
-          const streamStats = {
-            startTime: Date.now(),
-            chunkCount: 0,
-            totalCharsStreamed: 0,
-            lastPingTime: Date.now()
-          };
-
-          // Properly initialize chatMode as a valid string value
-          const userChatMode = promptContext.chatMode;
-          const chatMode: 'normal' | 'gather' | 'agent' =
-            userChatMode === 'gather' ? 'gather' :
-            userChatMode === 'normal' ? 'normal' : 'agent';
-
-          // Log chat mode and tools for debugging
-          logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ChatMode: ${userChatMode} -> ${chatMode}, Tools: ${tools ? tools.map((t: any) => t.name).join(', ') : 'none'}`);
-
-          // Use Gemini's streaming API with proper handlers
           await gemini.streamGeminiMessage({
-            apiKey,
-            model,
-            messages: convertChatMessagesToGeminiFormat(messages),
-            temperature: temperature || 0.7,
-            maxTokens: maxTokens || 50000,
-            systemMessage,
-            tools: tools, // Pass raw tools, not pre-converted ones
-            chatMode,
-            thinkingConfig: {
-              includeThoughts: true,
-              thinkingBudget: 24576
+            ...llmRequestParams,
+            messages: convertChatMessagesToGeminiFormat(messages), // Convert messages
+            onStart: () => sendToClient(ws, { type: MessageType.LLM_STREAM_START, requestId: safeRequestId }),
+            onChunk: (chunk) => sendToClient(ws, { type: MessageType.LLM_MESSAGE_CHUNK, requestId: safeRequestId, payload: { content: chunk } }),
+            onReasoningChunk: (chunk) => sendToClient(ws, { type: MessageType.LLM_REASONING_CHUNK, requestId: safeRequestId, payload: { content: chunk } }),
+            onError: (error) => {
+              logger.error(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Stream error: ${error.message}`);
+              sendToClient(ws, { type: MessageType.ERROR, requestId: safeRequestId, payload: { message: `LLM stream error: ${error.message}` } });
             },
-            onStart: () => { streamStats.startTime = Date.now(); logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Stream started for model ${model}`); },
-            onReasoningChunk: (chunk: string) => {
-              // Send reasoning chunks as separate message type
-              sendToClient(ws, {
-                type: MessageType.PROVIDER_REASONING_CHUNK,
-                payload: {
-                  chunk,
-                  requestId: safeRequestId,
-                  provider,
-                  model
-                }
-              });
-            },
-            onChunk: (chunk: string) => {
-              // Update stream stats
-              streamStats.chunkCount++; streamStats.totalCharsStreamed += chunk.length; streamStats.lastPingTime = Date.now();
-              // Send regular text chunks to the client as they arrive
-              sendToClient(ws, {
-                type: MessageType.PROVIDER_STREAM_CHUNK,
-                payload: {
-                  chunk,
-                  requestId: safeRequestId,
-                  provider,
-                  model
-                }
-              });
-            },
-            onError: (error: Error) => {
-              logger.error(
-                `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-                `Streaming error after tool: ${error.message}`
-              );
-            },
-            onComplete: (response: any) => {
-              // Calculate streaming metrics
-              const elapsedMs = Date.now() - streamStats.startTime;
-              const charsPerSecond = streamStats.totalCharsStreamed / (elapsedMs / 1000);
-              
-              logger.info(
-                `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-                `Stream complete: ${streamStats.chunkCount} chunks, ` +
-                `${streamStats.totalCharsStreamed} chars, ` +
-                `${elapsedMs}ms total time, ` +
-                `${charsPerSecond.toFixed(1)} chars/sec, ` +
-                `${response.tokensUsed} tokens used`
-              );
-
-              // Log tool call information if present
-              const toolCall = response.toolCall;
-              if (toolCall) {
-                logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Tool call detected in onComplete: ${toolCall.name}, args: ${JSON.stringify(toolCall.parameters)}`);
-
-                // Store context for multi-turn
-                const toolCalls: ToolCall[] = [toolCall].map(tc => ({
-                  id: tc.id,
-                  type: 'function',
-                  function: {
-                    name: tc.name,
-                    arguments: JSON.stringify(tc.parameters),
-                  },
-                }));
-
-                activeTurnContexts.set(safeRequestId, {
-                  provider, model, apiKey, temperature, maxTokens, systemMessage, tools, parallelToolCalls, stream, lastPrompt: String(prompt),
-                  messages: [
-                    ...messages,
-                    { role: 'assistant', content: response.text || '', tool_calls: toolCalls }
-                  ],
-                  createdAt: Date.now()
-                });
-                
+            onComplete: (response: LLMResponse) => {
+              if (response.toolCall) {
+                const formattedToolCall: ToolCall = { id: response.toolCall.id, type: 'function', function: { name: response.toolCall.name, arguments: JSON.stringify(response.toolCall.parameters) } };
+                activeTurnContexts.set(safeRequestId, { provider, ...llmRequestParams, stream: true, messages: [...messages, { role: 'assistant', content: response.reasoning || '', tool_calls: [formattedToolCall] }], createdAt: Date.now(), lastPrompt: response.reasoning || '' });
+                sendToClient(ws, { type: MessageType.TOOL_CALL, requestId: safeRequestId, payload: { toolCall: response.toolCall, reasoning: response.reasoning } });
+              } else {
+                sendToClient(ws, { type: MessageType.LLM_STREAM_END, requestId: safeRequestId });
               }
-
-              sendToClient(ws, {
-                type: MessageType.PROVIDER_STREAM_END,
-                payload: {
-                  success: response.success,
-                  text: response.text,
-                  tokensUsed: response.tokensUsed,
-                  toolCall: toolCall ? {
-                    id: toolCall.id,
-                    name: toolCall.name,
-                    args: toolCall.parameters
-                  } : undefined,
-                  requestId: safeRequestId,
-                  provider,
-                  model,
-                  waitingForToolCall: !!toolCall
-                }
-              });
-
-              // Clean up the context if we are not waiting for a tool call result
-              if (!toolCall) {
-                activeTurnContexts.delete(safeRequestId);
-              }
+              logUsage(userId, provider, model, response.tokensUsed);
             }
           });
-        } catch (error: any) {
-          logger.error(
-            `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-            `Error in streaming setup: ${error instanceof Error ? error.message : String(error)}`
-          );
-          sendToClient(ws, {
-            type: MessageType.PROVIDER_ERROR,
-            payload: {
-              error: `Streaming error: ${error instanceof Error ? error.message : String(error)}`,
-              code: 'STREAMING_ERROR',
-              requestId: safeRequestId,
-              provider,
-              model
-            }
-          });
-          activeTurnContexts.delete(safeRequestId);
+        } finally {
+          // Clean up the abort controller
+          abortControllers.get(safeConnectionId)?.delete(safeRequestId);
         }
       } else {
         // Handle non-streaming response with improved logging
-        const response: any = await gemini.sendRequest({
-          apiKey,
-          model,
-          messages: convertChatMessagesToGeminiFormat(messages),
-          temperature: temperature || 0.7,
-          maxTokens: maxTokens || 50000,
-          systemMessage,
-          tools: tools, // Pass raw tools, not pre-converted ones
-          chatMode: promptContext.chatMode,
-          thinkingConfig: {
-            includeThoughts: true,
-            thinkingBudget: 24576
-          }
+        logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Initiating non-streaming request to model ${model}`);
+        const response = await gemini.sendGeminiMessage({
+          ...llmRequestParams,
+          messages: convertChatMessagesToGeminiFormat(messages), // Convert messages
         });
 
-        logger.info(`Provider Response (Non-Stream) [${safeRequestId}]: ` +
-          `Success: ${response.success}, Tokens Used: ${response.tokensUsed}, Text Length: ${response.text?.length || 0}, ` +
-          `ToolCall: ${response.toolCall ? response.toolCall.name : 'none'}, WaitingForToolCall: ${!!response.toolCall}`);
-
-        const toolCallData = response.toolCall;
-
-        // Log tool call information if present
-        if (toolCallData) {
-          logger.info(
-            `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-            `Tool call detected in response: ${toolCallData.name}, ` +
-            `parameters: ${JSON.stringify(toolCallData.parameters)}`
-          );
-
-          const toolCalls: ToolCall[] = [toolCallData].map(tc => ({
-            id: tc.id,
-            type: 'function',
-            function: {
-              name: tc.name,
-              arguments: JSON.stringify(tc.parameters),
-            },
-          }));
-
-          // Store the conversation context
-          activeTurnContexts.set(safeRequestId, {
-            provider,
-            model,
-            apiKey,
-            temperature,
-            maxTokens,
-            systemMessage,
-            tools,
-            parallelToolCalls,
-            stream: false,
-            lastPrompt: String(prompt),
-            messages: [...(messages || []), { role: 'assistant', content: response.text || '', tool_calls: toolCalls }],
-            createdAt: Date.now()
-          });
-
-          sendToClient(ws, {
-            type: MessageType.PROVIDER_RESPONSE,
-            payload: {
-              text: response.text,
-              tokensUsed: response.tokensUsed,
-              success: true,
-              requestId: safeRequestId,
-              provider,
-              model,
-              toolCall: toolCallData ? {
-                id: toolCallData.id,
-                name: toolCallData.name,
-                args: toolCallData.parameters
-              } : undefined,
-              waitingForToolCall: !!toolCallData
-            }
-          });
-        } else {
-          logger.info(
-            `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] ` +
-            `No tool call detected in response`
-          );
-          sendToClient(ws, {
-            type: MessageType.PROVIDER_RESPONSE,
-            payload: {
-              text: response.text,
-              tokensUsed: response.tokensUsed,
-              success: true,
-              requestId: safeRequestId,
-              provider,
-              model,
-              toolCall: toolCallData ? {
-                id: toolCallData.id,
-                name: toolCallData.name,
-                args: toolCallData.parameters
-              } : undefined,
-              waitingForToolCall: !!toolCallData
-            }
-          });
-
-          // Clean up the context since we're done
-          activeTurnContexts.delete(safeRequestId);
-        }
-
-        // Log usage
-        if (userId && response.tokensUsed) {
-          const creditsUsed = response.creditsUsed || (response.tokensUsed / 1000);
+        if (response.success) {
+          if (response.toolCall) {
+            const formattedToolCall: ToolCall = { id: response.toolCall.id, type: 'function', function: { name: response.toolCall.name, arguments: JSON.stringify(response.toolCall.parameters) } };
+            activeTurnContexts.set(safeRequestId, { provider, ...llmRequestParams, stream: false, messages: [...messages, { role: 'assistant', content: response.reasoning || '', tool_calls: [formattedToolCall] }], createdAt: Date.now(), lastPrompt: response.reasoning || '' });
+            sendToClient(ws, { type: MessageType.TOOL_CALL, requestId: safeRequestId, payload: { toolCall: response.toolCall, reasoning: response.reasoning } });
+          } else {
+            sendToClient(ws, { type: MessageType.LLM_RESPONSE, requestId: safeRequestId, payload: { content: response.text } });
+          }
           logUsage(userId, provider, model, response.tokensUsed);
+        } else {
+          logger.error(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Non-streaming error: ${response.error}`);
+          sendToClient(ws, { type: MessageType.ERROR, requestId: safeRequestId, payload: { message: `LLM error: ${response.error}` } });
         }
       }
     } else if (provider === 'mistral') {
@@ -2827,6 +2225,30 @@ async function handleCodebaseClearIndexRequest(ws: WebSocketWithData, message: C
         workspaceId
       }
     });
+  }
+}
+
+/**
+ * Handles a request to cancel an ongoing LLM stream.
+ */
+function handleCancelRequest(ws: WebSocketWithData, message: ClientMessage): void {
+  const { requestId } = message;
+  const safeConnectionId = ws.connectionData.connectionId || 'unknown';
+
+  if (!requestId) {
+    logger.warn(`WS CANCEL [${safeConnectionId}] Received cancel request without a requestId.`);
+    return;
+  }
+  
+  const connectionAbortControllers = abortControllers.get(safeConnectionId);
+  if (connectionAbortControllers && connectionAbortControllers.has(requestId)) {
+    const abortController = connectionAbortControllers.get(requestId);
+    abortController?.abort(); // Send abort signal
+    connectionAbortControllers.delete(requestId); // Clean up
+    logger.info(`WS CANCEL [${safeConnectionId}][${requestId}] Aborted request.`);
+    sendToClient(ws, { type: MessageType.LLM_STREAM_END, requestId }); // Notify client stream has ended
+  } else {
+    logger.warn(`WS CANCEL [${safeConnectionId}][${requestId}] No active abort controller found for this request.`);
   }
 }
 
