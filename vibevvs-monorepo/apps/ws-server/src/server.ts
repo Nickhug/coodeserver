@@ -37,7 +37,37 @@ import {
 } from '@repo/db';
 import { LLMResponse } from '@repo/ai-providers';
 import { availableTools, chat_systemMessage, InternalToolInfo } from './prompts/prompts.js';
-import { convertToolsToGeminiFormat, convertChatMessagesToGeminiFormat } from './toolConverter.js';
+
+/**
+ * Convert ChatMessage array to GeminiMessage array format
+ */
+export function convertChatMessagesToGeminiFormat(messages: any[]): any[] {
+  return messages.map(message => {
+    if (message.role === 'user') {
+      return {
+        role: 'user',
+        parts: [{ text: message.content }]
+      };
+    } else if (message.role === 'assistant' || message.role === 'model') {
+      return {
+        role: 'model',
+        parts: [{ text: message.content }]
+      };
+    } else if (message.role === 'tool') {
+      // Tool responses are handled differently in Gemini
+      return {
+        role: 'model',
+        parts: [{ text: `Tool result: ${message.content}` }]
+      };
+    } else {
+      // Default to user role for unknown roles
+      return {
+        role: 'user',
+        parts: [{ text: message.content }]
+      };
+    }
+  });
+}
 
 /**
  * Defines the structure for the context passed from the client
@@ -1389,99 +1419,92 @@ async function handleFimRequest(ws: WebSocketWithData, message: ClientMessage): 
  * Handle provider request from client
  */
 async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
-  const { connectionId, userId, isAuthenticated } = ws.connectionData;
-  const requestId = (message.payload as any)?.requestId || uuidv4();
+  const { provider, model, messages, temperature, maxTokens, stream, tools: clientTools, systemMessage: clientSystemMessage, promptContext, requestId } = message.payload;
+  const { userId, connectionId } = ws.connectionData;
 
-  logger.info(`WS REQ [${connectionId}][${requestId}] Handling provider request`);
-
-  if (!isAuthenticated || !userId) {
-    logger.warn(`WS REQ [${connectionId}][${requestId}] Unauthenticated provider request, rejecting`);
-    sendToClient(ws, { type: MessageType.ERROR, payload: { error: 'Authentication required', message: 'You must be authenticated to use AI providers.', requestId } });
-    return;
+  if (!userId) {
+    throw new Error('User not authenticated');
   }
 
-  const {
-    provider,
-    model,
-    messages,
-    temperature,
-    maxTokens,
-    stream,
-    promptContext
-  } = message.payload as SendLLMMessagePayload;
-  const chatMode = promptContext.chatMode || 'agent';
+  // TODO: Securely fetch user-specific API keys instead of from process.env
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error(`API key for provider ${provider} not found on server.`);
+  }
 
-  logger.info(`WS REQ [${connectionId}][${requestId}] Request for provider: ${provider}, model: ${model}, chatMode: ${chatMode}`);
+  logger.info(`WS PROVIDER REQUEST [${connectionId}][${requestId}] User: ${userId}, Provider: ${provider}, Model: ${model}`);
 
-  try {
-    const systemMessage = chat_systemMessage({ ...promptContext, includeXMLToolDefinitions: provider !== 'gemini' });
-    const tools = availableTools(chatMode);
-    
-    // TODO: Securely fetch user-specific API keys instead of from process.env
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error(`API key for provider ${provider} not found on server.`);
-    }
+  // Generate system message and tools based on context
+  const systemMessage = chat_systemMessage(promptContext);
+  const tools = availableTools(promptContext.chatMode);
+  
+  const geminiMessages = convertChatMessagesToGeminiFormat(messages);
 
-    const onText = (chunk: string, reasoning?: string) => {
-      sendToClient(ws, { type: MessageType.LLM_MESSAGE_CHUNK, payload: { requestId, content: chunk, reasoning: reasoning || '' } });
+  if (provider === 'gemini') {
+    const onChunk = (text: string, functionCalls: any[] | undefined) => {
+      if (functionCalls) {
+        // This is a tool call chunk, handle it if necessary
+        // The main tool call handling is in onComplete
+      }
+      sendToClient(ws, { type: MessageType.PROVIDER_STREAM_CHUNK, payload: { requestId, chunk: text } });
     };
 
-    const onReasoning = (chunk: string) => {
-      sendToClient(ws, { type: MessageType.LLM_REASONING_CHUNK, payload: { requestId, content: chunk } });
+    const onReasoningChunk = (chunk: string) => {
+      sendToClient(ws, { type: MessageType.PROVIDER_REASONING_CHUNK, payload: { requestId, chunk } });
     };
 
     const onComplete = (response: LLMResponse) => {
-      logUsage(userId, provider, model, response.tokensUsed);
-      if (response.toolCall) {
-        logger.info(`WS TOOL CALL [${connectionId}][${requestId}] Tool call received: ${response.toolCall.name}`);
-        sendToClient(ws, {
-          type: MessageType.TOOL_CALL,
-          payload: { requestId, toolCall: { id: response.toolCall.id, name: response.toolCall.name, parameters: response.toolCall.parameters } }
-        });
-      }
+      logger.info(`GEMINI REQUEST [${requestId}] COMPLETED`);
       sendToClient(ws, {
-        type: MessageType.LLM_STREAM_END,
-        payload: { requestId, success: true, text: response.text, reasoning: response.reasoning }
+        type: MessageType.PROVIDER_STREAM_END,
+        payload: {
+          requestId: requestId,
+          success: response.success ?? true,
+          text: response.text,
+          tokensUsed: response.tokensUsed ?? 0,
+          error: response.error,
+          reasoning: response.reasoning,
+          toolCall: response.toolCall,
+          waitingForToolCall: response.waitingForToolCall
+        }
       });
+      activeTurnContexts.delete(requestId);
     };
 
     const onError = (error: Error) => {
-      logger.error(`WS ERROR [${connectionId}][${requestId}] LLM provider error:`, error);
-      sendToClient(ws, { type: MessageType.ERROR, payload: { requestId, error: error.name, message: error.message } });
+      logger.error(`GEMINI REQUEST [${requestId}] FAILED: ${error.message}`, error);
+      sendToClient(ws, {
+        type: MessageType.PROVIDER_ERROR,
+        payload: {
+          requestId: requestId,
+          error: error.name,
+          message: error.message
+        }
+      });
+      activeTurnContexts.delete(requestId);
     };
 
-    sendToClient(ws, { type: MessageType.LLM_STREAM_START, payload: { requestId } });
-
-    if (provider === 'gemini') {
-      logger.info(`WS GEMINI [${connectionId}][${requestId}] System Message Length: ${systemMessage.length}`);
-      logger.info(`WS GEMINI [${connectionId}][${requestId}] Available Tools: ${tools.map(t => t.name).join(', ')}`);
-      logger.info(`WS GEMINI [${connectionId}][${requestId}] Message History Count: ${messages.length}`);
-      
-      gemini.sendStreamingRequest(
-        {
-          apiKey,
-          model,
-          systemMessage,
-          messages: convertChatMessagesToGeminiFormat(messages),
-          tools: tools,
-          temperature,
-          maxTokens
-        },
-        {
-          onChunk: onText,
-          onComplete,
-          onError,
-          onReasoningChunk: onReasoning
-        }
-      );
-    } else {
-      throw new Error(`Unsupported provider: ${provider}`);
+    try {
+      await gemini.streamGeminiMessage({
+        apiKey,
+        model,
+        messages: geminiMessages,
+        systemMessage,
+        temperature,
+        maxTokens: maxTokens ?? 2048,
+        tools,
+        onChunk,
+        onReasoningChunk,
+        onComplete,
+        onError
+      });
+    } catch (error) {
+      logger.error(`Error calling gemini.streamGeminiMessage for request ${requestId}:`, error);
+      onError(error as Error);
     }
 
-  } catch (error) {
-    logger.error(`WS ERROR [${connectionId}][${requestId}] Error processing provider request:`, error);
-    sendToClient(ws, { type: MessageType.ERROR, payload: { requestId, error: (error as Error).name, message: (error as Error).message } });
+  } else {
+    throw new Error(`Unsupported provider: ${provider}`);
   }
 }
 

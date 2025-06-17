@@ -167,7 +167,7 @@ ${tripleTick[1]}`
 export type InternalToolInfo = {
 	name: string,
 	description: string,
-	params: {
+	parameters: {
 		[paramName: string]: { description: string }
 	},
 }
@@ -211,7 +211,7 @@ export const voidTools
 			name: string;
 			description: string;
 			// more params can be generated than exist here, but these params must be a subset of them
-			params: Partial<{ [paramName in keyof SnakeCaseKeys<ToolCallParams[T]>]: { description: string } }>
+			parameters: Partial<{ [paramName in keyof SnakeCaseKeys<ToolCallParams[T]>]: { description: string } }>
 		}
 	}
 	= {
@@ -220,7 +220,7 @@ export const voidTools
 		read_file: {
 			name: 'read_file',
 			description: `Returns full contents of a given file.`,
-			params: {
+			parameters: {
 				...uriParam('file'),
 				start_line: { description: 'Optional. Do NOT fill this field in unless you were specifically given exact line numbers to search. Defaults to the beginning of the file.' },
 				end_line: { description: 'Optional. Do NOT fill this field in unless you were specifically given exact line numbers to search. Defaults to the end of the file.' },
@@ -231,7 +231,7 @@ export const voidTools
 		ls_dir: {
 			name: 'ls_dir',
 			description: `Lists all files and folders in the given URI.`,
-			params: {
+			parameters: {
 				uri: { description: `Optional. The FULL path to the ${'folder'}. Leave this as empty or "" to search all folders.` },
 				...paginationParam,
 			},
@@ -240,7 +240,7 @@ export const voidTools
 		get_dir_tree: {
 			name: 'get_dir_tree',
 			description: `This is a very effective way to learn about the user's codebase. Returns a tree diagram of all the files and folders in the given folder. `,
-			params: {
+			parameters: {
 				...uriParam('folder')
 			}
 		},
@@ -252,7 +252,7 @@ export const voidTools
 		search_pathnames_only: {
 			name: 'search_pathnames_only',
 			description: `Returns all pathnames that match a given query (searches ONLY file names). You should use this when looking for a file with a specific name or path.`,
-			params: {
+			parameters: {
 				query: { description: `Your query for the search.` },
 				include_pattern: { description: 'Optional. Only fill this in if you need to limit your search because there were too many results.' },
 				...paginationParam,
@@ -262,7 +262,7 @@ export const voidTools
 		search_codebase: {
 			name: 'search_codebase',
 			description: `Search Codebase - Semantically search the entire codebase for code that matches your query. This tool uses AI-powered semantic search to find relevant code snippets, functions, classes, and other code elements based on meaning rather than exact text matches. Use this tool when the user asks to search the codebase, find code related to a concept or functionality, or when you need to explore what's in the codebase. This is the primary tool for codebase exploration and discovery.`,
-			params: {
+			parameters: {
 				query: { description: `Your semantic search query. Describe what you're looking for in natural language (e.g., "authentication logic", "database connection", "error handling for file uploads", "anything", "all functions").` },
 				limit: { description: 'Optional. Maximum number of results to return. Default is 10, max is 50.' },
 				file_types: { description: 'Optional. Filter by file extensions (e.g., "ts,tsx,js,jsx" or "py" or "java,kt").'},
@@ -274,7 +274,7 @@ export const voidTools
 		search_for_files: {
 			name: 'search_for_files',
 			description: `Returns all files that contain the given search string. ONLY searches file contents. ONLY searches the current workspace.`,
-			params: {
+			parameters: {
 				search_str: { description: 'The string to search for in file contents.' },
 				...paginationParam,
 			},
@@ -283,7 +283,7 @@ export const voidTools
 		search_in_file: {
 			name: 'search_in_file',
 			description: `Searches for a query string within a specific file and returns matching lines with context.`,
-			params: {
+			parameters: {
 				...uriParam('file'),
 				query: { description: 'The search query to find within the file.' },
 				...paginationParam,
@@ -293,7 +293,7 @@ export const voidTools
 		read_lint_errors: {
 			name: 'read_lint_errors',
 			description: `Returns linting errors for the given file or all files in the workspace.`,
-			params: {
+			parameters: {
 				uri: { description: 'Optional. The FULL path to the file. Leave empty to get errors for all files.' },
 			},
 		},
@@ -302,7 +302,7 @@ export const voidTools
 		edit_file: {
 			name: 'edit_file',
 			description: `Edits a file with one or more SEARCH/REPLACE blocks. This tool is the same as rewrite_file and will soon be deprecated.`,
-			params: {
+			parameters: {
 				...uriParam('file'),
 				search_replace_blocks: { description: replaceTool_description },
 			},
@@ -311,7 +311,7 @@ export const voidTools
 		rewrite_file: {
 			name: 'rewrite_file',
 			description: `Edits a file, deleting all the old contents and replacing them with your new contents. Use this tool if you want to edit a file you just created.`,
-			params: {
+			parameters: {
 				...uriParam('file'),
 				new_content: { description: `The new contents of the file. Must be a string.` }
 			},
@@ -321,7 +321,7 @@ export const voidTools
 		create_file_or_folder: {
 			name: 'create_file_or_folder',
 			description: `Creates a new file or folder with the given contents.`,
-			params: {
+			parameters: {
 				...uriParam('file'),
 				content: { description: `The contents of the new file or folder.` }
 			},
@@ -330,7 +330,7 @@ export const voidTools
 		delete_file_or_folder: {
 			name: 'delete_file_or_folder',
 			description: `Deletes a file or folder.`,
-			params: {
+			parameters: {
 				...uriParam('file')
 			}
 		},
@@ -340,7 +340,7 @@ export const voidTools
 		run_command: {
 			name: 'run_command',
 			description: `Run Command - Use this tool to execute terminal commands. ${terminalDescHelper}`,
-			params: {
+			parameters: {
 				command: { description: `The command to run.` },
 				cwd: { description: cwdHelper },
 				timeout: { description: 'Optional. The max number of seconds to run the command for. Defaults to 5 seconds.' },
@@ -350,7 +350,7 @@ export const voidTools
 		run_persistent_command: {
 			name: 'run_persistent_command',
 			description: `Start a command in the background, but do NOT wait for it to finish. ${terminalDescHelper}`,
-			params: {
+			parameters: {
 				command: { description: `The command to run.` },
 				cwd: { description: cwdHelper },
 			},
@@ -360,14 +360,14 @@ export const voidTools
 		open_persistent_terminal: {
 			name: 'open_persistent_terminal',
 			description: `Opens a persistent terminal.`,
-			params: {
+			parameters: {
 			},
 		},
 
 		kill_persistent_terminal: {
 			name: 'kill_persistent_terminal',
 			description: `Kills a persistent terminal.`,
-			params: {
+			parameters: {
 				terminal_id: { description: `The ID of the terminal to kill.` }
 			}
 		},
@@ -396,7 +396,7 @@ export const voidTools
 
 export type ToolName = keyof ToolResultType
 
-type ToolParamNameOfTool<T extends ToolName> = keyof (typeof voidTools)[T]['params']
+type ToolParamNameOfTool<T extends ToolName> = keyof (typeof voidTools)[T]['parameters']
 export type ToolParamName = { [T in ToolName]: ToolParamNameOfTool<T> }[ToolName]
 
 
@@ -419,7 +419,7 @@ export const availableTools = (chatMode: ChatMode) => {
 
 const toolCallDefinitionsXMLString = (tools: InternalToolInfo[]) => {
 	return tools.map(tool => {
-		const params = Object.entries(tool.params).map(([name, { description }]) => `<parameter>\n<name>${name}</name>\n<description>${description}</description>\n</parameter>`).join('\n');
+		const params = Object.entries(tool.parameters).map(([name, { description }]) => `<parameter>\n<name>${name}</name>\n<description>${description}</description>\n</parameter>`).join('\n');
 		return `<tool_definition>\n<name>${tool.name}</name>\n<description>${tool.description}</description>\n<parameters>\n${params}\n</parameters>\n</tool_definition>`;
 	}).join('\n\n');
 };

@@ -10,15 +10,21 @@ export * from './gemini';
 // Common interfaces for LLM responses
 export interface LLMResponse {
   text: string;
-  tokensUsed: number;
+  tokensUsed?: number;
   creditsUsed?: number;
-  success: boolean;
+  success?: boolean;
   error?: string;
   generatedText?: string;
   toolCall?: {
     name: string;
     parameters: Record<string, unknown>;
     id: string;
+  };
+  functionCalls?: any[];
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
   };
   waitingForToolCall?: boolean;
   rawResponse?: any; // Optional field for the raw response from the provider
@@ -155,6 +161,7 @@ export async function sendLLMRequest(params: LLMRequestParams): Promise<LLMRespo
       text: '',
       tokensUsed: 0,
       success: false,
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       error: `No API key provided for ${provider}`,
     };
   }
@@ -167,7 +174,7 @@ export async function sendLLMRequest(params: LLMRequestParams): Promise<LLMRespo
       case 'gemini':
         // Import here to avoid circular dependencies
         const gemini = await import('./gemini');
-        return await gemini.sendRequest({
+        return await gemini.sendGeminiMessage({
           apiKey,
           model,
           messages: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -182,6 +189,7 @@ export async function sendLLMRequest(params: LLMRequestParams): Promise<LLMRespo
           text: '',
           tokensUsed: 0,
           success: false,
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
           error: `Unsupported provider: ${provider}`,
         };
     }
@@ -191,6 +199,7 @@ export async function sendLLMRequest(params: LLMRequestParams): Promise<LLMRespo
       text: '',
       tokensUsed: 0,
       success: false,
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       error: error instanceof Error ? error.message : String(error),
     };
   }
