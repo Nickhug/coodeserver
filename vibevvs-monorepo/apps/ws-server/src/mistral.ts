@@ -623,7 +623,14 @@ export async function listModels(apiKey: string): Promise<any[]> {
     });
 
     logger.info(`Successfully fetched ${availableModels.length} Mistral models from API`);
-    return availableModels;
+    
+    // Filter to only include the desired models
+    const filteredModels = availableModels.filter(model => 
+      model.id === 'codestral-latest' || model.id === 'mistral-medium-latest'
+    );
+
+    logger.info(`Filtered down to ${filteredModels.length} Mistral models`);
+    return filteredModels;
 
   } catch (error) {
     logger.error(`Error fetching Mistral models: ${error instanceof Error ? error.message : String(error)}`);

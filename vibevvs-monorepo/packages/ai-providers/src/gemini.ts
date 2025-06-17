@@ -293,15 +293,29 @@ function getFallbackGeminiModels(): Array<{
   maxOutputTokens: number;
   features: string[];
 }> {
-  return Object.entries(getModelConfig('')).map(([id, config]) => ({
-    id,
-    name: id,
-    provider: 'Google',
-    available: true,
-    contextWindow: config.contextWindow,
-    maxOutputTokens: config.maxOutputTokens,
-    features: ['chat', 'tools'],
-  }));
+  const modelConfigMap: Record<GeminiModelName, GeminiModelConfig> = {
+    'gemini-2.5-flash-preview-04-17': { contextWindow: 1048576, maxOutputTokens: 65536, tokenMultiplier: 1.0 },
+    'gemini-2.5-pro-preview-05-06': { contextWindow: 2097152, maxOutputTokens: 65536, tokenMultiplier: 1.0 },
+    'gemini-2.0-flash': { contextWindow: 128000, maxOutputTokens: 50000, tokenMultiplier: 1.0 },
+    'gemini-1.5-flash': { contextWindow: 128000, maxOutputTokens: 50000, tokenMultiplier: 1.0 },
+    'gemini-1.5-pro': { contextWindow: 1000000, maxOutputTokens: 50000, tokenMultiplier: 1.0 },
+    'gemini-1.5-flash-8b': { contextWindow: 128000, maxOutputTokens: 50000, tokenMultiplier: 1.0 },
+    'gemini-pro': { contextWindow: 30720, maxOutputTokens: 50000, tokenMultiplier: 1.0 },
+    'gemini-pro-vision': { contextWindow: 16385, maxOutputTokens: 50000, tokenMultiplier: 1.0 },
+  };
+  
+  return Object.keys(modelConfigMap).map(id => {
+    const config = modelConfigMap[id as GeminiModelName];
+    return {
+      id,
+      name: id,
+      provider: 'Google',
+      available: true,
+      contextWindow: config.contextWindow,
+      maxOutputTokens: config.maxOutputTokens,
+      features: ['chat', 'tools'],
+    }
+  });
 }
 
 /**
