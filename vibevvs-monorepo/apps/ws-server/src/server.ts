@@ -1554,8 +1554,21 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
   logger.info(`WS PROVIDER REQUEST [${connectionId}][${requestId}] User: ${userId}, Provider: ${provider}, Model: ${model}`);
 
   // Generate system message and tools based on context
-  const systemMessage = chat_systemMessage(promptContext);
-  const tools = availableTools(promptContext.chatMode);
+  // Provide default promptContext if not provided by client
+  const defaultPromptContext: PromptContext = {
+    workspaceFolders: [],
+    directoryStr: '',
+    openedURIs: [],
+    activeURI: undefined,
+    persistentTerminalIDs: [],
+    chatMode: 'normal',
+    includeXMLToolDefinitions: false,
+    os: 'unknown'
+  };
+  
+  const finalPromptContext = promptContext || defaultPromptContext;
+  const systemMessage = chat_systemMessage(finalPromptContext);
+  const tools = availableTools(finalPromptContext.chatMode);
   
   const geminiMessages = convertChatMessagesToGeminiFormat(messages);
 
