@@ -440,6 +440,10 @@ async function handleIncomingMessage(ws: WebSocketWithData, messageStr: string):
         await handleProviderModels(ws, message);
         break;
 
+      case MessageType.GET_SERVER_MODELS:
+        await handleGetServerModels(ws, message);
+        break;
+
       case MessageType.SEND_LLM_MESSAGE:
         if (!isAuthenticated) {
           sendToClient(ws, { type: MessageType.AUTH_FAILURE, requestId });
@@ -1124,6 +1128,121 @@ async function handleProviderList(ws: WebSocketWithData): Promise<void> {
 }
 
 /**
+ * Handle get server models request - returns all available models from all providers
+ */
+async function handleGetServerModels(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
+  if (message.type !== MessageType.GET_SERVER_MODELS) {
+    logger.error('Invalid message type passed to handleGetServerModels');
+    return;
+  }
+
+  try {
+    const allModels: any[] = [];
+
+    // Collect models from all available providers
+    const providers = ['gemini', 'mistral', 'openai', 'groq'];
+    
+    for (const provider of providers) {
+      let models: any[] = [];
+      let available = false;
+
+      switch (provider) {
+        case 'gemini':
+          if (config.geminiApiKey) {
+            available = true;
+            models = await gemini.listModels(config.geminiApiKey);
+          }
+          break;
+
+        case 'mistral':
+          if (config.mistralApiKey) {
+            available = true;
+            models = await mistral.listModels(config.mistralApiKey);
+          }
+          break;
+
+        case 'openai':
+          if (config.openaiApiKey) {
+            available = true;
+            // Static model list for OpenAI for now
+            models = [
+              {
+                id: 'gpt-4o',
+                name: 'GPT-4o',
+                provider: 'openai',
+                available: true,
+                contextWindow: 128000,
+                maxOutputTokens: 4096,
+                features: ['streaming', 'toolCalls']
+              },
+              {
+                id: 'gpt-4-turbo',
+                name: 'GPT-4 Turbo',
+                provider: 'openai',
+                available: true,
+                contextWindow: 128000,
+                maxOutputTokens: 4096,
+                features: ['streaming', 'toolCalls']
+              }
+            ];
+          }
+          break;
+
+        case 'groq':
+          if (config.groqApiKey) {
+            available = true;
+            // Static model list for Groq for now
+            models = [
+              {
+                id: 'llama3-8b-8192',
+                name: 'Llama-3 8B',
+                provider: 'groq',
+                available: true,
+                contextWindow: 8192,
+                maxOutputTokens: 4096,
+                features: ['streaming']
+              }
+            ];
+          }
+          break;
+      }
+
+      if (available && models.length > 0) {
+        // Add provider name and mark as server models
+        const providerModels = models.map(model => ({
+          ...model,
+          providerName: provider,
+          modelName: model.id,
+          capabilities: model.features || []
+        }));
+        allModels.push(...providerModels);
+      }
+    }
+
+    logger.info(`Sending ${allModels.length} server models from ${providers.length} providers`);
+
+    // Send server models list
+    sendToClient(ws, {
+      type: MessageType.SERVER_MODELS_LIST,
+      payload: {
+        models: allModels,
+        totalProviders: providers.length
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error getting server models:', error);
+    sendToClient(ws, {
+      type: MessageType.ERROR,
+      payload: {
+        error: 'Failed to get server models',
+        code: 'SERVER_MODELS_ERROR'
+      }
+    });
+  }
+}
+
+/**
  * Handle provider models request
  */
 async function handleProviderModels(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
@@ -1440,7 +1559,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
   
   const geminiMessages = convertChatMessagesToGeminiFormat(messages);
 
-  if (provider === 'gemini') {
+    if (provider === 'gemini') {
     const onChunk = (text: string, functionCalls: any[] | undefined) => {
       if (functionCalls) {
         // This is a tool call chunk, handle it if necessary
@@ -1455,12 +1574,12 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
 
     const onComplete = (response: LLMResponse) => {
       logger.info(`GEMINI REQUEST [${requestId}] COMPLETED`);
-      sendToClient(ws, {
-        type: MessageType.PROVIDER_STREAM_END,
-        payload: {
+              sendToClient(ws, {
+                type: MessageType.PROVIDER_STREAM_END,
+                payload: {
           requestId: requestId,
           success: response.success ?? true,
-          text: response.text,
+                  text: response.text,
           tokensUsed: response.tokensUsed ?? 0,
           error: response.error,
           reasoning: response.reasoning,
@@ -1473,9 +1592,9 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
 
     const onError = (error: Error) => {
       logger.error(`GEMINI REQUEST [${requestId}] FAILED: ${error.message}`, error);
-      sendToClient(ws, {
-        type: MessageType.PROVIDER_ERROR,
-        payload: {
+          sendToClient(ws, {
+            type: MessageType.PROVIDER_ERROR,
+            payload: {
           requestId: requestId,
           error: error.name,
           message: error.message
@@ -1486,24 +1605,24 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
 
     try {
       await gemini.streamGeminiMessage({
-        apiKey,
+              apiKey,
         model,
         messages: geminiMessages,
-        systemMessage,
+                    systemMessage,
         temperature,
         maxTokens: maxTokens ?? 2048,
-        tools,
+                    tools,
         onChunk,
         onReasoningChunk,
         onComplete,
         onError
       });
-    } catch (error) {
+        } catch (error) {
       logger.error(`Error calling gemini.streamGeminiMessage for request ${requestId}:`, error);
       onError(error as Error);
-    }
+        }
 
-  } else {
+    } else {
     throw new Error(`Unsupported provider: ${provider}`);
   }
 }

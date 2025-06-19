@@ -253,7 +253,7 @@ export async function streamGeminiMessage(params: {
         totalTokens: 0,
       },
       tokensUsed: 0,
-      success: false,
+        success: false,
       error: error.message,
     };
     if (finalResponse) {
@@ -376,7 +376,7 @@ export async function generateBatchEmbeddings(params: {
   const { apiKey, contents, model = 'text-embedding-004', batchSize = 100 } = params;
   const genAI = new GoogleGenerativeAI(apiKey);
   const embeddingModel = genAI.getGenerativeModel({ model });
-
+  
   const allEmbeddings: Array<{
     id: string;
     embedding: number[];
@@ -384,7 +384,7 @@ export async function generateBatchEmbeddings(params: {
     error?: string;
   }> = [];
   let totalTokensUsed = 0;
-
+  
   for (let i = 0; i < contents.length; i += batchSize) {
     const batch = contents.slice(i, i + batchSize);
     const batchContents = batch.map(item => item.content);
@@ -404,7 +404,7 @@ export async function generateBatchEmbeddings(params: {
           tokensUsed: tokens,
         });
       });
-    } catch (error) {
+      } catch (error) {
       logger.error(`Error in Gemini batch embedding request for batch starting at index ${i}:`, error);
       batch.forEach(item => {
         allEmbeddings.push({
@@ -413,10 +413,10 @@ export async function generateBatchEmbeddings(params: {
           tokensUsed: 0,
           error: error instanceof Error ? error.message : String(error),
         });
-      });
+        });
+      }
     }
-  }
-
+    
   return { embeddings: allEmbeddings, totalTokensUsed, model };
 }
 

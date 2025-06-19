@@ -29,6 +29,8 @@ export enum MessageType {
   // Provider discovery messages
   PROVIDER_LIST = 'provider_list',
   PROVIDER_MODELS = 'provider_models',
+  GET_SERVER_MODELS = 'get_server_models',
+  SERVER_MODELS_LIST = 'server_models_list',
 
   // Provider interaction messages
   PROVIDER_REQUEST = 'provider_request',
