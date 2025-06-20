@@ -149,7 +149,14 @@ export async function sendGeminiMessage(params: SendGeminiRequestParams): Promis
 
     return {
       text,
-      functionCalls: functionCalls,
+      tool_calls: functionCalls?.map((fc: any, index: number) => ({
+        id: `fc-${Date.now()}-${index}`,
+        type: 'function' as const,
+        function: {
+          name: fc.name,
+          arguments: JSON.stringify(fc.args || {}),
+        },
+      })),
       usage: {
         promptTokens: usageMetadata?.promptTokenCount ?? 0,
         completionTokens: usageMetadata?.candidatesTokenCount ?? 0,
@@ -157,14 +164,13 @@ export async function sendGeminiMessage(params: SendGeminiRequestParams): Promis
       },
       success: true,
       tokensUsed: totalTokens,
-      toolCall: functionCalls?.[0] ? { id: `fc-${Date.now()}`, name: functionCalls[0].name, parameters: functionCalls[0].args } : undefined,
       waitingForToolCall: !!functionCalls,
     };
   } catch (error) {
     logger.error('Error in Gemini SDK request:', error);
     return {
       text: '',
-      functionCalls: [],
+      tool_calls: [],
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       tokensUsed: 0,
       success: false,
@@ -230,7 +236,14 @@ export async function streamGeminiMessage(params: {
 
     finalResponse = {
       text: accumulatedText.trim(),
-      functionCalls: accumulatedFunctionCalls.length > 0 ? accumulatedFunctionCalls : undefined,
+      tool_calls: accumulatedFunctionCalls.length > 0 ? accumulatedFunctionCalls.map((fc: any, index: number) => ({
+        id: `fc-${Date.now()}-${index}`,
+        type: 'function' as const,
+        function: {
+          name: fc.name,
+          arguments: JSON.stringify(fc.args || {}),
+        },
+      })) : undefined,
       usage: {
         promptTokens: usageMetadata?.promptTokenCount ?? 0,
         completionTokens: usageMetadata?.candidatesTokenCount ?? 0,
@@ -238,7 +251,6 @@ export async function streamGeminiMessage(params: {
       },
       success: true,
       tokensUsed: totalTokens,
-      toolCall: accumulatedFunctionCalls?.[0] ? { id: `fc-${Date.now()}`, name: accumulatedFunctionCalls[0].name, parameters: accumulatedFunctionCalls[0].args } : undefined,
       waitingForToolCall: accumulatedFunctionCalls.length > 0,
     };
     onComplete(finalResponse);
@@ -253,12 +265,10 @@ export async function streamGeminiMessage(params: {
         totalTokens: 0,
       },
       tokensUsed: 0,
-        success: false,
+      success: false,
       error: error.message,
     };
-    if (finalResponse) {
-        onComplete(finalResponse);
-    }
+    onComplete(finalResponse);
   }
 }
 
