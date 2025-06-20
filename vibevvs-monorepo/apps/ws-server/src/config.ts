@@ -33,6 +33,11 @@ export const config = {
   geminiApiKey: process.env.GEMINI_API_KEY || '',
   groqApiKey: process.env.GROQ_API_KEY || '',
   mistralApiKey: process.env.MISTRAL_API_KEY || '',
+  openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
+  
+  // OpenRouter specific settings
+  openrouterSiteUrl: process.env.OPENROUTER_SITE_URL || 'https://coode.sh',
+  openrouterAppName: process.env.OPENROUTER_APP_NAME || 'COODE AI',
   
   // Pinecone Configuration
   pineconeApiKey: process.env.PINECONE_API_KEY || '',
@@ -94,6 +99,10 @@ export function validateConfig(): { isValid: boolean; errors: string[]; warnings
 
   if (config.defaultProvider === 'mistral' && !config.mistralApiKey) {
     errors.push('Mistral is set as the default provider but MISTRAL_API_KEY is not provided');
+  }
+
+  if (config.defaultProvider === 'openrouter' && !config.openrouterApiKey) {
+    errors.push('OpenRouter is set as the default provider but OPENROUTER_API_KEY is not provided');
   }
 
   // Pinecone validation

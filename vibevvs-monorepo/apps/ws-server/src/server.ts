@@ -26,6 +26,7 @@ import { deleteVectors as pineconeDeleteVectors } from './pinecone-service';
 import * as documentProcessingService from './document-processing-service';
 import * as gemini from '@repo/ai-providers';
 import * as mistral from './mistral';
+import * as openrouter from './openrouter';
 import type { ToolCall as MistralToolCall } from '@mistralai/mistralai/models/components'; // For Mistral tool calls
 import {
   getUserByClerkId,
@@ -1104,6 +1105,11 @@ async function handleProviderList(ws: WebSocketWithData): Promise<void> {
         id: 'mistral',
         name: 'Mistral',
         available: Boolean(config.mistralApiKey),
+      },
+      {
+        id: 'openrouter',
+        name: 'OpenRouter',
+        available: Boolean(config.openrouterApiKey),
       }
     ];
 
@@ -1140,7 +1146,7 @@ async function handleGetServerModels(ws: WebSocketWithData, message: ClientMessa
     const allModels: any[] = [];
 
     // Collect models from all available providers
-    const providers = ['gemini', 'mistral', 'openai', 'groq'];
+    const providers = ['gemini', 'mistral', 'openai', 'groq', 'openrouter'];
     
     for (const provider of providers) {
       let models: any[] = [];
@@ -1203,6 +1209,13 @@ async function handleGetServerModels(ws: WebSocketWithData, message: ClientMessa
                 features: ['streaming']
               }
             ];
+          }
+          break;
+
+        case 'openrouter':
+          if (config.openrouterApiKey) {
+            available = true;
+            models = await openrouter.listModels(config.openrouterApiKey);
           }
           break;
       }
@@ -1342,6 +1355,13 @@ async function handleProviderModels(ws: WebSocketWithData, message: ClientMessag
         if (config.mistralApiKey) {
           available = true;
           models = await mistral.listModels(config.mistralApiKey);
+        }
+        break;
+
+      case 'openrouter':
+        if (config.openrouterApiKey) {
+            available = true;
+            models = await openrouter.listModels(config.openrouterApiKey);
         }
         break;
 
@@ -1545,98 +1565,70 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
     throw new Error('User not authenticated');
   }
 
-  // TODO: Securely fetch user-specific API keys instead of from process.env
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error(`API key for provider ${provider} not found on server.`);
-  }
-
   logger.info(`WS PROVIDER REQUEST [${connectionId}][${requestId}] User: ${userId}, Provider: ${provider}, Model: ${model}`);
 
-  // Generate system message and tools based on context
-  // Provide default promptContext if not provided by client
-  const defaultPromptContext: PromptContext = {
-    workspaceFolders: [],
-    directoryStr: '',
-    openedURIs: [],
-    activeURI: undefined,
-    persistentTerminalIDs: [],
-    chatMode: 'normal',
-    includeXMLToolDefinitions: false,
-    os: 'unknown'
+  const onChunk = (text: string, functionCalls?: any[]) => {
+    sendToClient(ws, { type: MessageType.PROVIDER_STREAM_CHUNK, payload: { requestId, chunk: text, functionCalls } });
   };
-  
-  const finalPromptContext = promptContext || defaultPromptContext;
-  const systemMessage = chat_systemMessage(finalPromptContext);
-  const tools = availableTools(finalPromptContext.chatMode);
-  
-  const geminiMessages = convertChatMessagesToGeminiFormat(messages);
 
-    if (provider === 'gemini') {
-    const onChunk = (text: string, functionCalls: any[] | undefined) => {
-      if (functionCalls) {
-        // This is a tool call chunk, handle it if necessary
-        // The main tool call handling is in onComplete
+  const onComplete = (response: LLMResponse) => {
+    logger.info(`PROVIDER REQUEST [${requestId}] COMPLETED for provider ${provider}`);
+    sendToClient(ws, {
+      type: MessageType.PROVIDER_STREAM_END,
+      payload: {
+        requestId: requestId,
+        success: response.success ?? true,
+        text: response.text,
+        tokensUsed: response.usage?.totalTokens ?? 0,
+        error: response.error,
+        tool_calls: response.tool_calls,
+        finish_reason: response.finish_reason,
       }
-      sendToClient(ws, { type: MessageType.PROVIDER_STREAM_CHUNK, payload: { requestId, chunk: text } });
-    };
+    });
+    activeTurnContexts.delete(requestId);
+  };
 
-    const onReasoningChunk = (chunk: string) => {
-      sendToClient(ws, { type: MessageType.PROVIDER_REASONING_CHUNK, payload: { requestId, chunk } });
-    };
+  const onError = (error: Error) => {
+    logger.error(`PROVIDER REQUEST [${requestId}] FAILED for provider ${provider}: ${error.message}`, error);
+    sendToClient(ws, {
+      type: MessageType.PROVIDER_ERROR,
+      payload: {
+        requestId: requestId,
+        error: error.name,
+        message: error.message
+      }
+    });
+    activeTurnContexts.delete(requestId);
+  };
 
-    const onComplete = (response: LLMResponse) => {
-      logger.info(`GEMINI REQUEST [${requestId}] COMPLETED`);
-              sendToClient(ws, {
-                type: MessageType.PROVIDER_STREAM_END,
-                payload: {
-          requestId: requestId,
-          success: response.success ?? true,
-                  text: response.text,
-          tokensUsed: response.tokensUsed ?? 0,
-          error: response.error,
-          reasoning: response.reasoning,
-          toolCall: response.toolCall,
-          waitingForToolCall: response.waitingForToolCall
-        }
-      });
-      activeTurnContexts.delete(requestId);
-    };
-
-    const onError = (error: Error) => {
-      logger.error(`GEMINI REQUEST [${requestId}] FAILED: ${error.message}`, error);
-          sendToClient(ws, {
-            type: MessageType.PROVIDER_ERROR,
-            payload: {
-          requestId: requestId,
-          error: error.name,
-          message: error.message
-        }
-      });
-      activeTurnContexts.delete(requestId);
-    };
-
-    try {
-      await gemini.streamGeminiMessage({
-              apiKey,
+  switch (provider) {
+    case 'openrouter':
+      if (!config.openrouterApiKey) {
+        return onError(new Error('OpenRouter API key not configured.'));
+      }
+      await openrouter.processChat({
+        apiKey: config.openrouterApiKey,
         model,
-        messages: geminiMessages,
-                    systemMessage,
+        messages,
         temperature,
-        maxTokens: maxTokens ?? 2048,
-                    tools,
-        onChunk,
-        onReasoningChunk,
+        maxTokens,
+        stream,
+        tools: clientTools,
+        onStream: onChunk,
         onComplete,
-        onError
+        onError,
+        siteUrl: config.openrouterSiteUrl,
+        appName: config.openrouterAppName,
       });
-        } catch (error) {
-      logger.error(`Error calling gemini.streamGeminiMessage for request ${requestId}:`, error);
-      onError(error as Error);
-        }
-
-    } else {
-    throw new Error(`Unsupported provider: ${provider}`);
+      break;
+    case 'gemini':
+        // TODO: Refactor gemini to match the processChat interface
+      break;
+    case 'mistral':
+        // TODO: Refactor mistral to match the processChat interface
+        break;
+    default:
+      onError(new Error(`Unsupported provider: ${provider}`));
   }
 }
 
@@ -1776,16 +1768,12 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
               payload: {
                 success: response.success,
                 text: response.text,
-                tokensUsed: response.tokensUsed,
-                toolCall: response.toolCall ? {
-                  id: response.toolCall.id,
-                  name: response.toolCall.name,
-                  args: response.toolCall.parameters
-                } : undefined,
+                tokensUsed: response.usage?.totalTokens,
+                tool_calls: response.tool_calls,
                 requestId: safeRequestId,
                 provider,
                 model,
-                waitingForToolCall: !!response.toolCall
+                waitingForToolCall: !!response.tool_calls && response.tool_calls.length > 0
               }
             });
             activeTurnContexts.delete(safeRequestId);
@@ -2005,53 +1993,35 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
         type: MessageType.CODEBASE_SEARCH_RESPONSE,
         payload: {
           requestId,
-          results: [],
-          stats: {
-            vectorCount,
-            namespace: pineconeService2.getUserNamespace(userId, workspaceId)
-          }
+          results: [{ chunk: { id: 'stats', content: `Vector count: ${vectorCount}` } }],
+          error: null
         }
       });
       return;
     }
+    
+    logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Processing search request for user ${userId}: "${query}"`);
 
-    logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Processing search request for query: "${query}"`);
-
-    // Import embedding service
+    // Import services
     const embeddingService = await import('./embedding-service');
-
-    // Generate embedding for the query
-    const queryEmbeddingResult = await embeddingService.generateQueryEmbedding(query, userId);
-
-    if (queryEmbeddingResult.error || !queryEmbeddingResult.embedding || queryEmbeddingResult.embedding.length === 0) {
-      logger.error(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Failed to generate query embedding: ${queryEmbeddingResult.error}`);
-      sendToClient(ws, {
-        type: MessageType.CODEBASE_SEARCH_RESPONSE,
-        payload: {
-          requestId,
-          results: [],
-          error: queryEmbeddingResult.error || 'Failed to generate query embedding'
-        }
-      });
-      return;
-    }
-
-    // Import Pinecone service
     const pineconeService = await import('./pinecone-service');
 
-    // Perform hybrid search (vector + keyword) with workspace-specific namespace
-    const searchResults = await pineconeService.hybridSearch(
-      userId,
-      query,
-      queryEmbeddingResult.embedding,
-      {
-        limit: options?.limit || 10,
-        filters: options?.filters,
-        workspaceId: workspaceId // Pass the workspace ID to use the right namespace
-      }
-    );
+    // Generate query embedding
+    const { embedding, error: embeddingError } = await embeddingService.generateQueryEmbedding(query, userId);
 
-    logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Found ${searchResults.length} results`);
+    if (embeddingError) {
+      throw new Error(embeddingError);
+    }
+
+    // Perform search
+    const searchResults = await pineconeService.hybridSearch(userId, query, embedding, {
+      ...options,
+      workspaceId,
+    });
+    
+    // Log search results count
+    logger.info(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Found ${searchResults.length} results for query: "${query}"`);
+
 
     // Send response
     sendToClient(ws, {
@@ -2063,13 +2033,13 @@ async function handleCodebaseSearchRequest(ws: WebSocketWithData, message: Clien
     });
 
   } catch (error) {
-    logger.error(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Search error:`, error);
+    logger.error(`WS SEARCH [${ws.connectionData.connectionId}][${requestId}] Error processing search request:`, error);
     sendToClient(ws, {
       type: MessageType.CODEBASE_SEARCH_RESPONSE,
       payload: {
         requestId,
         results: [],
-        error: error instanceof Error ? error.message : 'Search failed'
+        error: error instanceof Error ? error.message : String(error)
       }
     });
   }

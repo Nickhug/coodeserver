@@ -2,6 +2,7 @@
  * AI Providers Package
  * Contains implementations for different AI providers (Gemini, OpenAI, etc.)
  */
+import { ToolCall } from '@repo/types';
 import logger from '@repo/logger';
 
 // Re-export provider implementations
@@ -15,12 +16,7 @@ export interface LLMResponse {
   success?: boolean;
   error?: string;
   generatedText?: string;
-  toolCall?: {
-    name: string;
-    parameters: Record<string, unknown>;
-    id: string;
-  };
-  functionCalls?: any[];
+  tool_calls?: ToolCall[];
   usage?: {
     promptTokens: number;
     completionTokens: number;
@@ -29,6 +25,7 @@ export interface LLMResponse {
   waitingForToolCall?: boolean;
   rawResponse?: any; // Optional field for the raw response from the provider
   reasoning?: string; // Optional field for reasoning/thought process leading to a tool call or final answer
+  finish_reason?: string;
 }
 
 // Message types
