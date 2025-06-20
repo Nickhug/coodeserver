@@ -1107,7 +1107,7 @@ async function handleProviderList(ws: WebSocketWithData): Promise<void> {
         available: Boolean(config.mistralApiKey),
       },
       {
-        id: 'openrouter',
+        id: 'openRouter',
         name: 'OpenRouter',
         available: Boolean(config.openrouterApiKey),
       },
@@ -1148,7 +1148,7 @@ async function handleGetServerModels(ws: WebSocketWithData, message: ClientMessa
       const formattedModels = openRouterModels.map((model: any) => ({
         id: model.id,
         name: model.name,
-        providerName: 'openrouter', // Important for the client
+        providerName: 'openRouter', // Important for the client
         modelName: model.id,
         type: 'server',
         available: true,
@@ -1219,6 +1219,7 @@ async function handleProviderModels(ws: WebSocketWithData, message: ClientMessag
         break;
 
       case 'openrouter':
+      case 'openRouter':
         if (config.openrouterApiKey) {
           available = true;
           models = await openrouter.listModels(config.openrouterApiKey);
@@ -1467,6 +1468,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
       'gemini': gemini.streamGeminiMessage,
       'mistral': mistral.processChat,
       'openrouter': openrouter.processChat,
+      'openRouter': openrouter.processChat,
     };
 
     const processChat = providerImplementations[provider];
@@ -1502,6 +1504,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
           });
           break;
         case 'openrouter':
+        case 'openRouter':
           if (!config.openrouterApiKey) {
             return onError(new Error('OpenRouter API key not configured.'));
           }
