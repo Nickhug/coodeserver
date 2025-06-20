@@ -1431,15 +1431,15 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
 
   try {
     const onStream = (text: string, toolCalls?: ToolCall[] | undefined) => {
-      sendToClient(ws, { type: MessageType.PROVIDER_STREAM_CHUNK, payload: { requestId: safeRequestId, chunk: text, functionCalls: toolCalls } });
+      sendToClient(ws, { type: MessageType.PROVIDER_STREAM_CHUNK, requestId: safeRequestId, payload: { chunk: text, functionCalls: toolCalls } });
     };
 
     const onComplete = (response: LLMResponse) => {
       logger.info(`PROVIDER REQUEST [${safeRequestId}] COMPLETED for provider ${provider}`);
       sendToClient(ws, {
         type: MessageType.PROVIDER_STREAM_END,
+        requestId: safeRequestId,
         payload: {
-          requestId: safeRequestId,
           success: response.success ?? true,
           text: response.text,
           tokensUsed: response.usage?.totalTokens ?? 0,
@@ -1455,8 +1455,8 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
       logger.error(`PROVIDER REQUEST [${safeRequestId}] FAILED for provider ${provider}: ${error.message}`, error);
       sendToClient(ws, {
         type: MessageType.PROVIDER_ERROR,
+        requestId: safeRequestId,
         payload: {
-          requestId: safeRequestId,
           error: error.name,
           message: error.message
         }
@@ -1524,7 +1524,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
     }
   } catch (error) {
     logger.error(`Error processing provider request:`, error);
-    sendToClient(ws, { type: MessageType.PROVIDER_ERROR, payload: { error: 'Failed to process provider request', code: 'PROVIDER_REQUEST_ERROR', requestId: safeRequestId } });
+    sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: safeRequestId, payload: { error: 'Failed to process provider request', code: 'PROVIDER_REQUEST_ERROR' } });
     activeTurnContexts.delete(safeRequestId);
   }
 }
