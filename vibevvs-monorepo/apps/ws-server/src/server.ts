@@ -1087,6 +1087,11 @@ async function handleProviderList(ws: WebSocketWithData): Promise<void> {
     // Determine available providers based on API keys
     const providers = [
       {
+        id: 'gemini',
+        name: 'Google Gemini',
+        available: Boolean(config.geminiApiKey),
+      },
+      {
         id: 'openai',
         name: 'OpenAI',
         available: Boolean(config.openaiApiKey),
@@ -1097,13 +1102,17 @@ async function handleProviderList(ws: WebSocketWithData): Promise<void> {
         available: Boolean(config.groqApiKey),
       },
       {
+        id: 'mistral',
+        name: 'Mistral',
+        available: Boolean(config.mistralApiKey),
+      },
+      {
         id: 'openrouter',
         name: 'OpenRouter',
         available: Boolean(config.openrouterApiKey),
       },
     ];
 
-    // Send provider list
     sendToClient(ws, {
       type: MessageType.PROVIDER_LIST,
       payload: {
@@ -1127,76 +1136,52 @@ async function handleProviderList(ws: WebSocketWithData): Promise<void> {
  * Handle get server models request - returns all available models from all providers
  */
 async function handleGetServerModels(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
-  if (message.type !== MessageType.GET_SERVER_MODELS) {
-    logger.error('Invalid message type passed to handleGetServerModels');
-    return;
-  }
+  const { requestId } = message;
 
   try {
     const allModels: any[] = [];
-
-    // Collect models from all available providers
-    const providers = ['openai', 'groq', 'openrouter'];
     
-    for (const provider of providers) {
-      let models: any[] = [];
-      let available = false;
+    if (config.openrouterApiKey) {
+      logger.info(`[${requestId}] Fetching models from OpenRouter...`);
+      const openRouterModels = await openrouter.listModels(config.openrouterApiKey);
+      
+      const formattedModels = openRouterModels.map((model: any) => ({
+        id: model.id,
+        name: model.name,
+        providerName: 'openrouter', // Important for the client
+        modelName: model.id,
+        type: 'server',
+        available: true,
+        contextWindow: model.context_length,
+        maxOutputTokens: model.top_provider?.max_completion_tokens,
+        features: ['streaming', 'toolCalls'] // Assuming standard features
+      }));
 
-      switch (provider) {
-        case 'openai':
-          if (config.openaiApiKey) {
-            available = true;
-            // Assuming an openAI.listModels function exists
-            // models = await openAI.listModels(config.openaiApiKey);
-          }
-          break;
-
-        case 'groq':
-          if (config.groqApiKey) {
-            available = true;
-            // Assuming a groq.listModels function exists
-            // models = await groq.listModels(config.groqApiKey);
-          }
-          break;
-
-        case 'openrouter':
-          if (config.openrouterApiKey) {
-            available = true;
-            models = await openrouter.listModels(config.openrouterApiKey);
-          }
-          break;
-      }
-
-      if (available && models.length > 0) {
-        // Add provider name and mark as server models
-        const providerModels = models.map(model => ({
-          ...model,
-          providerName: provider,
-          modelName: model.id,
-          capabilities: model.features || []
-        }));
-        allModels.push(...providerModels);
-      }
+      allModels.push(...formattedModels);
+      logger.info(`[${requestId}] Fetched ${formattedModels.length} models from OpenRouter.`);
+    } else {
+      logger.warn(`[${requestId}] OPENROUTER_API_KEY not set. Cannot fetch models.`);
     }
 
-    logger.info(`Sending ${allModels.length} server models from ${providers.length} providers`);
+    logger.info(`[${requestId}] Sending ${allModels.length} server models.`);
 
     // Send server models list
     sendToClient(ws, {
       type: MessageType.SERVER_MODELS_LIST,
       payload: {
         models: allModels,
-        totalProviders: providers.length
+        requestId: requestId
       }
     });
 
   } catch (error) {
-    logger.error('Error getting server models:', error);
+    logger.error(`[${requestId}] Error getting server models:`, error);
     sendToClient(ws, {
       type: MessageType.ERROR,
       payload: {
         error: 'Failed to get server models',
-        code: 'SERVER_MODELS_ERROR'
+        code: 'SERVER_MODELS_ERROR',
+        requestId: requestId,
       }
     });
   }
@@ -1479,6 +1464,8 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
     };
 
     const providerImplementations: Record<string, any> = {
+      'gemini': gemini.streamGeminiMessage,
+      'mistral': mistral.processChat,
       'openrouter': openrouter.processChat,
     };
 
@@ -1496,11 +1483,29 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
       };
 
       switch (provider) {
+        case 'gemini':
+          if (!config.geminiApiKey) {
+            return onError(new Error('Gemini API key not configured.'));
+          }
+          await processChat({
+            ...commonParams,
+            apiKey: config.geminiApiKey,
+          });
+          break;
+        case 'mistral':
+          if (!config.mistralApiKey) {
+            return onError(new Error('Mistral API key not configured.'));
+          }
+          await processChat({
+            ...commonParams,
+            apiKey: config.mistralApiKey,
+          });
+          break;
         case 'openrouter':
           if (!config.openrouterApiKey) {
             return onError(new Error('OpenRouter API key not configured.'));
           }
-          await openrouter.processChat({
+          await processChat({
             ...commonParams,
             apiKey: config.openrouterApiKey,
             siteUrl: config.openrouterSiteUrl,
