@@ -1087,11 +1087,6 @@ async function handleProviderList(ws: WebSocketWithData): Promise<void> {
     // Determine available providers based on API keys
     const providers = [
       {
-        id: 'gemini',
-        name: 'Google Gemini',
-        available: Boolean(config.geminiApiKey),
-      },
-      {
         id: 'openai',
         name: 'OpenAI',
         available: Boolean(config.openaiApiKey),
@@ -1102,15 +1097,10 @@ async function handleProviderList(ws: WebSocketWithData): Promise<void> {
         available: Boolean(config.groqApiKey),
       },
       {
-        id: 'mistral',
-        name: 'Mistral',
-        available: Boolean(config.mistralApiKey),
-      },
-      {
         id: 'openrouter',
         name: 'OpenRouter',
         available: Boolean(config.openrouterApiKey),
-      }
+      },
     ];
 
     // Send provider list
@@ -1146,69 +1136,26 @@ async function handleGetServerModels(ws: WebSocketWithData, message: ClientMessa
     const allModels: any[] = [];
 
     // Collect models from all available providers
-    const providers = ['gemini', 'mistral', 'openai', 'groq', 'openrouter'];
+    const providers = ['openai', 'groq', 'openrouter'];
     
     for (const provider of providers) {
       let models: any[] = [];
       let available = false;
 
       switch (provider) {
-        case 'gemini':
-          if (config.geminiApiKey) {
-            available = true;
-            models = await gemini.listModels(config.geminiApiKey);
-          }
-          break;
-
-        case 'mistral':
-          if (config.mistralApiKey) {
-            available = true;
-            models = await mistral.listModels(config.mistralApiKey);
-          }
-          break;
-
         case 'openai':
           if (config.openaiApiKey) {
             available = true;
-            // Static model list for OpenAI for now
-            models = [
-              {
-                id: 'gpt-4o',
-                name: 'GPT-4o',
-                provider: 'openai',
-                available: true,
-                contextWindow: 128000,
-                maxOutputTokens: 4096,
-                features: ['streaming', 'toolCalls']
-              },
-              {
-                id: 'gpt-4-turbo',
-                name: 'GPT-4 Turbo',
-                provider: 'openai',
-                available: true,
-                contextWindow: 128000,
-                maxOutputTokens: 4096,
-                features: ['streaming', 'toolCalls']
-              }
-            ];
+            // Assuming an openAI.listModels function exists
+            // models = await openAI.listModels(config.openaiApiKey);
           }
           break;
 
         case 'groq':
           if (config.groqApiKey) {
             available = true;
-            // Static model list for Groq for now
-            models = [
-              {
-                id: 'llama3-8b-8192',
-                name: 'Llama-3 8B',
-                provider: 'groq',
-                available: true,
-                contextWindow: 8192,
-                maxOutputTokens: 4096,
-                features: ['streaming']
-              }
-            ];
+            // Assuming a groq.listModels function exists
+            // models = await groq.listModels(config.groqApiKey);
           }
           break;
 
@@ -1272,96 +1219,24 @@ async function handleProviderModels(ws: WebSocketWithData, message: ClientMessag
 
     // Get models for the requested provider
     switch (provider) {
-      case 'gemini':
-        if (config.geminiApiKey) {
-          available = true;
-          models = await gemini.listModels(config.geminiApiKey);
-        }
-        break;
-
       case 'openai':
         if (config.openaiApiKey) {
           available = true;
-          // TODO: Implement dynamic model listing for OpenAI
-          models = [
-            {
-              id: 'gpt-4o',
-              name: 'GPT-4o',
-              provider: 'openai',
-              available: true,
-              contextWindow: 128000,
-              maxOutputTokens: 4096,
-              features: ['streaming', 'toolCalls']
-            },
-            {
-              id: 'gpt-4-turbo',
-              name: 'GPT-4 Turbo',
-              provider: 'openai',
-              available: true,
-              contextWindow: 128000,
-              maxOutputTokens: 4096,
-              features: ['streaming', 'toolCalls']
-            },
-            {
-              id: 'gpt-3.5-turbo',
-              name: 'GPT-3.5 Turbo',
-              provider: 'openai',
-              available: true,
-              contextWindow: 16385,
-              maxOutputTokens: 4096,
-              features: ['streaming', 'toolCalls']
-            }
-          ];
+          // models = await openAI.listModels(config.openaiApiKey);
         }
         break;
 
       case 'groq':
         if (config.groqApiKey) {
           available = true;
-          // TODO: Implement dynamic model listing for Groq
-          models = [
-            {
-              id: 'llama3-8b-8192',
-              name: 'Llama-3 8B',
-              provider: 'groq',
-              available: true,
-              contextWindow: 8192,
-              maxOutputTokens: 4096,
-              features: ['streaming']
-            },
-            {
-              id: 'llama3-70b-8192',
-              name: 'Llama-3 70B',
-              provider: 'groq',
-              available: true,
-              contextWindow: 8192,
-              maxOutputTokens: 4096,
-              features: ['streaming']
-            },
-            {
-              id: 'mixtral-8x7b-32768',
-              name: 'Mixtral 8x7B',
-              provider: 'groq',
-              available: true,
-              contextWindow: 32768,
-              maxOutputTokens: 4096,
-              features: ['streaming']
-            }
-          ];
-        }
-        break;
-
-      case 'mistral':
-        if (config.mistralApiKey) {
-          available = true;
-          models = await mistral.listModels(config.mistralApiKey);
+          // models = await groq.listModels(config.groqApiKey);
         }
         break;
 
       case 'openrouter':
         if (config.openrouterApiKey) {
-            available = true;
-            models = await openrouter.listModels(config.openrouterApiKey);
+          available = true;
+          models = await openrouter.listModels(config.openrouterApiKey);
         }
         break;
 
@@ -1558,77 +1433,91 @@ async function handleFimRequest(ws: WebSocketWithData, message: ClientMessage): 
  * Handle provider request from client
  */
 async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
-  const { provider, model, messages, temperature, maxTokens, stream, tools: clientTools, systemMessage: clientSystemMessage, promptContext, requestId } = message.payload;
+  const { provider, model, messages, temperature, maxTokens, stream, tools, toolChoice } = message.payload;
+  const safeRequestId = message.requestId ?? `req-${Date.now()}`;
   const { userId, connectionId } = ws.connectionData;
 
   if (!userId) {
     throw new Error('User not authenticated');
   }
 
-  logger.info(`WS PROVIDER REQUEST [${connectionId}][${requestId}] User: ${userId}, Provider: ${provider}, Model: ${model}`);
+  logger.info(`WS PROVIDER REQUEST [${connectionId}][${safeRequestId}] User: ${userId}, Provider: ${provider}, Model: ${model}`);
 
-  const onChunk = (text: string, functionCalls?: any[]) => {
-    sendToClient(ws, { type: MessageType.PROVIDER_STREAM_CHUNK, payload: { requestId, chunk: text, functionCalls } });
-  };
+  try {
+    const onStream = (text: string, toolCalls?: ToolCall[] | undefined) => {
+      sendToClient(ws, { type: MessageType.PROVIDER_STREAM_CHUNK, payload: { requestId: safeRequestId, chunk: text, functionCalls: toolCalls } });
+    };
 
-  const onComplete = (response: LLMResponse) => {
-    logger.info(`PROVIDER REQUEST [${requestId}] COMPLETED for provider ${provider}`);
-    sendToClient(ws, {
-      type: MessageType.PROVIDER_STREAM_END,
-      payload: {
-        requestId: requestId,
-        success: response.success ?? true,
-        text: response.text,
-        tokensUsed: response.usage?.totalTokens ?? 0,
-        error: response.error,
-        tool_calls: response.tool_calls,
-        finish_reason: response.finish_reason,
-      }
-    });
-    activeTurnContexts.delete(requestId);
-  };
+    const onComplete = (response: LLMResponse) => {
+      logger.info(`PROVIDER REQUEST [${safeRequestId}] COMPLETED for provider ${provider}`);
+      sendToClient(ws, {
+        type: MessageType.PROVIDER_STREAM_END,
+        payload: {
+          requestId: safeRequestId,
+          success: response.success ?? true,
+          text: response.text,
+          tokensUsed: response.usage?.totalTokens ?? 0,
+          error: response.error,
+          tool_calls: response.tool_calls,
+          finish_reason: response.finish_reason,
+        }
+      });
+      activeTurnContexts.delete(safeRequestId);
+    };
 
-  const onError = (error: Error) => {
-    logger.error(`PROVIDER REQUEST [${requestId}] FAILED for provider ${provider}: ${error.message}`, error);
-    sendToClient(ws, {
-      type: MessageType.PROVIDER_ERROR,
-      payload: {
-        requestId: requestId,
-        error: error.name,
-        message: error.message
-      }
-    });
-    activeTurnContexts.delete(requestId);
-  };
+    const onError = (error: Error) => {
+      logger.error(`PROVIDER REQUEST [${safeRequestId}] FAILED for provider ${provider}: ${error.message}`, error);
+      sendToClient(ws, {
+        type: MessageType.PROVIDER_ERROR,
+        payload: {
+          requestId: safeRequestId,
+          error: error.name,
+          message: error.message
+        }
+      });
+      activeTurnContexts.delete(safeRequestId);
+    };
 
-  switch (provider) {
-    case 'openrouter':
-      if (!config.openrouterApiKey) {
-        return onError(new Error('OpenRouter API key not configured.'));
-      }
-      await openrouter.processChat({
-        apiKey: config.openrouterApiKey,
+    const providerImplementations: Record<string, any> = {
+      'openrouter': openrouter.processChat,
+    };
+
+    const processChat = providerImplementations[provider];
+    if (processChat) {
+      const commonParams: any = {
         model,
         messages,
-        temperature,
-        maxTokens,
-        stream,
-        tools: clientTools,
-        onStream: onChunk,
+        tools,
+        toolChoice,
+        stream: true,
+        onStream,
         onComplete,
         onError,
-        siteUrl: config.openrouterSiteUrl,
-        appName: config.openrouterAppName,
-      });
-      break;
-    case 'gemini':
-        // TODO: Refactor gemini to match the processChat interface
-      break;
-    case 'mistral':
-        // TODO: Refactor mistral to match the processChat interface
-        break;
-    default:
-      onError(new Error(`Unsupported provider: ${provider}`));
+      };
+
+      switch (provider) {
+        case 'openrouter':
+          if (!config.openrouterApiKey) {
+            return onError(new Error('OpenRouter API key not configured.'));
+          }
+          await openrouter.processChat({
+            ...commonParams,
+            apiKey: config.openrouterApiKey,
+            siteUrl: config.openrouterSiteUrl,
+            appName: config.openrouterAppName,
+          });
+          break;
+        default:
+          onError(new Error(`Provider '${provider}' is not supported.`));
+          break;
+      }
+    } else {
+      onError(new Error(`Provider '${provider}' is not supported.`));
+    }
+  } catch (error) {
+    logger.error(`Error processing provider request:`, error);
+    sendToClient(ws, { type: MessageType.PROVIDER_ERROR, payload: { error: 'Failed to process provider request', code: 'PROVIDER_REQUEST_ERROR', requestId: safeRequestId } });
+    activeTurnContexts.delete(safeRequestId);
   }
 }
 
