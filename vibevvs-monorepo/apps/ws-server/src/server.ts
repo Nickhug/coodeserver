@@ -1491,7 +1491,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
     };
 
     const onComplete = (response: LLMResponse) => {
-      logger.info(`PROVIDER REQUEST [${safeRequestId}] COMPLETED for provider ${provider}`);
+      logger.info(`PROVIDER REQUEST [${safeRequestId}] COMPLETED for provider ${provider} with finish_reason: '${response.finish_reason}'`);
 
       const turnContext = activeTurnContexts.get(safeRequestId);
       if (turnContext) {
@@ -1502,27 +1502,27 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
         }
         activeTurnContexts.set(safeRequestId, turnContext);
         logger.info(`CONTEXT [${safeRequestId}] Updated context. New history length: ${turnContext.messages.length}`);
-      }
 
-      // If the model is calling a tool, we don't end the turn context.
-      // It will be picked up again when the tool result is sent.
-      if (response.finish_reason !== 'tool_calls') {
-        activeTurnContexts.delete(safeRequestId);
-        logger.info(`CONTEXT [${safeRequestId}] Turn complete. Deleting context.`);
-      }
+        // If the model is calling a tool, we don't end the turn context.
+        // It will be picked up again when the tool result is sent.
+        if (response.finish_reason !== 'tool_calls') {
+          activeTurnContexts.delete(safeRequestId);
+          logger.info(`CONTEXT [${safeRequestId}] Turn complete. Deleting context.`);
 
-      ws.send(JSON.stringify({
-        type: MessageType.PROVIDER_STREAM_END,
-        requestId: safeRequestId,
-        payload: {
-          success: response.success ?? true,
-          text: response.text,
-          tokensUsed: response.usage?.totalTokens ?? 0,
-          error: response.error,
-          tool_calls: response.tool_calls,
-          finish_reason: response.finish_reason
+          ws.send(JSON.stringify({
+            type: MessageType.PROVIDER_STREAM_END,
+            requestId: safeRequestId,
+            payload: {
+              success: response.success ?? true,
+              text: response.text,
+              tokensUsed: response.usage?.totalTokens ?? 0,
+              error: response.error,
+              tool_calls: response.tool_calls,
+              finish_reason: response.finish_reason
+            }
+          }));
         }
-      }));
+      }
     };
 
     const onError = (error: Error) => {
