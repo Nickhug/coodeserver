@@ -1681,48 +1681,13 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ToolExe
 	turnContext.messages.push(toolResultMessage);
 	logger.info(`CONTEXT [${safeRequestId}] Appended tool result. New history length: ${turnContext.messages.length}`);
 
-	const { provider, model, apiKey, temperature, maxTokens, systemMessage, tools, stream } = turnContext;
-
-	try {
-		const onStream = (text: string, toolCalls?: ToolCall[] | undefined) => {
-			sendToClient(ws, { type: MessageType.PROVIDER_STREAM_CHUNK, requestId: safeRequestId, payload: { chunk: text, functionCalls: toolCalls } });
-		};
-
-		const onComplete = (response: LLMResponse) => {
-			logger.info(`TOOL CONTINUATION [${safeRequestId}] COMPLETED for provider ${provider}`);
-			const currentContext = activeTurnContexts.get(safeRequestId);
-			if (currentContext) {
-				currentContext.messages.push({ role: 'assistant', content: response.text || '', tool_calls: response.tool_calls });
-				activeTurnContexts.set(safeRequestId, currentContext);
-				logger.info(`CONTEXT [${safeRequestId}] Updated context after tool call. New history length: ${currentContext.messages.length}`);
-			}
-			sendToClient(ws, { type: MessageType.PROVIDER_STREAM_END, requestId: safeRequestId, payload: { success: response.success ?? true, text: response.text, tokensUsed: response.usage?.totalTokens ?? 0, error: response.error, tool_calls: response.tool_calls, finish_reason: response.finish_reason } });
-		};
-
-		const onError = (error: Error) => {
-			logger.error(`TOOL CONTINUATION [${safeRequestId}] FAILED for provider ${provider}: ${error.message}`, error);
-			sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: safeRequestId, payload: { error: error.message, message: error.message } });
-		};
-
-		const providerImplementations: { [key: string]: (params: any) => Promise<void> } = {
-			'gemini': gemini.streamGeminiMessage,
-			'mistral': mistral.processChat,
-			'openrouter': openrouter.processChat,
-			'openRouter': openrouter.processChat
-		};
-
-		const processChat = providerImplementations[provider];
-		if (processChat) {
-			const commonParams = { apiKey, model, messages: turnContext.messages, temperature, maxTokens, systemMessage, tools, stream, toolChoice: 'auto', onStream, onComplete, onError };
-			activeTurnContexts.set(safeRequestId, turnContext);
-			await processChat(commonParams);
-		} else {
-			onError(new Error(`No implementation found for provider: ${provider}`));
-		}
-	} catch (error: any) {
-		logger.error(`Error in handleToolExecutionResult for ${provider}: ${error.message}`, error);
-		sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: safeRequestId, payload: { error: error.message, message: error.message } });
-	}
+	// Update the context with the tool result but DON'T automatically continue the conversation
+	// The client will decide when to make the next LLM call
+	activeTurnContexts.set(safeRequestId, turnContext);
+	
+	// Simply acknowledge that the tool result was received and processed
+	// The client-side agent loop will handle continuing the conversation if needed
+	logger.info(`TOOL RESULT [${safeRequestId}] Tool result processed and added to context. Waiting for client to continue conversation.`);
 }
 
 /**
