@@ -112,7 +112,7 @@ interface TurnContext {
   temperature?: number;
   maxTokens?: number;
   systemMessage?: string;
-  tools?: any[];
+  tools: any[];
   parallelToolCalls?: boolean;
   stream: boolean; // Must be a boolean
   lastPrompt: string;
@@ -1416,18 +1416,74 @@ async function handleFimRequest(ws: WebSocketWithData, message: ClientMessage): 
 }
 
 /**
- * Handle provider request from client
+ * Handles an incoming provider request from a client
  */
 async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
-  const { provider, model, messages, temperature, maxTokens, stream, tools, toolChoice, systemMessage } = message.payload;
-  const safeRequestId = message.requestId ?? `req-${Date.now()}`;
+  const { provider, model, messages: newMessages, temperature, maxTokens, toolChoice, systemMessage, promptContext } = message.payload;
+  const safeRequestId = message.requestId ?? `req-${Date.now()}`; // This ID now represents the THREAD
   const { userId, connectionId } = ws.connectionData;
+
+  // Log the incoming prompt context to debug tool generation issues
+  logger.info(`PROMPT CONTEXT [${safeRequestId}] Received prompt context: ${JSON.stringify(promptContext, null, 2)}`);
 
   if (!userId) {
     throw new Error('User not authenticated');
   }
 
   logger.info(`WS PROVIDER REQUEST [${connectionId}][${safeRequestId}] User: ${userId}, Provider: ${provider}, Model: ${model}`);
+
+  // Retrieve or create the conversation context
+  let turnContext = activeTurnContexts.get(safeRequestId);
+  if (!turnContext) {
+    logger.info(`CONTEXT [${safeRequestId}] Creating new conversation context.`);
+    turnContext = {
+      provider,
+      model,
+      apiKey: '', // Will be set later
+      temperature,
+      maxTokens,
+      systemMessage: '', // Will be generated
+      tools: [],
+      stream: true,
+      lastPrompt: '',
+      messages: [], // History starts empty
+      createdAt: Date.now(),
+    };
+  } else {
+    logger.info(`CONTEXT [${safeRequestId}] Found existing conversation context. History length: ${turnContext.messages.length}`);
+  }
+
+  // Add the new message(s) to the history
+  if (newMessages && newMessages.length > 0) {
+    turnContext.messages.push(...newMessages);
+    turnContext.lastPrompt = newMessages[newMessages.length - 1]?.content || '';
+  }
+
+  // Generate the system message if it doesn't exist for this context yet
+  if (!turnContext.systemMessage) {
+    if (systemMessage) {
+      turnContext.systemMessage = systemMessage;
+      logger.info(`SYSTEM MESSAGE [${safeRequestId}] Using system message provided by client.`);
+    } else if (promptContext) {
+      turnContext.systemMessage = chat_systemMessage(promptContext);
+      logger.info(`SYSTEM MESSAGE [${safeRequestId}] Generated system message from prompt context.`);
+    } else {
+      logger.warn(`SYSTEM MESSAGE [${safeRequestId}] No system message provided and no prompt context available`);
+      turnContext.systemMessage = "You are an expert AI programmer who is trying to help a user with their coding task.";
+    }
+  }
+
+  // Generate the appropriate tools based on the chat mode if they haven't been generated yet
+  if (turnContext.tools.length === 0) {
+    const requestChatMode = promptContext?.chatMode || 'normal';
+    if (provider === 'openrouter' || provider === 'openRouter') {
+      turnContext.tools = getOpenAIFormattedTools(requestChatMode);
+      logger.info(`TOOLS [${safeRequestId}] Generated and formatted ${turnContext.tools.length} tools for OpenRouter in '${requestChatMode}' mode.`);
+    } else {
+      turnContext.tools = availableTools(requestChatMode);
+      logger.info(`TOOLS [${safeRequestId}] Generated ${turnContext.tools.length} tools for ${provider} in '${requestChatMode}' mode.`);
+    }
+  }
 
   try {
     const onStream = (text: string, toolCalls?: ToolCall[] | undefined) => {
@@ -1436,311 +1492,156 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
 
     const onComplete = (response: LLMResponse) => {
       logger.info(`PROVIDER REQUEST [${safeRequestId}] COMPLETED for provider ${provider}`);
-      sendToClient(ws, {
-        type: MessageType.PROVIDER_STREAM_END,
-        requestId: safeRequestId,
-        payload: {
-          success: response.success ?? true,
-          text: response.text,
-          tokensUsed: response.usage?.totalTokens ?? 0,
-          error: response.error,
-          tool_calls: response.tool_calls,
-          finish_reason: response.finish_reason,
-        }
-      });
-      activeTurnContexts.delete(safeRequestId);
+      const conversationContext = activeTurnContexts.get(safeRequestId);
+      if (conversationContext) {
+        conversationContext.messages.push({ role: 'assistant', content: response.text || '', tool_calls: response.tool_calls });
+        activeTurnContexts.set(safeRequestId, conversationContext);
+        logger.info(`CONTEXT [${safeRequestId}] Updated context. New history length: ${conversationContext.messages.length}`);
+      }
+      sendToClient(ws, { type: MessageType.PROVIDER_STREAM_END, requestId: safeRequestId, payload: { success: response.success ?? true, text: response.text, tokensUsed: response.usage?.totalTokens ?? 0, error: response.error, tool_calls: response.tool_calls, finish_reason: response.finish_reason } });
     };
 
     const onError = (error: Error) => {
       logger.error(`PROVIDER REQUEST [${safeRequestId}] FAILED for provider ${provider}: ${error.message}`, error);
-      sendToClient(ws, {
-        type: MessageType.PROVIDER_ERROR,
-        requestId: safeRequestId,
-        payload: {
-          error: error.name,
-          message: error.message
-        }
-      });
-      activeTurnContexts.delete(safeRequestId);
+      sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: safeRequestId, payload: { error: error.message, message: error.message } });
     };
 
-    const providerImplementations: Record<string, any> = {
+    const providerImplementations: { [key: string]: (params: any) => Promise<void> } = {
       'gemini': gemini.streamGeminiMessage,
       'mistral': mistral.processChat,
       'openrouter': openrouter.processChat,
-      'openRouter': openrouter.processChat,
+      'openRouter': openrouter.processChat
     };
 
     const processChat = providerImplementations[provider];
     if (processChat) {
-      // Convert tools to OpenAI format for OpenRouter, keep original format for others
-      let formattedTools = tools;
-      if ((provider === 'openrouter' || provider === 'openRouter') && tools && Array.isArray(tools)) {
-        // If tools are passed as internal format, convert them to OpenAI format
-        if (tools.length > 0 && tools[0].parameters && !tools[0].function) {
-          formattedTools = getOpenAIFormattedTools('agent'); // Use agent mode for full tool access
-          logger.info(`Converted ${tools.length} tools to OpenAI format for OpenRouter`);
-        }
-      }
-
-      const commonParams: any = {
-        model,
-        messages,
-        tools: formattedTools,
-        toolChoice,
-        systemMessage,
-        stream: true,
-        onStream,
-        onComplete,
-        onError,
-      };
-
+      const commonParams = { model, messages: turnContext.messages, tools: turnContext.tools, toolChoice, systemMessage: turnContext.systemMessage, stream: true, onStream, onComplete, onError };
+      activeTurnContexts.set(safeRequestId, turnContext);
+      let apiKey = '';
       switch (provider) {
         case 'gemini':
-          if (!config.geminiApiKey) {
-            return onError(new Error('Gemini API key not configured.'));
-          }
-          await processChat({
-            ...commonParams,
-            apiKey: config.geminiApiKey,
-          });
+          if (!config.geminiApiKey) return onError(new Error('Gemini API key not configured.'));
+          apiKey = config.geminiApiKey;
           break;
         case 'mistral':
-          if (!config.mistralApiKey) {
-            return onError(new Error('Mistral API key not configured.'));
-          }
-          await processChat({
-            ...commonParams,
-            apiKey: config.mistralApiKey,
-          });
+          if (!config.mistralApiKey) return onError(new Error('Mistral API key not configured.'));
+          apiKey = config.mistralApiKey;
           break;
         case 'openrouter':
         case 'openRouter':
-          if (!config.openrouterApiKey) {
-            return onError(new Error('OpenRouter API key not configured.'));
-          }
-          await processChat({
-            ...commonParams,
-            apiKey: config.openrouterApiKey,
-            siteUrl: config.openrouterSiteUrl,
-            appName: config.openrouterAppName,
-          });
+          if (!config.openrouterApiKey) return onError(new Error('OpenRouter API key not configured.'));
+          apiKey = config.openrouterApiKey;
           break;
         default:
-          onError(new Error(`Provider '${provider}' is not supported.`));
-          break;
+          return onError(new Error(`Unsupported provider: ${provider}`));
       }
+      turnContext.apiKey = apiKey;
+      await processChat({ ...commonParams, apiKey });
     } else {
-      onError(new Error(`Provider '${provider}' is not supported.`));
+      onError(new Error(`No implementation found for provider: ${provider}`));
     }
-  } catch (error) {
-    logger.error(`Error processing provider request:`, error);
-    sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: safeRequestId, payload: { error: 'Failed to process provider request', code: 'PROVIDER_REQUEST_ERROR' } });
-    activeTurnContexts.delete(safeRequestId);
+  } catch (error: any) {
+    logger.error(`Error in handleProviderRequest for ${provider}: ${error.message}`, error);
+    sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: safeRequestId, payload: { error: error.message, message: error.message } });
   }
 }
 
 /**
- * Handle user data request from client
+ * Handles a request for user data.
  */
 async function handleUserDataRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
-  if (message.type !== MessageType.USER_DATA_REQUEST) {
-    logger.error('Invalid message type passed to handleUserDataRequest');
+  const { userId } = ws.connectionData;
+  const safeRequestId = message.requestId ?? `user-data-${Date.now()}`;
+
+  if (!userId) {
+    logger.warn(`WS [${ws.connectionData.connectionId}][${safeRequestId}] User data request received, but user is not authenticated.`);
+    sendToClient(ws, { type: MessageType.USER_DATA_RESPONSE, requestId: safeRequestId, payload: { error: 'User not authenticated' } });
     return;
   }
-  
-    const { userId } = message.payload;
-
-  logger.info(`👤 User data request for ${userId}`);
 
   try {
-    // Authorization check
-    if (config.authEnabled && userId !== ws.connectionData.userId) {
-      logger.warn(`🚫 Unauthorized user data request: ${userId} !== ${ws.connectionData.userId}`);
-      sendToClient(ws, {
-        type: MessageType.USER_DATA_RESPONSE,
-        payload: { error: 'Unauthorized' } 
-      });
+    const userData = await getClerkUserData(userId);
+    if (!userData) {
+      logger.error(`WS [${ws.connectionData.connectionId}][${safeRequestId}] Could not retrieve user data for Clerk ID: ${userId}`);
+      sendToClient(ws, { type: MessageType.USER_DATA_RESPONSE, requestId: safeRequestId, payload: { error: 'User data not found' } });
       return;
     }
-
-    // Get user data from both Clerk and DB in parallel for efficiency
-    const [clerkUserData, dbUser] = await Promise.all([
-      getClerkUserData(userId),
-      getUserByClerkId(userId)
-    ]);
-
-    const userData = {
-      id: userId,
-      // Prefer DB email since it's the system of record, but fall back to Clerk
-      email: dbUser?.email || clerkUserData?.email || '',
-      // Include credits and subscription from DB
-      credits: dbUser?.credits_remaining || 0,
-      subscription: dbUser?.subscription_tier || 'free',
-      // Include rich data from Clerk
-      name: clerkUserData?.name || '',
-      firstName: clerkUserData?.firstName || '',
-      lastName: clerkUserData?.lastName || '',
-      username: clerkUserData?.username || '',
-      avatarUrl: clerkUserData?.avatarUrl || ''
-    };
-
-    logger.info(`✅ User data retrieved for ${userId}`);
-    sendToClient(ws, {
-      type: MessageType.USER_DATA_RESPONSE,
-      payload: { user: userData } 
-    });
-
-  } catch (error) {
-    logger.error('Error fetching user data:', error);
-    sendToClient(ws, {
-      type: MessageType.USER_DATA_RESPONSE,
-      payload: { error: 'Failed to fetch user data' } 
-    });
+    sendToClient(ws, { type: MessageType.USER_DATA_RESPONSE, requestId: safeRequestId, payload: { user: userData } });
+  } catch (error: any) {
+    logger.error(`WS [${ws.connectionData.connectionId}][${safeRequestId}] Error fetching user data: ${error.message}`);
+    sendToClient(ws, { type: MessageType.USER_DATA_RESPONSE, requestId: safeRequestId, payload: { error: `Failed to fetch user data: ${error.message}` } });
   }
 }
 
 /**
- * Handle tool execution result from client
+ * Handles the result of a tool execution from the client.
  */
 async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
-  if (message.type !== MessageType.TOOL_EXECUTION_RESULT) {
-    logger.error('Invalid message type passed to handleToolExecutionResult');
+  const { tool_results, original_request_id } = message.payload;
+  const safeRequestId = original_request_id;
+
+  if (!safeRequestId) {
+    logger.error(`TOOL_RESULT_ERROR: No original_request_id provided.`);
     return;
   }
 
-  const { requestId, toolCallId, toolName, result, isError, errorDetails } = message.payload;
-  const safeRequestId = requestId || `tool-exec-${uuidv4().substring(0, 8)}`;
-  const userId = ws.connectionData.userId;
-
-  let resultPreview: string;
-  if (isError) {
-    resultPreview = `Error: ${errorDetails ? String(errorDetails).substring(0, 50) : 'Unknown'}`;
-  } else if (typeof result === 'string') {
-    resultPreview = `String(len:${result.length})${result.length > 50 ? ", " + result.substring(0, 50) + "..." : ""}`;
-  } else if (typeof result === 'object' && result !== null) {
-    resultPreview = `Object(keys:${Object.keys(result).join(', ').substring(0, 50)})`;
-  } else {
-    resultPreview = String(result).substring(0, 50);
-  }
-
-  logger.info(`Tool Execution Result [${safeRequestId}]: ToolName: ${toolName}, ToolCallId: ${toolCallId}, IsError: ${isError}, ResultPreview: ${resultPreview}`);
-
-  if (!userId && config.authEnabled) {
-    logger.error(`WS AUTH [${ws.connectionData.connectionId}][${safeRequestId}] No user ID available for tool execution result`);
-    sendToClient(ws, { type: MessageType.PROVIDER_ERROR, payload: { error: 'User ID not available', code: 'NO_USER_ID', requestId: safeRequestId } });
+  const turnContext = activeTurnContexts.get(safeRequestId);
+  if (!turnContext) {
+    logger.error(`TOOL_RESULT_ERROR [${safeRequestId}]: No active conversation context found.`);
+    sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: safeRequestId, payload: { error: 'No active conversation context found for tool result.' } });
     return;
   }
 
-  logger.info(`Processing tool execution result for ${toolName} from user ${userId || 'anonymous'}, requestId: ${safeRequestId}`);
+  const toolResultMessages = tool_results.map((result: { tool_call_id: string; content: string; }) => ({
+    role: 'tool' as const,
+    tool_call_id: result.tool_call_id,
+    content: result.content,
+  }));
+
+  turnContext.messages.push(...toolResultMessages);
+  logger.info(`CONTEXT [${safeRequestId}] Appended ${toolResultMessages.length} tool results. New history length: ${turnContext.messages.length}`);
+
+  const { provider, model, apiKey, temperature, maxTokens, systemMessage, tools, stream } = turnContext;
 
   try {
-    const conversationContext = activeTurnContexts.get(safeRequestId);
+    const onStream = (text: string, toolCalls?: ToolCall[] | undefined) => {
+      sendToClient(ws, { type: MessageType.PROVIDER_STREAM_CHUNK, requestId: safeRequestId, payload: { chunk: text, functionCalls: toolCalls } });
+    };
 
-    if (!conversationContext) {
-      logger.error(`WS [${ws.connectionData.connectionId}][${safeRequestId}] No active conversation found for tool execution result`);
-      sendToClient(ws, { type: MessageType.PROVIDER_ERROR, payload: { error: 'No active conversation found for this tool call', code: 'NO_ACTIVE_CONVERSATION', requestId: safeRequestId } });
-      return;
-    }
-
-    const { provider, model, apiKey, temperature, maxTokens, systemMessage, tools, parallelToolCalls, stream, messages } = conversationContext;
-    
-    const toolResponseContent = isError ? { error: errorDetails || 'Unknown error during tool execution' } : result;
-    const toolResponseString = typeof toolResponseContent === 'string' ? toolResponseContent : JSON.stringify(toolResponseContent);
-
-    messages.push({ role: 'tool', tool_call_id: toolCallId, content: toolResponseString });
-
-    logger.info(`WS ${provider.toUpperCase()} [${ws.connectionData.connectionId}][${safeRequestId}] Continuing conversation with tool result for ${toolName}`);
-
-    const userChatMode = message.payload.chatMode;
-    const requestChatMode: 'normal' | 'gather' | 'agent' = userChatMode === 'gather' ? 'gather' : userChatMode === 'normal' ? 'normal' : 'agent';
-
-    if (stream) {
-      const streamStats = { startTime: Date.now(), chunkCount: 0, totalCharsStreamed: 0, lastChunkTime: Date.now() };
-
-      if (provider === 'mistral') {
-        // ... (Mistral logic)
-      } else if (provider === 'openrouter' || provider === 'openRouter') {
-        // Handle OpenRouter continuation with proper systemMessage and OpenAI formatted tools
-        const openaiFormattedTools = tools && tools.length > 0 ? getOpenAIFormattedTools(requestChatMode) : [];
-        await openrouter.processChat({
-          apiKey,
-          model,
-          messages,
-          temperature: temperature || 0.7,
-          maxTokens: maxTokens || 50000,
-          systemMessage,
-          tools: openaiFormattedTools,
-          toolChoice: 'auto',
-          stream: true,
-          onStream: (chunk: string, functionCalls?: any[]) => {
-            streamStats.chunkCount++; streamStats.totalCharsStreamed += chunk.length; streamStats.lastChunkTime = Date.now();
-            sendToClient(ws, { type: MessageType.PROVIDER_STREAM_CHUNK, payload: { chunk, requestId: safeRequestId, provider, model, functionCalls } });
-          },
-          onComplete: (response: LLMResponse) => {
-            sendToClient(ws, {
-              type: MessageType.PROVIDER_STREAM_END,
-              payload: {
-                success: response.success,
-                text: response.text,
-                tokensUsed: response.usage?.totalTokens,
-                tool_calls: response.tool_calls,
-                requestId: safeRequestId,
-                provider,
-                model,
-                waitingForToolCall: !!response.tool_calls && response.tool_calls.length > 0
-              }
-            });
-            activeTurnContexts.delete(safeRequestId);
-          },
-          onError: (error: Error) => {
-            logger.error(
-              `WS OPENROUTER [${ws.connectionData.connectionId}][${safeRequestId}] Streaming error after tool: ${error.message}`
-            );
-          },
-          siteUrl: config.openrouterSiteUrl,
-          appName: config.openrouterAppName,
-        });
-      } else { // Gemini
-        await gemini.streamGeminiMessage({
-          apiKey, model, messages: convertChatMessagesToGeminiFormat(messages), temperature: temperature || 0.7, maxTokens: maxTokens || 50000, systemMessage, tools: tools || [], chatMode: requestChatMode,
-          thinkingConfig: { includeThoughts: true, thinkingBudget: 24576 },
-          onStart: () => { streamStats.startTime = Date.now(); logger.info(`WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Continued stream started for model ${model}`); },
-          onReasoningChunk: (chunk: string) => { sendToClient(ws, { type: MessageType.PROVIDER_REASONING_CHUNK, payload: { chunk, requestId: safeRequestId, provider, model } }); },
-          onChunk: (chunk: string) => {
-            streamStats.chunkCount++; streamStats.totalCharsStreamed += chunk.length; streamStats.lastChunkTime = Date.now();
-            sendToClient(ws, { type: MessageType.PROVIDER_STREAM_CHUNK, payload: { chunk, requestId: safeRequestId, provider, model } });
-          },
-          onComplete: (response: LLMResponse) => {
-            sendToClient(ws, {
-              type: MessageType.PROVIDER_STREAM_END,
-              payload: {
-                success: response.success,
-                text: response.text,
-                tokensUsed: response.usage?.totalTokens,
-                tool_calls: response.tool_calls,
-                requestId: safeRequestId,
-                provider,
-                model,
-                waitingForToolCall: !!response.tool_calls && response.tool_calls.length > 0
-              }
-            });
-            activeTurnContexts.delete(safeRequestId);
-          },
-          onError: (error: Error) => {
-            logger.error(
-              `WS GEMINI [${ws.connectionData.connectionId}][${safeRequestId}] Streaming error after tool: ${error.message}`
-            );
-          }
-        });
+    const onComplete = (response: LLMResponse) => {
+      logger.info(`TOOL CONTINUATION [${safeRequestId}] COMPLETED for provider ${provider}`);
+      const currentContext = activeTurnContexts.get(safeRequestId);
+      if (currentContext) {
+        currentContext.messages.push({ role: 'assistant', content: response.text || '', tool_calls: response.tool_calls });
+        activeTurnContexts.set(safeRequestId, currentContext);
+        logger.info(`CONTEXT [${safeRequestId}] Updated context after tool call. New history length: ${currentContext.messages.length}`);
       }
+      sendToClient(ws, { type: MessageType.PROVIDER_STREAM_END, requestId: safeRequestId, payload: { success: response.success ?? true, text: response.text, tokensUsed: response.usage?.totalTokens ?? 0, error: response.error, tool_calls: response.tool_calls, finish_reason: response.finish_reason } });
+    };
+
+    const onError = (error: Error) => {
+      logger.error(`TOOL CONTINUATION [${safeRequestId}] FAILED for provider ${provider}: ${error.message}`, error);
+      sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: safeRequestId, payload: { error: error.message, message: error.message } });
+    };
+
+    const providerImplementations: { [key: string]: (params: any) => Promise<void> } = {
+      'gemini': gemini.streamGeminiMessage,
+      'mistral': mistral.processChat,
+      'openrouter': openrouter.processChat,
+      'openRouter': openrouter.processChat
+    };
+
+    const processChat = providerImplementations[provider];
+    if (processChat) {
+      const commonParams = { apiKey, model, messages: turnContext.messages, temperature, maxTokens, systemMessage, tools, stream, toolChoice: 'auto', onStream, onComplete, onError };
+      activeTurnContexts.set(safeRequestId, turnContext);
+      await processChat(commonParams);
     } else {
-      // Non-streaming logic
+      onError(new Error(`No implementation found for provider: ${provider}`));
     }
-  } catch (error) {
-    logger.error(`Error processing tool execution result for ${toolName}:`, error);
-    sendToClient(ws, { type: MessageType.PROVIDER_ERROR, payload: { error: `Failed to process tool execution result for ${toolName}`, code: 'TOOL_EXECUTION_RESULT_ERROR', requestId: safeRequestId } });
-    activeTurnContexts.delete(safeRequestId);
+  } catch (error: any) {
+    logger.error(`Error in handleToolExecutionResult for ${provider}: ${error.message}`, error);
+    sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: safeRequestId, payload: { error: error.message, message: error.message } });
   }
 }
 
