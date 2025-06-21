@@ -1492,13 +1492,37 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
 
     const onComplete = (response: LLMResponse) => {
       logger.info(`PROVIDER REQUEST [${safeRequestId}] COMPLETED for provider ${provider}`);
-      const conversationContext = activeTurnContexts.get(safeRequestId);
-      if (conversationContext) {
-        conversationContext.messages.push({ role: 'assistant', content: response.text || '', tool_calls: response.tool_calls });
-        activeTurnContexts.set(safeRequestId, conversationContext);
-        logger.info(`CONTEXT [${safeRequestId}] Updated context. New history length: ${conversationContext.messages.length}`);
+
+      const turnContext = activeTurnContexts.get(safeRequestId);
+      if (turnContext) {
+        if (response.tool_calls) {
+          turnContext.messages.push({ role: 'assistant', content: '', tool_calls: response.tool_calls });
+        } else {
+          turnContext.messages.push({ role: 'assistant', content: response.text });
+        }
+        activeTurnContexts.set(safeRequestId, turnContext);
+        logger.info(`CONTEXT [${safeRequestId}] Updated context. New history length: ${turnContext.messages.length}`);
       }
-      sendToClient(ws, { type: MessageType.PROVIDER_STREAM_END, requestId: safeRequestId, payload: { success: response.success ?? true, text: response.text, tokensUsed: response.usage?.totalTokens ?? 0, error: response.error, tool_calls: response.tool_calls, finish_reason: response.finish_reason } });
+
+      // If the model is calling a tool, we don't end the turn context.
+      // It will be picked up again when the tool result is sent.
+      if (response.finish_reason !== 'tool_calls') {
+        activeTurnContexts.delete(safeRequestId);
+        logger.info(`CONTEXT [${safeRequestId}] Turn complete. Deleting context.`);
+      }
+
+      ws.send(JSON.stringify({
+        type: MessageType.PROVIDER_STREAM_END,
+        requestId: safeRequestId,
+        payload: {
+          success: response.success ?? true,
+          text: response.text,
+          tokensUsed: response.usage?.totalTokens ?? 0,
+          error: response.error,
+          tool_calls: response.tool_calls,
+          finish_reason: response.finish_reason
+        }
+      }));
     };
 
     const onError = (error: Error) => {
@@ -1574,15 +1598,16 @@ async function handleUserDataRequest(ws: WebSocketWithData, message: ClientMessa
 }
 
 /**
- * Handles the result of a tool execution from the client.
+ * Handles the result of a tool execution from the client, continuing the conversation.
  */
 async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
   const { tool_results, original_request_id } = message.payload;
-  const safeRequestId = original_request_id;
+  const safeRequestId = original_request_id; // This is the persistent THREAD ID.
+
+  logger.info(`TOOL_RESULT [${safeRequestId}] Received ${tool_results.length} tool results from client.`);
 
   if (!safeRequestId) {
-    logger.error(`TOOL_RESULT_ERROR: No original_request_id provided.`);
-    return;
+    return logger.error(`TOOL_RESULT_ERROR: No original_request_id provided.`);
   }
 
   const turnContext = activeTurnContexts.get(safeRequestId);

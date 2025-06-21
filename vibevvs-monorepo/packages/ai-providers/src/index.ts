@@ -25,7 +25,7 @@ export interface LLMResponse {
   waitingForToolCall?: boolean;
   rawResponse?: any; // Optional field for the raw response from the provider
   reasoning?: string; // Optional field for reasoning/thought process leading to a tool call or final answer
-  finish_reason?: string;
+  finish_reason?: string | null;
 }
 
 // Message types

@@ -74,10 +74,10 @@ export async function processChat({
     // Prepare messages following OpenAI conversation standards
     const formattedMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 
-    // Add system message as developer role if provided (following OpenAI standards)
+    // Add system message as 'system' role if provided (following OpenAI standards)
     if (systemMessage) {
       formattedMessages.push({
-        role: 'developer',
+        role: 'system',
         content: systemMessage
       });
     }
@@ -119,11 +119,16 @@ export async function processChat({
       });
 
       let fullText = '';
-      const toolCalls: ToolCall[] = [];
+      let finishReason: string | null | undefined = null;
       const toolCallDeltas: { [index: number]: OpenAI.Chat.Completions.ChatCompletionChunk.Choice.Delta.ToolCall } = {};
 
       for await (const chunk of streamResponse) {
-        const delta = chunk.choices[0]?.delta;
+        const choice = chunk.choices[0];
+        if (choice?.finish_reason) {
+          finishReason = choice.finish_reason;
+        }
+
+        const delta = choice?.delta;
 
         if (delta?.content) {
           fullText += delta.content;
@@ -141,11 +146,11 @@ export async function processChat({
                         if (toolCallDelta.type) current.type = toolCallDelta.type;
                         if (toolCallDelta.function?.name) {
                             if (!current.function) current.function = { name: '', arguments: '' };
-                            current.function.name = toolCallDelta.function.name;
+                            current.function.name = (current.function.name || '') + toolCallDelta.function.name;
                         }
                         if (toolCallDelta.function?.arguments) {
                             if (!current.function) current.function = { name: '', arguments: '' };
-                            current.function.arguments += toolCallDelta.function.arguments;
+                            current.function.arguments = (current.function.arguments || '') + toolCallDelta.function.arguments;
                         }
                     }
                 }
@@ -162,13 +167,16 @@ export async function processChat({
         }
       }));
 
-      if(finalToolCalls.length > 0) {
+      // If the model intends to call a tool, the onStream should be called with the tool calls,
+      // and onComplete will signal the end of this turn, waiting for a tool result.
+      if (finishReason === 'tool_calls' && finalToolCalls.length > 0) {
         onStream?.('', finalToolCalls);
       }
 
       onComplete({
         text: fullText,
         tool_calls: finalToolCalls.length > 0 ? finalToolCalls : undefined,
+        finish_reason: finishReason,
       });
 
     } else {
