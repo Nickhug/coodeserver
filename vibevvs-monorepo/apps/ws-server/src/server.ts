@@ -1422,7 +1422,7 @@ async function handleFimRequest(ws: WebSocketWithData, message: ClientMessage): 
  */
 async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
   const { provider, model, messages: newMessages, temperature, maxTokens, toolChoice, systemMessage, promptContext } = message.payload;
-  const safeRequestId = message.requestId ?? `req-${Date.now()}`; // This ID now represents the THREAD
+  const safeRequestId = message.requestId ?? `req-${Date.now()}`; // This ID now represents the CONVERSATION THREAD
   const { userId, connectionId } = ws.connectionData;
 
   // Log the incoming prompt context to debug tool generation issues
@@ -1434,7 +1434,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
 
   logger.info(`WS PROVIDER REQUEST [${connectionId}][${safeRequestId}] User: ${userId}, Provider: ${provider}, Model: ${model}`);
 
-  // Retrieve or create the conversation context
+  // Retrieve or create the conversation context using the SAME requestId for the entire conversation thread
   let turnContext = activeTurnContexts.get(safeRequestId);
   if (!turnContext) {
     logger.info(`CONTEXT [${safeRequestId}] Creating new conversation context.`);
@@ -1518,25 +1518,27 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
         activeTurnContexts.set(safeRequestId, turnContext);
         logger.info(`CONTEXT [${safeRequestId}] Updated context. New history length: ${turnContext.messages.length}`);
 
-        // If the model is calling a tool, we don't end the turn context.
-        // It will be picked up again when the tool result is sent.
-        if (response.finish_reason !== 'tool_calls') {
-          activeTurnContexts.delete(safeRequestId);
-          logger.info(`CONTEXT [${safeRequestId}] Turn complete. Deleting context.`);
-
-          ws.send(JSON.stringify({
-            type: MessageType.PROVIDER_STREAM_END,
-            requestId: safeRequestId,
-            payload: {
-              success: response.success ?? true,
-              text: response.text,
-              tokensUsed: response.usage?.totalTokens ?? 0,
-              error: response.error,
-              tool_calls: response.tool_calls,
-              finish_reason: response.finish_reason
-            }
-          }));
+        // If the model is calling a tool, keep the context for tool execution continuation.
+        // If no tool calls, keep the context for potential follow-up messages in the same thread.
+        if (response.finish_reason === 'tool_calls') {
+          logger.info(`CONTEXT [${safeRequestId}] Tool calls detected. Keeping context for tool execution.`);
+        } else {
+          logger.info(`CONTEXT [${safeRequestId}] Turn complete. Keeping context for potential follow-up messages.`);
         }
+
+        // Always send stream end, but keep context alive for conversation continuity
+        ws.send(JSON.stringify({
+          type: MessageType.PROVIDER_STREAM_END,
+          requestId: safeRequestId,
+          payload: {
+            success: response.success ?? true,
+            text: response.text,
+            tokensUsed: response.usage?.totalTokens ?? 0,
+            error: response.error,
+            tool_calls: response.tool_calls,
+            finish_reason: response.finish_reason
+          }
+        }));
       }
     };
 
