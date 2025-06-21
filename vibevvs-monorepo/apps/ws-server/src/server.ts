@@ -104,55 +104,14 @@ interface WebSocketWithData extends WebSocket {
   connectionData: WebSocketConnectionData;
 }
 
-/**
- * Conversation context for multi-turn tool usage
- */
-interface TurnContext {
-  provider: string;
-  model: string;
-  apiKey: string;
-  temperature?: number;
-  maxTokens?: number;
-  systemMessage?: string;
-  tools: any[];
-  parallelToolCalls?: boolean;
-  stream: boolean; // Must be a boolean
-  lastPrompt: string;
-  messages: ChatMessage[]; // Store conversation history
-  createdAt: number; // Timestamp for cleanup
-}
-
 // Store active connections
 const connections = new Map<string, WebSocketConnectionData>();
 
 // Store WebSocket server reference for API routes
 let globalWss: WebSocketServer;
 
-// Store active conversation contexts for multi-turn tool usage
-const activeTurnContexts = new Map<string, TurnContext>();
-
 // Store AbortControllers for active LLM requests
 const abortControllers = new Map<string, Map<string, AbortController>>();
-
-// Set up a cleanup interval for stale turn contexts (30 minutes timeout)
-const TURN_CONTEXT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-
-// Clean up stale turn contexts every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  let expiredCount = 0;
-
-  for (const [requestId, context] of activeTurnContexts.entries()) {
-    if (now - context.createdAt > TURN_CONTEXT_TIMEOUT_MS) {
-      activeTurnContexts.delete(requestId);
-      expiredCount++;
-    }
-  }
-
-  if (expiredCount > 0) {
-    logger.info(`Cleaned up ${expiredCount} stale turn contexts, ${activeTurnContexts.size} remaining active.`);
-  }
-}, 5 * 60 * 1000); // Run every 5 minutes
 
 /**
  * Set up the HTTP server and WebSocket server
@@ -1419,72 +1378,42 @@ async function handleFimRequest(ws: WebSocketWithData, message: ClientMessage): 
 
 /**
  * Handles an incoming provider request from a client
+ * 
+ * SIMPLIFIED: Server is now stateless for conversations.
+ * Client manages all conversation history and sends complete context with each request.
  */
 async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
-  const { provider, model, messages: newMessages, temperature, maxTokens, toolChoice, systemMessage, promptContext } = message.payload;
-  const safeRequestId = message.requestId ?? `req-${Date.now()}`; // This ID now represents the CONVERSATION THREAD
+  const { provider, model, messages: allMessages, temperature, maxTokens, toolChoice, systemMessage, promptContext } = message.payload;
+  const safeRequestId = message.requestId ?? `req-${Date.now()}`;
   const { userId, connectionId } = ws.connectionData;
 
-  // Log the incoming prompt context to debug tool generation issues
+  // Log the incoming request
+  logger.info(`WS PROVIDER REQUEST [${connectionId}][${safeRequestId}] User: ${userId}, Provider: ${provider}, Model: ${model}`);
   logger.info(`PROMPT CONTEXT [${safeRequestId}] Received prompt context: ${JSON.stringify(promptContext, null, 2)}`);
 
   if (!userId) {
     throw new Error('User not authenticated');
   }
 
-  logger.info(`WS PROVIDER REQUEST [${connectionId}][${safeRequestId}] User: ${userId}, Provider: ${provider}, Model: ${model}`);
+  // No more conversation context management - client sends complete history
+  logger.info(`MESSAGES [${safeRequestId}] Received ${allMessages?.length || 0} messages from client`);
 
-  // Retrieve or create the conversation context using the SAME requestId for the entire conversation thread
-  let turnContext = activeTurnContexts.get(safeRequestId);
-  if (!turnContext) {
-    logger.info(`CONTEXT [${safeRequestId}] Creating new conversation context.`);
-    turnContext = {
-      provider,
-      model,
-      apiKey: '', // Will be set later
-      temperature,
-      maxTokens,
-      systemMessage: '', // Will be generated
-      tools: [],
-      stream: true,
-      lastPrompt: '',
-      messages: [], // History starts empty
-      createdAt: Date.now(),
-    };
+  // Generate system message if not provided
+  let finalSystemMessage = systemMessage;
+  if (!finalSystemMessage && promptContext) {
+    finalSystemMessage = chat_systemMessage(promptContext);
+    logger.info(`SYSTEM MESSAGE [${safeRequestId}] Generated system message from prompt context.`);
+  }
+
+  // Generate tools based on chat mode
+  const requestChatMode = promptContext?.chatMode || 'normal';
+  let tools: any[] = [];
+  if (provider === 'openrouter' || provider === 'openRouter') {
+    tools = getOpenAIFormattedTools(requestChatMode);
+    logger.info(`TOOLS [${safeRequestId}] Generated ${tools.length} tools for OpenRouter in '${requestChatMode}' mode.`);
   } else {
-    logger.info(`CONTEXT [${safeRequestId}] Found existing conversation context. History length: ${turnContext.messages.length}`);
-  }
-
-  // Add the new message(s) to the history
-  if (newMessages && newMessages.length > 0) {
-    turnContext.messages.push(...newMessages);
-    turnContext.lastPrompt = newMessages[newMessages.length - 1]?.content || '';
-  }
-
-  // Generate the system message if it doesn't exist for this context yet
-  if (!turnContext.systemMessage) {
-    if (systemMessage) {
-      turnContext.systemMessage = systemMessage;
-      logger.info(`SYSTEM MESSAGE [${safeRequestId}] Using system message provided by client.`);
-    } else if (promptContext) {
-      turnContext.systemMessage = chat_systemMessage(promptContext);
-      logger.info(`SYSTEM MESSAGE [${safeRequestId}] Generated system message from prompt context.`);
-    } else {
-      logger.warn(`SYSTEM MESSAGE [${safeRequestId}] No system message provided and no prompt context available`);
-      turnContext.systemMessage = "You are an expert AI programmer who is trying to help a user with their coding task.";
-    }
-  }
-
-  // Generate the appropriate tools based on the chat mode if they haven't been generated yet
-  if (turnContext.tools.length === 0) {
-    const requestChatMode = promptContext?.chatMode || 'normal';
-    if (provider === 'openrouter' || provider === 'openRouter') {
-      turnContext.tools = getOpenAIFormattedTools(requestChatMode);
-      logger.info(`TOOLS [${safeRequestId}] Generated and formatted ${turnContext.tools.length} tools for OpenRouter in '${requestChatMode}' mode.`);
-    } else {
-      turnContext.tools = availableTools(requestChatMode);
-      logger.info(`TOOLS [${safeRequestId}] Generated ${turnContext.tools.length} tools for ${provider} in '${requestChatMode}' mode.`);
-    }
+    tools = availableTools(requestChatMode);
+    logger.info(`TOOLS [${safeRequestId}] Generated ${tools.length} tools for ${provider} in '${requestChatMode}' mode.`);
   }
 
   try {
@@ -1508,38 +1437,19 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
     const onComplete = (response: LLMResponse) => {
       logger.info(`PROVIDER REQUEST [${safeRequestId}] COMPLETED for provider ${provider} with finish_reason: '${response.finish_reason}'`);
 
-      const turnContext = activeTurnContexts.get(safeRequestId);
-      if (turnContext) {
-        if (response.tool_calls) {
-          turnContext.messages.push({ role: 'assistant', content: '', tool_calls: response.tool_calls });
-        } else {
-          turnContext.messages.push({ role: 'assistant', content: response.text });
+      // No conversation context to maintain - just send the response
+      ws.send(JSON.stringify({
+        type: MessageType.PROVIDER_STREAM_END,
+        requestId: safeRequestId,
+        payload: {
+          success: response.success ?? true,
+          text: response.text,
+          tokensUsed: response.usage?.totalTokens ?? 0,
+          error: response.error,
+          tool_calls: response.tool_calls,
+          finish_reason: response.finish_reason
         }
-        activeTurnContexts.set(safeRequestId, turnContext);
-        logger.info(`CONTEXT [${safeRequestId}] Updated context. New history length: ${turnContext.messages.length}`);
-
-        // If the model is calling a tool, keep the context for tool execution continuation.
-        // If no tool calls, keep the context for potential follow-up messages in the same thread.
-        if (response.finish_reason === 'tool_calls') {
-          logger.info(`CONTEXT [${safeRequestId}] Tool calls detected. Keeping context for tool execution.`);
-        } else {
-          logger.info(`CONTEXT [${safeRequestId}] Turn complete. Keeping context for potential follow-up messages.`);
-        }
-
-        // Always send stream end, but keep context alive for conversation continuity
-        ws.send(JSON.stringify({
-          type: MessageType.PROVIDER_STREAM_END,
-          requestId: safeRequestId,
-          payload: {
-            success: response.success ?? true,
-            text: response.text,
-            tokensUsed: response.usage?.totalTokens ?? 0,
-            error: response.error,
-            tool_calls: response.tool_calls,
-            finish_reason: response.finish_reason
-          }
-        }));
-      }
+      }));
     };
 
     const onError = (error: Error) => {
@@ -1556,8 +1466,6 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
 
     const processChat = providerImplementations[provider];
     if (processChat) {
-      const commonParams = { model, messages: turnContext.messages, tools: turnContext.tools, toolChoice, systemMessage: turnContext.systemMessage, stream: true, onStream, onComplete, onError };
-      activeTurnContexts.set(safeRequestId, turnContext);
       let apiKey = '';
       switch (provider) {
         case 'gemini':
@@ -1576,8 +1484,22 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
         default:
           return onError(new Error(`Unsupported provider: ${provider}`));
       }
-      turnContext.apiKey = apiKey;
-      await processChat({ ...commonParams, apiKey });
+
+      // Call provider with complete message history from client
+      const commonParams = { 
+        model, 
+        messages: allMessages, // Use complete history from client
+        tools, 
+        toolChoice, 
+        systemMessage: finalSystemMessage, 
+        stream: true, 
+        onStream, 
+        onComplete, 
+        onError,
+        apiKey
+      };
+      
+      await processChat(commonParams);
     } else {
       onError(new Error(`No implementation found for provider: ${provider}`));
     }
@@ -1615,79 +1537,59 @@ async function handleUserDataRequest(ws: WebSocketWithData, message: ClientMessa
 }
 
 /**
- * Handles the result of a tool execution from the client, continuing the conversation.
+ * Handle tool execution results from client
+ * 
+ * SIMPLIFIED: Server is stateless - just acknowledge tool result receipt.
+ * Client will include tool results in the next LLM request's message history.
  */
 async function handleToolExecutionResult(ws: WebSocketWithData, message: ToolExecutionResultMessage): Promise<void> {
 	const { requestId, payload } = message;
 	
-	// Debug: Log the entire message structure
-	logger.info(`TOOL_RESULT_DEBUG [${requestId}] Raw message:`, JSON.stringify(message, null, 2));
+	// Debug: Log the tool result for monitoring
+	logger.info(`TOOL_RESULT [${requestId}] Received tool execution result:`, JSON.stringify(payload, null, 2));
 	
-	// Debug: Check if payload exists and log its structure
+	// Validate payload structure
 	if (!payload) {
 		logger.error(`TOOL_RESULT_ERROR [${requestId}]: No payload in message`);
-		sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: requestId, payload: { error: 'No payload in tool execution result message.' } });
+		sendToClient(ws, { 
+			type: MessageType.PROVIDER_ERROR, 
+			requestId: requestId, 
+			payload: { error: 'No payload in tool execution result message.' } 
+		});
 		return;
 	}
 	
-	logger.info(`TOOL_RESULT_DEBUG [${requestId}] Payload structure:`, JSON.stringify(payload, null, 2));
-	
-	// Extract payload fields (now properly typed)
 	const { toolCallId, toolName, result, isError, errorDetails } = payload;
 	
 	// Validate required fields
 	if (!toolCallId || !toolName || isError === undefined) {
 		logger.error(`TOOL_RESULT_ERROR [${requestId}]: Invalid payload structure. toolCallId=${toolCallId}, toolName=${toolName}, isError=${isError}`);
-		sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: requestId, payload: { error: 'Invalid tool execution result payload structure.' } });
-		return;
-	}
-	
-	const safeRequestId = requestId; // This is the persistent THREAD ID.
-
-	// Debug: Log what we extracted
-	logger.info(`TOOL_RESULT_DEBUG [${safeRequestId}] Extracted: toolCallId=${toolCallId}, toolName=${toolName}, isError=${isError}`);
-
-	if (!safeRequestId) {
-		return logger.error(`TOOL_RESULT_ERROR: No request_id provided with tool result.`);
-	}
-
-	// Debug: Log active contexts
-	logger.info(`TOOL_RESULT_DEBUG [${safeRequestId}] Active contexts: [${Array.from(activeTurnContexts.keys()).join(', ')}]`);
-
-	const turnContext = activeTurnContexts.get(safeRequestId);
-	if (!turnContext) {
-		logger.error(`TOOL_RESULT_ERROR [${safeRequestId}]: No active conversation context found.`);
-		sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: safeRequestId, payload: { error: 'No active conversation context found for tool result.' } });
+		sendToClient(ws, { 
+			type: MessageType.PROVIDER_ERROR, 
+			requestId: requestId, 
+			payload: { error: 'Invalid tool execution result payload structure.' } 
+		});
 		return;
 	}
 
-	// Debug: Log turnContext structure
-	logger.info(`TOOL_RESULT_DEBUG [${safeRequestId}] TurnContext found. Messages type: ${typeof turnContext.messages}, Messages array: ${Array.isArray(turnContext.messages)}, Messages length: ${turnContext.messages?.length}`);
+	// Log successful tool result processing
+	const resultSummary = isError ? `Error: ${errorDetails}` : `Success: ${typeof result}`;
+	logger.info(`TOOL_RESULT [${requestId}] Tool '${toolName}' (${toolCallId}) completed: ${resultSummary}`);
 
-	// Safety check for messages array
-	if (!turnContext.messages) {
-		logger.error(`TOOL_RESULT_ERROR [${safeRequestId}]: turnContext.messages is undefined`);
-		turnContext.messages = []; // Initialize empty array
-	}
+	// Simply acknowledge that the tool result was received
+	// The client will include this tool result in the conversation history for the next LLM request
+	sendToClient(ws, {
+		type: MessageType.TOOL_EXECUTION_ACKNOWLEDGED,
+		requestId: requestId,
+		payload: {
+			toolCallId,
+			toolName,
+			acknowledged: true,
+			timestamp: Date.now()
+		}
+	});
 
-	const toolResultContent = isError ? `Error: ${errorDetails}` : JSON.stringify(result);
-	const toolResultMessage = {
-		role: 'tool' as const,
-		tool_call_id: toolCallId,
-		content: toolResultContent,
-		name: toolName
-	};
-
-	turnContext.messages.push(toolResultMessage);
-	logger.info(`CONTEXT [${safeRequestId}] Appended tool result. New history length: ${turnContext.messages.length}`);
-
-	// Update the context with the tool result but DON'T automatically continue the conversation
-	// The client will decide when to make the next LLM call
-	activeTurnContexts.set(safeRequestId, turnContext);
-	
-	// Simply acknowledge that the tool result was received and processed
-	// The client-side agent loop will handle continuing the conversation if needed
-	logger.info(`TOOL RESULT [${safeRequestId}] Tool result processed and added to context. Waiting for client to continue conversation.`);
+	logger.info(`TOOL_RESULT [${requestId}] Tool result acknowledged. Client will handle conversation continuation.`);
 }
 
 /**

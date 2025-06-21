@@ -46,6 +46,7 @@ export enum MessageType {
 
   // Tool messages
   TOOL_EXECUTION_RESULT = 'tool_execution_result',
+  TOOL_EXECUTION_ACKNOWLEDGED = 'tool_execution_acknowledged',
 
   // User data messages
   USER_DATA_REQUEST = 'user_data_request',
