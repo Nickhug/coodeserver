@@ -14,6 +14,7 @@ interface OpenRouterChatParams {
   stream?: boolean;
   tools?: any[];
   toolChoice?: 'auto' | 'none' | 'required';
+  systemMessage?: string;
   onStream?: (chunk: string, functionCalls?: any[]) => void;
   onComplete: (response: LLMResponse) => void;
   onError: (error: Error) => void;
@@ -60,6 +61,7 @@ export async function processChat({
   stream = true,
   tools,
   toolChoice,
+  systemMessage,
   onStream,
   onComplete,
   onError,
@@ -69,14 +71,40 @@ export async function processChat({
   try {
     const openai = getOpenAIClient(apiKey, siteUrl, appName);
 
+    // Prepare messages following OpenAI conversation standards
+    const formattedMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+
+    // Add system message as developer role if provided (following OpenAI standards)
+    if (systemMessage) {
+      formattedMessages.push({
+        role: 'developer',
+        content: systemMessage
+      });
+    }
+
+    // Add conversation messages, ensuring proper role mapping
+    for (const message of messages) {
+      if (message.role === 'tool') {
+        formattedMessages.push({
+          role: 'tool',
+          content: message.content as string,
+          tool_call_id: (message as any).tool_call_id
+        });
+      } else if (message.role === 'system') {
+        // Skip system role messages as we already added the system message as developer role
+        // This prevents duplicate system instructions
+        continue;
+      } else {
+        formattedMessages.push({
+          role: message.role as 'user' | 'assistant',
+          content: message.content
+        });
+      }
+    }
+
     const completionParams: OpenAI.Chat.ChatCompletionCreateParams = {
       model,
-      messages: messages.map(m => {
-        if (m.role === 'tool') {
-          return { role: m.role, content: m.content as string, tool_call_id: (m as any).tool_call_id };
-        }
-        return { role: m.role, content: m.content };
-      }) as OpenAI.Chat.ChatCompletionMessageParam[],
+      messages: formattedMessages,
       temperature: temperature ?? 0.7,
       max_tokens: maxTokens,
       stream,

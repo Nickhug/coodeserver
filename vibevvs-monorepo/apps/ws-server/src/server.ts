@@ -1419,7 +1419,7 @@ async function handleFimRequest(ws: WebSocketWithData, message: ClientMessage): 
  * Handle provider request from client
  */
 async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
-  const { provider, model, messages, temperature, maxTokens, stream, tools, toolChoice } = message.payload;
+  const { provider, model, messages, temperature, maxTokens, stream, tools, toolChoice, systemMessage } = message.payload;
   const safeRequestId = message.requestId ?? `req-${Date.now()}`;
   const { userId, connectionId } = ws.connectionData;
 
@@ -1478,6 +1478,7 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
         messages,
         tools,
         toolChoice,
+        systemMessage,
         stream: true,
         onStream,
         onComplete,
@@ -1649,6 +1650,46 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
 
       if (provider === 'mistral') {
         // ... (Mistral logic)
+      } else if (provider === 'openrouter' || provider === 'openRouter') {
+        // Handle OpenRouter continuation with proper systemMessage
+        await openrouter.processChat({
+          apiKey,
+          model,
+          messages,
+          temperature: temperature || 0.7,
+          maxTokens: maxTokens || 50000,
+          systemMessage,
+          tools: tools || [],
+          toolChoice: 'auto',
+          stream: true,
+          onStream: (chunk: string, functionCalls?: any[]) => {
+            streamStats.chunkCount++; streamStats.totalCharsStreamed += chunk.length; streamStats.lastChunkTime = Date.now();
+            sendToClient(ws, { type: MessageType.PROVIDER_STREAM_CHUNK, payload: { chunk, requestId: safeRequestId, provider, model, functionCalls } });
+          },
+          onComplete: (response: LLMResponse) => {
+            sendToClient(ws, {
+              type: MessageType.PROVIDER_STREAM_END,
+              payload: {
+                success: response.success,
+                text: response.text,
+                tokensUsed: response.usage?.totalTokens,
+                tool_calls: response.tool_calls,
+                requestId: safeRequestId,
+                provider,
+                model,
+                waitingForToolCall: !!response.tool_calls && response.tool_calls.length > 0
+              }
+            });
+            activeTurnContexts.delete(safeRequestId);
+          },
+          onError: (error: Error) => {
+            logger.error(
+              `WS OPENROUTER [${ws.connectionData.connectionId}][${safeRequestId}] Streaming error after tool: ${error.message}`
+            );
+          },
+          siteUrl: config.openrouterSiteUrl,
+          appName: config.openrouterAppName,
+        });
       } else { // Gemini
         await gemini.streamGeminiMessage({
           apiKey, model, messages: convertChatMessagesToGeminiFormat(messages), temperature: temperature || 0.7, maxTokens: maxTokens || 50000, systemMessage, tools: tools || [], chatMode: requestChatMode,
