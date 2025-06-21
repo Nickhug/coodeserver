@@ -1486,8 +1486,21 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
   }
 
   try {
-    const onStream = (text: string, toolCalls?: ToolCall[] | undefined) => {
-      sendToClient(ws, { type: MessageType.PROVIDER_STREAM_CHUNK, requestId: safeRequestId, payload: { chunk: text, functionCalls: toolCalls } });
+    const onStream = (chunk: string, toolCalls?: ToolCall[]) => {
+      const payload = {
+        chunk,
+        reasoning: undefined,
+        tool_calls: toolCalls,
+        functionCalls: toolCalls // Legacy support
+      };
+      
+      logger.info(`[SERVER] Sending PROVIDER_STREAM_CHUNK with payload:`, JSON.stringify(payload, null, 2));
+      
+      sendToClient(ws, {
+        type: MessageType.PROVIDER_STREAM_CHUNK,
+        requestId: safeRequestId,
+        payload
+      });
     };
 
     const onComplete = (response: LLMResponse) => {
