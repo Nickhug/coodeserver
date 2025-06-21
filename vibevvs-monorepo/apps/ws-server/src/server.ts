@@ -37,7 +37,7 @@ import {
   type AuthTokenVerificationError
 } from '@repo/db';
 import { LLMResponse } from '@repo/ai-providers';
-import { availableTools, chat_systemMessage, InternalToolInfo } from './prompts/prompts.js';
+import { availableTools, chat_systemMessage, getOpenAIFormattedTools, InternalToolInfo } from './prompts/prompts.js';
 
 /**
  * Convert ChatMessage array to GeminiMessage array format
@@ -1473,10 +1473,20 @@ async function handleProviderRequest(ws: WebSocketWithData, message: ClientMessa
 
     const processChat = providerImplementations[provider];
     if (processChat) {
+      // Convert tools to OpenAI format for OpenRouter, keep original format for others
+      let formattedTools = tools;
+      if ((provider === 'openrouter' || provider === 'openRouter') && tools && Array.isArray(tools)) {
+        // If tools are passed as internal format, convert them to OpenAI format
+        if (tools.length > 0 && tools[0].parameters && !tools[0].function) {
+          formattedTools = getOpenAIFormattedTools('agent'); // Use agent mode for full tool access
+          logger.info(`Converted ${tools.length} tools to OpenAI format for OpenRouter`);
+        }
+      }
+
       const commonParams: any = {
         model,
         messages,
-        tools,
+        tools: formattedTools,
         toolChoice,
         systemMessage,
         stream: true,
@@ -1651,7 +1661,8 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
       if (provider === 'mistral') {
         // ... (Mistral logic)
       } else if (provider === 'openrouter' || provider === 'openRouter') {
-        // Handle OpenRouter continuation with proper systemMessage
+        // Handle OpenRouter continuation with proper systemMessage and OpenAI formatted tools
+        const openaiFormattedTools = tools && tools.length > 0 ? getOpenAIFormattedTools(requestChatMode) : [];
         await openrouter.processChat({
           apiKey,
           model,
@@ -1659,7 +1670,7 @@ async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientM
           temperature: temperature || 0.7,
           maxTokens: maxTokens || 50000,
           systemMessage,
-          tools: tools || [],
+          tools: openaiFormattedTools,
           toolChoice: 'auto',
           stream: true,
           onStream: (chunk: string, functionCalls?: any[]) => {

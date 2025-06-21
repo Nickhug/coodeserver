@@ -416,6 +416,113 @@ export const availableTools = (chatMode: ChatMode) => {
 	return allTools.filter(t => !['run_command', 'run_persistent_command', 'open_persistent_terminal', 'kill_persistent_terminal', 'edit_file', 'rewrite_file', 'create_file_or_folder', 'delete_file_or_folder'].includes(t.name))
 }
 
+/**
+ * Convert internal tool definitions to OpenAI function calling format
+ * Following OpenAI documentation standards with strict mode enabled
+ */
+export const convertToolsToOpenAIFormat = (tools: InternalToolInfo[]) => {
+	return tools.map(tool => ({
+		type: "function" as const,
+		function: {
+			name: tool.name,
+			description: tool.description,
+			parameters: {
+				type: "object" as const,
+				properties: Object.entries(tool.parameters).reduce((props, [paramName, paramInfo]) => {
+					// Infer parameter type from name and description
+					let paramType: string | string[] = "string"; // Default to string
+					
+					// Type inference based on parameter names and descriptions
+					if (paramName.includes('line') || paramName.includes('page') || paramName.includes('timeout') || paramName.includes('limit')) {
+						paramType = "number";
+					} else if (paramName.includes('required') || paramName === 'stream') {
+						paramType = "boolean";
+					} else if (paramInfo.description.toLowerCase().includes('optional')) {
+						// For optional parameters, allow null as well
+						paramType = ["string", "null"];
+					}
+					
+					// Special cases for array parameters
+					if (paramName.includes('types') || paramName.includes('paths') || paramName.includes('languages')) {
+						paramType = "string"; // These are comma-separated strings in our implementation
+					}
+					
+					props[paramName] = {
+						type: paramType,
+						description: paramInfo.description
+					};
+					return props;
+				}, {} as Record<string, any>),
+				required: Object.entries(tool.parameters)
+					.filter(([paramName, paramInfo]) => !paramInfo.description.toLowerCase().includes('optional'))
+					.map(([paramName]) => paramName),
+				additionalProperties: false
+			},
+			strict: true
+		}
+	}));
+};
+
+/**
+ * Get OpenAI-formatted tools for a specific chat mode
+ */
+export const getOpenAIFormattedTools = (chatMode: ChatMode) => {
+	const tools = availableTools(chatMode);
+	return convertToolsToOpenAIFormat(tools);
+};
+
+/**
+ * Test function to verify OpenAI tool format conversion
+ * This can be called to log and verify the converted tools match OpenAI standards
+ */
+export const testOpenAIToolConversion = () => {
+	const sampleTools = getOpenAIFormattedTools('agent');
+	
+	console.log('=== OpenAI Tool Format Test ===');
+	console.log(`Converted ${sampleTools.length} tools to OpenAI format:`);
+	
+	// Show first tool as example
+	if (sampleTools.length > 0) {
+		console.log('\nExample tool (read_file):');
+		const readFileTool = sampleTools.find(t => t.function.name === 'read_file');
+		if (readFileTool) {
+			console.log(JSON.stringify(readFileTool, null, 2));
+		}
+		
+		console.log('\nExample tool (search_codebase):');
+		const searchTool = sampleTools.find(t => t.function.name === 'search_codebase');
+		if (searchTool) {
+			console.log(JSON.stringify(searchTool, null, 2));
+		}
+	}
+	
+	// Verify all tools have required OpenAI format structure
+	const formatErrors: string[] = [];
+	sampleTools.forEach(tool => {
+		if (tool.type !== 'function') formatErrors.push(`Tool ${tool.function?.name} missing type: function`);
+		if (!tool.function) formatErrors.push(`Tool missing function object`);
+		if (!tool.function?.name) formatErrors.push(`Tool missing function.name`);
+		if (!tool.function?.description) formatErrors.push(`Tool ${tool.function?.name} missing function.description`);
+		if (!tool.function?.parameters) formatErrors.push(`Tool ${tool.function?.name} missing function.parameters`);
+		if (tool.function?.parameters?.type !== 'object') formatErrors.push(`Tool ${tool.function?.name} parameters.type should be 'object'`);
+		if (!tool.function?.parameters?.properties) formatErrors.push(`Tool ${tool.function?.name} missing parameters.properties`);
+		if (!Array.isArray(tool.function?.parameters?.required)) formatErrors.push(`Tool ${tool.function?.name} parameters.required should be array`);
+		if (tool.function?.parameters?.additionalProperties !== false) formatErrors.push(`Tool ${tool.function?.name} parameters.additionalProperties should be false`);
+		if (tool.function?.strict !== true) formatErrors.push(`Tool ${tool.function?.name} should have strict: true`);
+	});
+	
+	if (formatErrors.length === 0) {
+		console.log('\n✅ All tools conform to OpenAI function calling format!');
+	} else {
+		console.log('\n❌ Format errors found:');
+		formatErrors.forEach(error => console.log(`  - ${error}`));
+	}
+	
+	console.log('=== End OpenAI Tool Format Test ===\n');
+	
+	return { toolCount: sampleTools.length, formatErrors, sampleTools };
+};
+
 
 const toolCallDefinitionsXMLString = (tools: InternalToolInfo[]) => {
 	return tools.map(tool => {
