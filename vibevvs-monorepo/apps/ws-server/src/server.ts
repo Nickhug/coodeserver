@@ -19,7 +19,9 @@ import {
   CodebaseDeleteVectorsResponseMessage,
   ChatMessage,
   ToolCall,
-  SendLLMMessagePayload
+  SendLLMMessagePayload,
+  ToolExecutionResultPayload,
+  ToolExecutionResultMessage
 } from '@repo/types';
 import * as types from '@repo/types';
 import { deleteVectors as pineconeDeleteVectors } from './pinecone-service';
@@ -462,7 +464,7 @@ async function handleIncomingMessage(ws: WebSocketWithData, messageStr: string):
           sendToClient(ws, { type: MessageType.AUTH_FAILURE, requestId });
         return;
       }
-        await handleToolExecutionResult(ws, message);
+        await handleToolExecutionResult(ws, message as ToolExecutionResultMessage);
         break;
 
       case MessageType.PING:
@@ -1613,74 +1615,112 @@ async function handleUserDataRequest(ws: WebSocketWithData, message: ClientMessa
 /**
  * Handles the result of a tool execution from the client, continuing the conversation.
  */
-async function handleToolExecutionResult(ws: WebSocketWithData, message: ClientMessage): Promise<void> {
-  const { tool_results, original_request_id } = message.payload;
-  const safeRequestId = original_request_id; // This is the persistent THREAD ID.
+async function handleToolExecutionResult(ws: WebSocketWithData, message: ToolExecutionResultMessage): Promise<void> {
+	const { requestId, payload } = message;
+	
+	// Debug: Log the entire message structure
+	logger.info(`TOOL_RESULT_DEBUG [${requestId}] Raw message:`, JSON.stringify(message, null, 2));
+	
+	// Debug: Check if payload exists and log its structure
+	if (!payload) {
+		logger.error(`TOOL_RESULT_ERROR [${requestId}]: No payload in message`);
+		sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: requestId, payload: { error: 'No payload in tool execution result message.' } });
+		return;
+	}
+	
+	logger.info(`TOOL_RESULT_DEBUG [${requestId}] Payload structure:`, JSON.stringify(payload, null, 2));
+	
+	// Extract payload fields (now properly typed)
+	const { toolCallId, toolName, result, isError, errorDetails } = payload;
+	
+	// Validate required fields
+	if (!toolCallId || !toolName || isError === undefined) {
+		logger.error(`TOOL_RESULT_ERROR [${requestId}]: Invalid payload structure. toolCallId=${toolCallId}, toolName=${toolName}, isError=${isError}`);
+		sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: requestId, payload: { error: 'Invalid tool execution result payload structure.' } });
+		return;
+	}
+	
+	const safeRequestId = requestId; // This is the persistent THREAD ID.
 
-  logger.info(`TOOL_RESULT [${safeRequestId}] Received ${tool_results.length} tool results from client.`);
+	// Debug: Log what we extracted
+	logger.info(`TOOL_RESULT_DEBUG [${safeRequestId}] Extracted: toolCallId=${toolCallId}, toolName=${toolName}, isError=${isError}`);
 
-  if (!safeRequestId) {
-    return logger.error(`TOOL_RESULT_ERROR: No original_request_id provided.`);
-  }
+	if (!safeRequestId) {
+		return logger.error(`TOOL_RESULT_ERROR: No request_id provided with tool result.`);
+	}
 
-  const turnContext = activeTurnContexts.get(safeRequestId);
-  if (!turnContext) {
-    logger.error(`TOOL_RESULT_ERROR [${safeRequestId}]: No active conversation context found.`);
-    sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: safeRequestId, payload: { error: 'No active conversation context found for tool result.' } });
-    return;
-  }
+	// Debug: Log active contexts
+	logger.info(`TOOL_RESULT_DEBUG [${safeRequestId}] Active contexts: [${Array.from(activeTurnContexts.keys()).join(', ')}]`);
 
-  const toolResultMessages = tool_results.map((result: { tool_call_id: string; content: string; }) => ({
-    role: 'tool' as const,
-    tool_call_id: result.tool_call_id,
-    content: result.content,
-  }));
+	const turnContext = activeTurnContexts.get(safeRequestId);
+	if (!turnContext) {
+		logger.error(`TOOL_RESULT_ERROR [${safeRequestId}]: No active conversation context found.`);
+		sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: safeRequestId, payload: { error: 'No active conversation context found for tool result.' } });
+		return;
+	}
 
-  turnContext.messages.push(...toolResultMessages);
-  logger.info(`CONTEXT [${safeRequestId}] Appended ${toolResultMessages.length} tool results. New history length: ${turnContext.messages.length}`);
+	// Debug: Log turnContext structure
+	logger.info(`TOOL_RESULT_DEBUG [${safeRequestId}] TurnContext found. Messages type: ${typeof turnContext.messages}, Messages array: ${Array.isArray(turnContext.messages)}, Messages length: ${turnContext.messages?.length}`);
 
-  const { provider, model, apiKey, temperature, maxTokens, systemMessage, tools, stream } = turnContext;
+	// Safety check for messages array
+	if (!turnContext.messages) {
+		logger.error(`TOOL_RESULT_ERROR [${safeRequestId}]: turnContext.messages is undefined`);
+		turnContext.messages = []; // Initialize empty array
+	}
 
-  try {
-    const onStream = (text: string, toolCalls?: ToolCall[] | undefined) => {
-      sendToClient(ws, { type: MessageType.PROVIDER_STREAM_CHUNK, requestId: safeRequestId, payload: { chunk: text, functionCalls: toolCalls } });
-    };
+	const toolResultContent = isError ? `Error: ${errorDetails}` : JSON.stringify(result);
+	const toolResultMessage = {
+		role: 'tool' as const,
+		tool_call_id: toolCallId,
+		content: toolResultContent,
+		name: toolName
+	};
 
-    const onComplete = (response: LLMResponse) => {
-      logger.info(`TOOL CONTINUATION [${safeRequestId}] COMPLETED for provider ${provider}`);
-      const currentContext = activeTurnContexts.get(safeRequestId);
-      if (currentContext) {
-        currentContext.messages.push({ role: 'assistant', content: response.text || '', tool_calls: response.tool_calls });
-        activeTurnContexts.set(safeRequestId, currentContext);
-        logger.info(`CONTEXT [${safeRequestId}] Updated context after tool call. New history length: ${currentContext.messages.length}`);
-      }
-      sendToClient(ws, { type: MessageType.PROVIDER_STREAM_END, requestId: safeRequestId, payload: { success: response.success ?? true, text: response.text, tokensUsed: response.usage?.totalTokens ?? 0, error: response.error, tool_calls: response.tool_calls, finish_reason: response.finish_reason } });
-    };
+	turnContext.messages.push(toolResultMessage);
+	logger.info(`CONTEXT [${safeRequestId}] Appended tool result. New history length: ${turnContext.messages.length}`);
 
-    const onError = (error: Error) => {
-      logger.error(`TOOL CONTINUATION [${safeRequestId}] FAILED for provider ${provider}: ${error.message}`, error);
-      sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: safeRequestId, payload: { error: error.message, message: error.message } });
-    };
+	const { provider, model, apiKey, temperature, maxTokens, systemMessage, tools, stream } = turnContext;
 
-    const providerImplementations: { [key: string]: (params: any) => Promise<void> } = {
-      'gemini': gemini.streamGeminiMessage,
-      'mistral': mistral.processChat,
-      'openrouter': openrouter.processChat,
-      'openRouter': openrouter.processChat
-    };
+	try {
+		const onStream = (text: string, toolCalls?: ToolCall[] | undefined) => {
+			sendToClient(ws, { type: MessageType.PROVIDER_STREAM_CHUNK, requestId: safeRequestId, payload: { chunk: text, functionCalls: toolCalls } });
+		};
 
-    const processChat = providerImplementations[provider];
-    if (processChat) {
-      const commonParams = { apiKey, model, messages: turnContext.messages, temperature, maxTokens, systemMessage, tools, stream, toolChoice: 'auto', onStream, onComplete, onError };
-      activeTurnContexts.set(safeRequestId, turnContext);
-      await processChat(commonParams);
-    } else {
-      onError(new Error(`No implementation found for provider: ${provider}`));
-    }
-  } catch (error: any) {
-    logger.error(`Error in handleToolExecutionResult for ${provider}: ${error.message}`, error);
-    sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: safeRequestId, payload: { error: error.message, message: error.message } });
-  }
+		const onComplete = (response: LLMResponse) => {
+			logger.info(`TOOL CONTINUATION [${safeRequestId}] COMPLETED for provider ${provider}`);
+			const currentContext = activeTurnContexts.get(safeRequestId);
+			if (currentContext) {
+				currentContext.messages.push({ role: 'assistant', content: response.text || '', tool_calls: response.tool_calls });
+				activeTurnContexts.set(safeRequestId, currentContext);
+				logger.info(`CONTEXT [${safeRequestId}] Updated context after tool call. New history length: ${currentContext.messages.length}`);
+			}
+			sendToClient(ws, { type: MessageType.PROVIDER_STREAM_END, requestId: safeRequestId, payload: { success: response.success ?? true, text: response.text, tokensUsed: response.usage?.totalTokens ?? 0, error: response.error, tool_calls: response.tool_calls, finish_reason: response.finish_reason } });
+		};
+
+		const onError = (error: Error) => {
+			logger.error(`TOOL CONTINUATION [${safeRequestId}] FAILED for provider ${provider}: ${error.message}`, error);
+			sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: safeRequestId, payload: { error: error.message, message: error.message } });
+		};
+
+		const providerImplementations: { [key: string]: (params: any) => Promise<void> } = {
+			'gemini': gemini.streamGeminiMessage,
+			'mistral': mistral.processChat,
+			'openrouter': openrouter.processChat,
+			'openRouter': openrouter.processChat
+		};
+
+		const processChat = providerImplementations[provider];
+		if (processChat) {
+			const commonParams = { apiKey, model, messages: turnContext.messages, temperature, maxTokens, systemMessage, tools, stream, toolChoice: 'auto', onStream, onComplete, onError };
+			activeTurnContexts.set(safeRequestId, turnContext);
+			await processChat(commonParams);
+		} else {
+			onError(new Error(`No implementation found for provider: ${provider}`));
+		}
+	} catch (error: any) {
+		logger.error(`Error in handleToolExecutionResult for ${provider}: ${error.message}`, error);
+		sendToClient(ws, { type: MessageType.PROVIDER_ERROR, requestId: safeRequestId, payload: { error: error.message, message: error.message } });
+	}
 }
 
 /**

@@ -486,6 +486,22 @@ export interface ToolCall {
   };
 }
 
+/**
+ * Tool execution result payload
+ */
+export interface ToolExecutionResultPayload {
+  toolCallId: string;
+  toolName: string;
+  result: any;
+  isError: boolean;
+  errorDetails?: string;
+}
+
+export interface ToolExecutionResultMessage extends ClientMessage {
+  type: MessageType.TOOL_EXECUTION_RESULT;
+  payload: ToolExecutionResultPayload;
+}
+
 // ========================================================
 // NEW Standardized LLM Message Payloads
 // ========================================================
